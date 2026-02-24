@@ -1,6 +1,7 @@
 import os
 import logging
 import re
+import time
 from datetime import datetime
 
 import httpx
@@ -71,7 +72,7 @@ SUBMENUS = {
     "speed": {
         "title": "限速管理",
         "buttons": [
-            ("设置限速", "action:speed_set"),
+            ("设置限速", "action:user_speed"),
             ("切换限速模式", "action:speed_switch"),
             ("返回", "menu:main"),
         ],
@@ -407,6 +408,39 @@ def build_node_reality_confirm_keyboard(node_code: str) -> InlineKeyboardMarkup:
 def build_node_back_to_detail_keyboard(node_code: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [[InlineKeyboardButton("返回节点详情", callback_data=f"node:detail:{node_code}")]]
+    )
+
+
+def build_back_keyboard(callback_data: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton("返回", callback_data=callback_data)]]
+    )
+
+
+def build_query_user_picker_keyboard(users: list) -> InlineKeyboardMarkup:
+    rows = []
+    for user in users:
+        user_code = str(user.get("user_code", ""))
+        if not user_code:
+            continue
+        display_name = str(user.get("display_name") or "").strip()
+        button_text = f"{display_name}（{user_code}）" if display_name else user_code
+        rows.append(
+            [InlineKeyboardButton(button_text, callback_data=f"query:user:{user_code}")]
+        )
+    rows.append([InlineKeyboardButton("返回", callback_data="menu:query")])
+    return InlineKeyboardMarkup(rows)
+
+
+def build_query_user_detail_keyboard(user_code: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("订阅链接", callback_data=f"sub:links:{user_code}"),
+                InlineKeyboardButton("Base64 订阅", callback_data=f"sub:base64:{user_code}"),
+            ],
+            [InlineKeyboardButton("返回", callback_data="menu:query")],
+        ]
     )
 
 
@@ -780,6 +814,45 @@ def format_sub_links_info_text(user_code: str) -> str:
     )
 
 
+def format_query_user_detail_text(user: dict, user_nodes: list) -> str:
+    user_code = str(user.get("user_code", ""))
+    display_name = str(user.get("display_name") or "").strip()
+    user_label = f"{display_name}（{user_code}）" if display_name else user_code
+    status_text = str(user.get("status", "-"))
+    expire_at = int(user.get("expire_at", 0) or 0)
+    expire_text = (
+        datetime.fromtimestamp(expire_at).strftime("%Y-%m-%d %H:%M:%S")
+        if expire_at > 0
+        else "-"
+    )
+    grace_days = user.get("grace_days", "-")
+    speed_mbps = int(user.get("speed_mbps", 0) or 0)
+    limit_mode = str(user.get("limit_mode", "-"))
+    speed_text = "不限速（0 Mbps）" if speed_mbps == 0 else f"{speed_mbps} Mbps"
+
+    lines = [
+        f"用户：{user_label}",
+        f"状态：{status_text}",
+        f"到期时间：{expire_text}",
+        f"宽限天数：{grace_days}",
+        f"限速：{speed_text}",
+        f"限速模式：{limit_mode}",
+        f"绑定节点数量：{len(user_nodes)}",
+        "",
+        "节点列表：",
+    ]
+    if user_nodes:
+        for item in user_nodes:
+            node_code = str(item.get("node_code", ""))
+            region = str(item.get("region", ""))
+            host = str(item.get("host", ""))
+            enabled_text = "启用" if int(item.get("enabled", 0) or 0) == 1 else "禁用"
+            lines.append(f"{node_code} | {region} | {host} | 状态:{enabled_text}")
+    else:
+        lines.append("（暂无绑定节点）")
+    return "\n".join(lines)
+
+
 async def render_user_nodes_picker(query) -> None:
     users, error_message, _ = await controller_request("GET", "/users")
     if error_message:
@@ -821,6 +894,61 @@ async def render_user_speed_picker(query) -> None:
     await query.edit_message_text(
         "请选择要修改限速的用户：",
         reply_markup=build_user_speed_picker_keyboard(users),
+    )
+
+
+async def render_query_user_picker(query) -> None:
+    users, error_message, _ = await controller_request("GET", "/users")
+    if error_message:
+        await query.edit_message_text(
+            f"获取用户列表失败：{localize_controller_error(error_message)}",
+            reply_markup=build_submenu("query"),
+        )
+        return
+
+    if not users:
+        await query.edit_message_text(
+            "暂无用户，请先创建用户",
+            reply_markup=build_back_keyboard("menu:query"),
+        )
+        return
+
+    await query.edit_message_text(
+        "请选择要查询的用户：",
+        reply_markup=build_query_user_picker_keyboard(users),
+    )
+
+
+async def render_query_user_detail(query, user_code: str) -> None:
+    user, user_error, user_status = await controller_request("GET", f"/users/{user_code}")
+    if user_error:
+        localized = localize_controller_error(user_error)
+        if user_status == 404 and localized == "用户不存在":
+            await query.edit_message_text("用户不存在", reply_markup=build_submenu("query"))
+            return
+        await query.edit_message_text(
+            f"获取用户信息失败：{localized}",
+            reply_markup=build_submenu("query"),
+        )
+        return
+
+    user_nodes, nodes_error, nodes_status = await controller_request(
+        "GET", f"/users/{user_code}/nodes"
+    )
+    if nodes_error:
+        localized = localize_controller_error(nodes_error)
+        if nodes_status == 404 and localized == "用户不存在":
+            await query.edit_message_text("用户不存在", reply_markup=build_submenu("query"))
+            return
+        await query.edit_message_text(
+            f"获取用户节点失败：{localized}",
+            reply_markup=build_submenu("query"),
+        )
+        return
+
+    await query.edit_message_text(
+        format_query_user_detail_text(user or {}, user_nodes or []),
+        reply_markup=build_query_user_detail_keyboard(user_code),
     )
 
 
@@ -2115,15 +2243,41 @@ async def cancel_node_reality_command(
 
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    del context
     query = update.callback_query
     if not query:
         return
 
-    await query.answer()
     callback_data = query.data or ""
     user = query.from_user.username or query.from_user.id
     logger.info("button_click user=%s data=%s", user, callback_data)
+
+    if callback_data == "usernodes:manual_input":
+        await start_user_nodes_manual_input(update, context)
+        return
+
+    if callback_data == "wizard:create_confirm":
+        await create_user_confirm(update, context)
+        return
+
+    if callback_data == "wizard:nodes_create_confirm":
+        await nodes_create_confirm(update, context)
+        return
+
+    if callback_data == "wizard:cancel":
+        if context.user_data.get(NODES_WIZARD_KEY):
+            await cancel_nodes_create_callback(update, context)
+            return
+        if context.user_data.get(WIZARD_KEY):
+            await cancel_create_user_callback(update, context)
+            return
+
+        context.user_data.pop(WIZARD_KEY, None)
+        context.user_data.pop(NODES_WIZARD_KEY, None)
+        await query.answer()
+        await query.edit_message_text("已取消", reply_markup=build_main_menu())
+        return
+
+    await query.answer()
 
     if callback_data == "menu:main":
         await query.edit_message_text("主菜单", reply_markup=build_main_menu())
@@ -2139,6 +2293,114 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             return
         await query.edit_message_text(
             submenu["title"], reply_markup=build_submenu(submenu_key)
+        )
+        return
+
+    if callback_data == "action:speed_switch":
+        await query.edit_message_text(
+            "【切换限速模式】尚未实现（需要 controller 支持 limit_mode 切换接口）。",
+            reply_markup=build_back_keyboard("menu:speed"),
+        )
+        return
+
+    if callback_data == "action:query_user_info":
+        await render_query_user_picker(query)
+        return
+
+    if callback_data.startswith("query:user:"):
+        parts = callback_data.split(":", maxsplit=2)
+        if len(parts) != 3:
+            await query.edit_message_text("请求无效，请重试。", reply_markup=build_submenu("query"))
+            return
+        await render_query_user_detail(query, parts[2])
+        return
+
+    if callback_data == "action:query_expiring":
+        users, error_message, _ = await controller_request("GET", "/users")
+        if error_message:
+            await query.edit_message_text(
+                f"获取用户列表失败：{localize_controller_error(error_message)}",
+                reply_markup=build_submenu("query"),
+            )
+            return
+
+        now_ts = int(time.time())
+        deadline = now_ts + 7 * 86400
+        expiring_users = []
+        for item in users or []:
+            status_text = str(item.get("status", "")).lower()
+            try:
+                expire_at = int(item.get("expire_at", 0) or 0)
+            except (TypeError, ValueError):
+                expire_at = 0
+            if status_text == "active" and now_ts < expire_at <= deadline:
+                expiring_users.append(item)
+
+        expiring_users.sort(key=lambda x: int(x.get("expire_at", 0) or 0))
+        lines = ["即将到期（未来 7 天内，最多显示 20 条）："]
+        if expiring_users:
+            for item in expiring_users[:20]:
+                user_code = str(item.get("user_code", ""))
+                display_name = str(item.get("display_name") or "").strip()
+                name_text = display_name if display_name else "-"
+                expire_at = int(item.get("expire_at", 0) or 0)
+                expire_text = datetime.fromtimestamp(expire_at).strftime("%Y-%m-%d %H:%M:%S")
+                lines.append(f"{user_code} | {name_text} | {expire_text}")
+        else:
+            lines.append("（未来 7 天内无即将到期的 active 用户）")
+
+        await query.edit_message_text(
+            "\n".join(lines),
+            reply_markup=build_back_keyboard("menu:query"),
+        )
+        return
+
+    if callback_data == "action:query_traffic":
+        await query.edit_message_text(
+            "【流量排行】尚未实现（需要节点侧上报统计或接入计费系统）。",
+            reply_markup=build_back_keyboard("menu:query"),
+        )
+        return
+
+    if callback_data == "action:backup_now":
+        result, error_message, _ = await controller_request("POST", "/admin/backup")
+        if error_message:
+            await query.edit_message_text(
+                f"执行备份失败：{localize_controller_error(error_message)}",
+                reply_markup=build_back_keyboard("menu:backup"),
+            )
+            return
+
+        backup_path = str(result.get("path", "")) if isinstance(result, dict) else ""
+        size_bytes = int(result.get("size_bytes", 0)) if isinstance(result, dict) else 0
+        created_at = int(result.get("created_at", 0)) if isinstance(result, dict) else 0
+        created_text = (
+            datetime.fromtimestamp(created_at).strftime("%Y-%m-%d %H:%M:%S")
+            if created_at > 0
+            else "-"
+        )
+        await query.edit_message_text(
+            "备份已生成\n\n"
+            f"路径：{backup_path}\n"
+            f"大小：{size_bytes} bytes\n"
+            f"时间：{created_text}\n\n"
+            "可用以下命令拉取备份：\n"
+            f"scp root@你的服务器IP:{backup_path} ./",
+            reply_markup=build_back_keyboard("menu:backup"),
+        )
+        return
+
+    if callback_data == "action:backup_audit":
+        await query.edit_message_text(
+            "【操作日志】尚未实现（需要落库审计表或接入日志系统）。",
+            reply_markup=build_back_keyboard("menu:backup"),
+        )
+        return
+
+    if callback_data == "action:backup_stop":
+        await query.edit_message_text(
+            "【紧急停止】尚未实现（需要定义停止策略：停发订阅/禁用节点/禁用用户等）。",
+            reply_markup=build_back_keyboard("menu:backup"),
         )
         return
 

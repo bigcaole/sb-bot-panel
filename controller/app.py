@@ -1,5 +1,6 @@
 import base64
 import sqlite3
+import tarfile
 import time
 import uuid
 from pathlib import Path
@@ -160,6 +161,33 @@ def on_startup() -> None:
 @app.get("/health")
 def health() -> Dict[str, bool]:
     return {"ok": True}
+
+
+@app.post("/admin/backup")
+def create_backup() -> Dict[str, Union[bool, int, str]]:
+    created_at = int(time.time())
+    data_dir = BASE_DIR / "data"
+    backup_dir = Path("/var/backups/sb-controller")
+    backup_name = time.strftime("backup-%Y%m%d-%H%M%S", time.localtime(created_at)) + ".tar.gz"
+    backup_path = backup_dir / backup_name
+
+    if not data_dir.exists():
+        raise HTTPException(status_code=500, detail="Data directory not found")
+
+    try:
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        with tarfile.open(backup_path, "w:gz") as archive:
+            archive.add(data_dir, arcname="data")
+        size_bytes = int(backup_path.stat().st_size)
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail="Backup failed: {0}".format(exc)) from exc
+
+    return {
+        "ok": True,
+        "path": str(backup_path),
+        "size_bytes": size_bytes,
+        "created_at": created_at,
+    }
 
 
 @app.post("/users/create")
