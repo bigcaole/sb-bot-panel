@@ -40,6 +40,24 @@ if MENU_AUTO_CLEAR_SECONDS <= 0:
     MENU_AUTO_CLEAR_SECONDS = 60
 
 MENU_AUTO_CLEAR_JOBS_KEY = "menu_auto_clear_jobs"
+NODE_MONITOR_STATE_KEY = "node_monitor_state"
+KNOWN_CHAT_IDS_KEY = "known_chat_ids"
+try:
+    NODE_MONITOR_INTERVAL_SECONDS = int(
+        os.getenv("BOT_NODE_MONITOR_INTERVAL", "60").strip() or "60"
+    )
+except ValueError:
+    NODE_MONITOR_INTERVAL_SECONDS = 60
+if NODE_MONITOR_INTERVAL_SECONDS <= 0:
+    NODE_MONITOR_INTERVAL_SECONDS = 60
+try:
+    NODE_OFFLINE_THRESHOLD_SECONDS = int(
+        os.getenv("BOT_NODE_OFFLINE_THRESHOLD", "120").strip() or "120"
+    )
+except ValueError:
+    NODE_OFFLINE_THRESHOLD_SECONDS = 120
+if NODE_OFFLINE_THRESHOLD_SECONDS <= 0:
+    NODE_OFFLINE_THRESHOLD_SECONDS = 120
 
 WIZARD_KEY = "create_user_wizard"
 CREATE_DISPLAY_NAME, CREATE_TUIC_PORT, CREATE_SPEED_MBPS, CREATE_VALID_DAYS, CREATE_CONFIRM = range(5)
@@ -138,6 +156,22 @@ for submenu_key, submenu in SUBMENUS.items():
             ACTION_PARENT[callback_data] = submenu_key
 
 
+def parse_chat_id_list(raw_value: str) -> list:
+    chat_ids = []
+    for part in raw_value.split(","):
+        token = part.strip()
+        if not token:
+            continue
+        try:
+            chat_ids.append(int(token))
+        except ValueError:
+            logger.warning("invalid ADMIN_CHAT_IDS item ignored: %s", token)
+    return chat_ids
+
+
+ADMIN_CHAT_ID_LIST = parse_chat_id_list(os.getenv("ADMIN_CHAT_IDS", ""))
+
+
 async def _menu_auto_clear_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     data = context.job.data if context.job else {}
     chat_id = data.get("chat_id")
@@ -200,6 +234,109 @@ async def refresh_callback_menu_ttl(
     if not query or not query.message:
         return
     schedule_menu_auto_clear(context, query.message.chat_id, query.message.message_id)
+
+
+def remember_known_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat = update.effective_chat
+    if not chat:
+        return
+    known_ids = context.application.bot_data.setdefault(KNOWN_CHAT_IDS_KEY, set())
+    if not isinstance(known_ids, set):
+        try:
+            known_ids = set(known_ids)
+        except TypeError:
+            known_ids = set()
+    known_ids.add(chat.id)
+    context.application.bot_data[KNOWN_CHAT_IDS_KEY] = known_ids
+
+
+def get_monitor_target_chat_ids(context: ContextTypes.DEFAULT_TYPE) -> list:
+    if ADMIN_CHAT_ID_LIST:
+        return list(dict.fromkeys(ADMIN_CHAT_ID_LIST))
+    known_ids = context.application.bot_data.get(KNOWN_CHAT_IDS_KEY, set())
+    if isinstance(known_ids, set):
+        return sorted(list(known_ids))
+    if isinstance(known_ids, list):
+        return [chat_id for chat_id in known_ids if isinstance(chat_id, int)]
+    return []
+
+
+def format_last_seen_text(last_seen_at: int) -> str:
+    if last_seen_at <= 0:
+        return "暂无"
+    return datetime.fromtimestamp(last_seen_at).strftime("%Y-%m-%d %H:%M:%S")
+
+
+async def send_node_monitor_alert(
+    context: ContextTypes.DEFAULT_TYPE, node: dict, is_online: bool, last_seen_at: int
+) -> None:
+    chat_ids = get_monitor_target_chat_ids(context)
+    if not chat_ids:
+        return
+    title = "【节点恢复】" if is_online else "【节点掉线】"
+    online_text = "在线" if is_online else "离线"
+    text = (
+        f"{title}\n"
+        f"节点：{node.get('node_code', '')}\n"
+        f"地区：{node.get('region', '')}\n"
+        f"入口：{node.get('host', '')}\n"
+        f"状态：{online_text}\n"
+        f"最后心跳：{format_last_seen_text(last_seen_at)}"
+    )
+    if not is_online:
+        text += f"\n说明：超过 {NODE_OFFLINE_THRESHOLD_SECONDS} 秒未收到心跳。"
+
+    for chat_id in chat_ids:
+        try:
+            await context.bot.send_message(chat_id=chat_id, text=text)
+        except (BadRequest, Forbidden):
+            continue
+
+
+async def run_node_monitor_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    nodes, error_message, _ = await controller_request("GET", "/nodes")
+    if error_message or not isinstance(nodes, list):
+        if error_message:
+            logger.warning("node monitor fetch failed: %s", error_message)
+        return
+
+    state_map = context.application.bot_data.setdefault(NODE_MONITOR_STATE_KEY, {})
+    if not isinstance(state_map, dict):
+        state_map = {}
+    now = int(time.time())
+    monitored_codes = set()
+
+    for node in nodes:
+        node_code = str(node.get("node_code", "")).strip()
+        if not node_code:
+            continue
+        if int(node.get("monitor_enabled", 0) or 0) != 1:
+            continue
+        monitored_codes.add(node_code)
+        try:
+            last_seen_at = int(node.get("last_seen_at", 0) or 0)
+        except (TypeError, ValueError):
+            last_seen_at = 0
+
+        is_online = (
+            last_seen_at > 0
+            and (now - last_seen_at) <= NODE_OFFLINE_THRESHOLD_SECONDS
+        )
+        previous = state_map.get(node_code)
+        state_map[node_code] = is_online
+
+        if previous is None:
+            if not is_online:
+                await send_node_monitor_alert(context, node, False, last_seen_at)
+            continue
+        if previous != is_online:
+            await send_node_monitor_alert(context, node, is_online, last_seen_at)
+
+    for node_code in list(state_map.keys()):
+        if node_code not in monitored_codes:
+            state_map.pop(node_code, None)
+
+    context.application.bot_data[NODE_MONITOR_STATE_KEY] = state_map
 
 
 def build_main_menu() -> InlineKeyboardMarkup:
@@ -279,10 +416,14 @@ def build_nodes_list_keyboard(nodes: list) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
-def build_node_detail_keyboard(node_code: str) -> InlineKeyboardMarkup:
+def build_node_detail_keyboard(
+    node_code: str, monitor_enabled: int = 0
+) -> InlineKeyboardMarkup:
+    monitor_text = "关闭节点监控" if int(monitor_enabled or 0) == 1 else "开启节点监控"
     return InlineKeyboardMarkup(
         [
             [InlineKeyboardButton("启用/禁用", callback_data=f"node:toggle:{node_code}")],
+            [InlineKeyboardButton(monitor_text, callback_data=f"node:monitor_toggle:{node_code}")],
             [InlineKeyboardButton("修改入口（影响两种协议）", callback_data=f"node:edit_host:{node_code}")],
             [InlineKeyboardButton("修改REALITY伪装域名（R）", callback_data=f"node:edit_sni:{node_code}")],
             [InlineKeyboardButton("修改TUIC证书域名（T）", callback_data=f"node:edit_tuic_sni:{node_code}")],
@@ -649,6 +790,16 @@ def format_node_detail_text(node: dict) -> str:
     reality_server_name = node.get("reality_server_name") or "未设置"
     tuic_server_name = node.get("tuic_server_name") or "未设置"
     enabled_text = "启用" if int(node.get("enabled", 0)) == 1 else "禁用"
+    monitor_text = "开启" if int(node.get("monitor_enabled", 0) or 0) == 1 else "关闭"
+    try:
+        last_seen_at = int(node.get("last_seen_at", 0) or 0)
+    except (TypeError, ValueError):
+        last_seen_at = 0
+    now = int(time.time())
+    is_online = (
+        last_seen_at > 0 and (now - last_seen_at) <= NODE_OFFLINE_THRESHOLD_SECONDS
+    )
+    online_text = "在线" if is_online else "离线"
     tags = format_node_tags(node)
     return (
         f"节点：{node.get('node_code', '')}\n"
@@ -660,7 +811,9 @@ def format_node_detail_text(node: dict) -> str:
         "【TUIC】\n"
         f"TUIC证书域名（T）：{tuic_server_name}\n"
         f"端口池：{node.get('tuic_port_start', '')}-{node.get('tuic_port_end', '')}\n"
-        f"状态：{enabled_text}"
+        f"状态：{enabled_text}\n"
+        f"监控：{monitor_text}\n"
+        f"在线状态：{online_text}（最后心跳：{format_last_seen_text(last_seen_at)}）"
     )
 
 
@@ -805,7 +958,9 @@ async def render_node_detail(
         detail_text = f"{notice}\n\n{detail_text}"
     await query.edit_message_text(
         detail_text,
-        reply_markup=build_node_detail_keyboard(node_code),
+        reply_markup=build_node_detail_keyboard(
+            node_code, int(node.get("monitor_enabled", 0) or 0)
+        ),
     )
 
 
@@ -839,7 +994,9 @@ async def send_node_detail_message(
         message,
         context,
         detail_text,
-        reply_markup=build_node_detail_keyboard(node_code),
+        reply_markup=build_node_detail_keyboard(
+            node_code, int(node.get("monitor_enabled", 0) or 0)
+        ),
     )
 
 
@@ -1199,15 +1356,17 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    remember_known_chat(update, context)
     await show_main_menu(update, context)
 
 
 async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    remember_known_chat(update, context)
     await show_main_menu(update, context)
 
 
 async def whoami(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    del context
+    remember_known_chat(update, context)
     if not update.message or not update.effective_chat:
         return
     chat_id = update.effective_chat.id
@@ -2528,6 +2687,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     query = update.callback_query
     if not query:
         return
+    remember_known_chat(update, context)
 
     callback_data = query.data or ""
     user = query.from_user.username or query.from_user.id
@@ -2733,6 +2893,45 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await render_node_detail(query, node_code, notice=f"切换状态失败：{patch_error}")
             return
         await render_node_detail(query, node_code, notice="状态已更新")
+        return
+
+    if callback_data.startswith("node:monitor_toggle:"):
+        node_code = callback_data.split(":", maxsplit=2)[2]
+        node, error_message, status_code = await controller_request(
+            "GET", f"/nodes/{node_code}"
+        )
+        if error_message:
+            if status_code == 404:
+                await render_nodes_list(query, notice=f"节点不存在：{node_code}")
+            else:
+                await query.edit_message_text(
+                    f"切换监控失败：{error_message}",
+                    reply_markup=build_submenu("nodes"),
+                )
+            return
+
+        current_monitor = int(node.get("monitor_enabled", 0) or 0)
+        next_monitor = 0 if current_monitor == 1 else 1
+        _, patch_error, _ = await controller_request(
+            "PATCH",
+            f"/nodes/{node_code}",
+            payload={"monitor_enabled": next_monitor},
+        )
+        if patch_error:
+            await render_node_detail(query, node_code, notice=f"切换监控失败：{patch_error}")
+            return
+
+        state_map = context.application.bot_data.get(NODE_MONITOR_STATE_KEY, {})
+        if isinstance(state_map, dict) and next_monitor == 0:
+            state_map.pop(node_code, None)
+        if isinstance(state_map, dict):
+            context.application.bot_data[NODE_MONITOR_STATE_KEY] = state_map
+        notice = (
+            f"已开启节点监控（每 {NODE_MONITOR_INTERVAL_SECONDS} 秒检测）"
+            if next_monitor == 1
+            else "已关闭节点监控"
+        )
+        await render_node_detail(query, node_code, notice=notice)
         return
 
     if callback_data.startswith("node:delete_confirm:"):
@@ -3116,6 +3315,13 @@ def main() -> None:
     application.add_handler(node_reality_conversation)
     application.add_handler(CallbackQueryHandler(handle_callback))
     application.add_handler(CallbackQueryHandler(refresh_callback_menu_ttl), group=1)
+    if application.job_queue:
+        application.job_queue.run_repeating(
+            run_node_monitor_job,
+            interval=NODE_MONITOR_INTERVAL_SECONDS,
+            first=NODE_MONITOR_INTERVAL_SECONDS,
+            name="node_monitor_job",
+        )
     application.run_polling()
 
 

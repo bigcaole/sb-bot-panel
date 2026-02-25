@@ -51,6 +51,7 @@ class CreateNodeRequest(BaseModel):
     enabled: int = 1
     supports_reality: Optional[int] = None
     supports_tuic: Optional[int] = None
+    monitor_enabled: Optional[int] = None
     note: str = ""
 
 
@@ -76,6 +77,7 @@ class UpdateNodeRequest(BaseModel):
     enabled: Optional[int] = None
     supports_reality: Optional[int] = None
     supports_tuic: Optional[int] = None
+    monitor_enabled: Optional[int] = None
     note: Optional[str] = None
 
 
@@ -118,6 +120,8 @@ def init_db() -> None:
                 reality_server_name TEXT,
                 tuic_server_name TEXT,
                 tuic_listen_port INTEGER,
+                monitor_enabled INTEGER,
+                last_seen_at INTEGER,
                 reality_private_key TEXT,
                 reality_public_key TEXT,
                 reality_short_id TEXT,
@@ -138,6 +142,10 @@ def init_db() -> None:
             conn.execute("ALTER TABLE nodes ADD COLUMN tuic_server_name TEXT")
         if "tuic_listen_port" not in node_column_names:
             conn.execute("ALTER TABLE nodes ADD COLUMN tuic_listen_port INTEGER")
+        if "monitor_enabled" not in node_column_names:
+            conn.execute("ALTER TABLE nodes ADD COLUMN monitor_enabled INTEGER")
+        if "last_seen_at" not in node_column_names:
+            conn.execute("ALTER TABLE nodes ADD COLUMN last_seen_at INTEGER")
         if "reality_private_key" not in node_column_names:
             conn.execute("ALTER TABLE nodes ADD COLUMN reality_private_key TEXT")
         if "reality_public_key" not in node_column_names:
@@ -150,6 +158,7 @@ def init_db() -> None:
             conn.execute("ALTER TABLE nodes ADD COLUMN supports_tuic INTEGER")
         conn.execute("UPDATE nodes SET supports_reality = 1 WHERE supports_reality IS NULL")
         conn.execute("UPDATE nodes SET supports_tuic = 1 WHERE supports_tuic IS NULL")
+        conn.execute("UPDATE nodes SET monitor_enabled = 0 WHERE monitor_enabled IS NULL")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS user_nodes(
@@ -368,6 +377,9 @@ def create_node(payload: CreateNodeRequest) -> Dict[str, Union[int, str, None]]:
         raise HTTPException(status_code=400, detail="supports_reality must be 0 or 1")
     if supports_tuic not in (0, 1):
         raise HTTPException(status_code=400, detail="supports_tuic must be 0 or 1")
+    monitor_enabled = 0 if payload.monitor_enabled is None else payload.monitor_enabled
+    if monitor_enabled not in (0, 1):
+        raise HTTPException(status_code=400, detail="monitor_enabled must be 0 or 1")
 
     with get_connection() as conn:
         try:
@@ -380,6 +392,7 @@ def create_node(payload: CreateNodeRequest) -> Dict[str, Union[int, str, None]]:
                     reality_server_name,
                     tuic_server_name,
                     tuic_listen_port,
+                    monitor_enabled,
                     tuic_port_start,
                     tuic_port_end,
                     enabled,
@@ -395,6 +408,7 @@ def create_node(payload: CreateNodeRequest) -> Dict[str, Union[int, str, None]]:
                     payload.reality_server_name,
                     payload.tuic_server_name,
                     payload.tuic_listen_port,
+                    monitor_enabled,
                     payload.tuic_port_start,
                     payload.tuic_port_end,
                     payload.enabled,
@@ -414,6 +428,7 @@ def create_node(payload: CreateNodeRequest) -> Dict[str, Union[int, str, None]]:
         "reality_server_name": payload.reality_server_name,
         "tuic_server_name": payload.tuic_server_name,
         "tuic_listen_port": payload.tuic_listen_port,
+        "monitor_enabled": monitor_enabled,
         "tuic_port_start": payload.tuic_port_start,
         "tuic_port_end": payload.tuic_port_end,
         "enabled": payload.enabled,
@@ -435,6 +450,8 @@ def list_nodes() -> List[Dict[str, Union[int, str, None]]]:
                 reality_server_name,
                 tuic_server_name,
                 tuic_listen_port,
+                monitor_enabled,
+                last_seen_at,
                 reality_private_key,
                 reality_public_key,
                 reality_short_id,
@@ -463,6 +480,8 @@ def get_node(node_code: str) -> Dict[str, Union[int, str, None]]:
                 reality_server_name,
                 tuic_server_name,
                 tuic_listen_port,
+                monitor_enabled,
+                last_seen_at,
                 reality_private_key,
                 reality_public_key,
                 reality_short_id,
@@ -514,6 +533,8 @@ def get_node_sync(node_code: str) -> Dict[str, Union[Dict, List, int]]:
                 reality_server_name,
                 tuic_server_name,
                 tuic_listen_port,
+                monitor_enabled,
+                last_seen_at,
                 supports_reality,
                 supports_tuic,
                 tuic_port_start,
@@ -527,6 +548,10 @@ def get_node_sync(node_code: str) -> Dict[str, Union[Dict, List, int]]:
         ).fetchone()
         if node_row is None:
             raise HTTPException(status_code=404, detail="Node not found")
+        conn.execute(
+            "UPDATE nodes SET last_seen_at = ? WHERE node_code = ?",
+            (generated_at, node_code),
+        )
 
         user_rows = conn.execute(
             """
@@ -548,8 +573,10 @@ def get_node_sync(node_code: str) -> Dict[str, Union[Dict, List, int]]:
             (node_code,),
         ).fetchall()
 
+    node_data = dict(node_row)
+    node_data["last_seen_at"] = generated_at
     return {
-        "node": dict(node_row),
+        "node": node_data,
         "users": [dict(row) for row in user_rows],
         "generated_at": generated_at,
     }
@@ -596,6 +623,10 @@ def update_node(
         raise HTTPException(status_code=400, detail="supports_reality must be 0 or 1")
     if "supports_tuic" in update_data and update_data["supports_tuic"] not in (0, 1):
         raise HTTPException(status_code=400, detail="supports_tuic must be 0 or 1")
+    if "monitor_enabled" in update_data and update_data["monitor_enabled"] is None:
+        raise HTTPException(status_code=400, detail="monitor_enabled must be 0 or 1")
+    if "monitor_enabled" in update_data and update_data["monitor_enabled"] not in (0, 1):
+        raise HTTPException(status_code=400, detail="monitor_enabled must be 0 or 1")
 
     with get_connection() as conn:
         existing = conn.execute(
@@ -607,6 +638,8 @@ def update_node(
                 reality_server_name,
                 tuic_server_name,
                 tuic_listen_port,
+                monitor_enabled,
+                last_seen_at,
                 reality_private_key,
                 reality_public_key,
                 reality_short_id,
@@ -636,6 +669,7 @@ def update_node(
                 "reality_server_name",
                 "tuic_server_name",
                 "tuic_listen_port",
+                "monitor_enabled",
                 "reality_private_key",
                 "reality_public_key",
                 "reality_short_id",
@@ -669,6 +703,8 @@ def update_node(
                 reality_server_name,
                 tuic_server_name,
                 tuic_listen_port,
+                monitor_enabled,
+                last_seen_at,
                 reality_private_key,
                 reality_public_key,
                 reality_short_id,

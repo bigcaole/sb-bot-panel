@@ -2,6 +2,8 @@
 
 本项目现在包含节点侧一键部署方案：`sing-box + sb-agent + UFW + systemd + ACME 证书检查`，并提供中文数字菜单，体验接近 x-ui/s-ui。
 
+详细手册（零基础可用）：`/Users/cwzs/Documents/sb-bot-panel/docs/零基础部署-测试-使用-排障手册.md`
+
 ## 目录新增
 
 - `agent/sb_agent.py`
@@ -231,6 +233,34 @@ scp root@旧IP:/var/backups/sb-migrate/sb-migrate-xxxx.tar.gz root@新IP:/root/
 - `BOT_TOKEN=xxxxxxxx`（必填）
 - `ADMIN_CHAT_IDS=123,456`（可空）
 - `MIGRATE_DIR=/var/backups/sb-migrate`
+- `BOT_MENU_TTL=60`（可选，bot 菜单按钮自动清理秒数）
+- `BOT_NODE_MONITOR_INTERVAL=60`（可选，节点在线检测周期秒数）
+- `BOT_NODE_OFFLINE_THRESHOLD=120`（可选，判定离线阈值秒数）
+
+## 节点在线监控（Bot）
+
+已支持节点在线状态监控：
+
+- 每个节点在“节点详情”页可单独开启/关闭监控。
+- 开启后 bot 周期检查（默认每 `60` 秒）。
+- 在线时不推送，掉线时推送一次，恢复后再推送一次。
+- 节点在线状态基于 agent 心跳（`/nodes/{node_code}/sync` 自动写入 `last_seen_at`）。
+
+建议配置：
+
+- 在管理服务器 `.env` 中设置：
+  - `ADMIN_CHAT_IDS=你的chat_id`
+  - `BOT_NODE_MONITOR_INTERVAL=60`
+  - `BOT_NODE_OFFLINE_THRESHOLD=120`
+- 重启 bot：`systemctl restart sb-bot`
+
+快速验证：
+
+1. 在 bot 中打开节点详情，点击“开启节点监控”
+2. 在节点服务器停止 agent：`systemctl stop sb-agent`
+3. 等待 1~2 分钟，收到“节点掉线”
+4. 启动 agent：`systemctl start sb-agent`
+5. 再等待 1 分钟，收到“节点恢复”
 
 ## 安全提示
 
