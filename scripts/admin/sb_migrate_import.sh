@@ -20,10 +20,40 @@ ADMIN_CHAT_IDS=""
 BOT_MENU_TTL="60"
 BOT_NODE_MONITOR_INTERVAL="60"
 BOT_NODE_OFFLINE_THRESHOLD="120"
+NON_INTERACTIVE="0"
+PACKAGE_PATH=""
 
 msg() { echo -e "\033[1;32m[信息]\033[0m $*"; }
 warn() { echo -e "\033[1;33m[警告]\033[0m $*"; }
 err() { echo -e "\033[1;31m[错误]\033[0m $*" >&2; }
+
+parse_args() {
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --non-interactive)
+        NON_INTERACTIVE="1"
+        shift
+        ;;
+      --package)
+        if [[ $# -lt 2 ]]; then
+          err "--package 需要提供路径参数。"
+          exit 1
+        fi
+        PACKAGE_PATH="$2"
+        shift 2
+        ;;
+      *)
+        if [[ -z "$PACKAGE_PATH" ]]; then
+          PACKAGE_PATH="$1"
+          shift
+        else
+          err "未知参数: $1"
+          exit 1
+        fi
+        ;;
+    esac
+  done
+}
 
 require_root() {
   if [[ "${EUID}" -ne 0 ]]; then
@@ -274,19 +304,26 @@ restart_caddy_with_diagnostics() {
 
 main() {
   require_root
+  parse_args "$@"
 
-  local pkg_path="${1:-}"
-  if [[ -z "$pkg_path" ]]; then
+  local pkg_path="${PACKAGE_PATH:-}"
+  if [[ -z "$pkg_path" && "$NON_INTERACTIVE" != "1" ]]; then
     read -r -p "请输入迁移包路径（.tar.gz）: " pkg_path
+  fi
+  if [[ -z "$pkg_path" ]]; then
+    err "迁移包路径不能为空。"
+    exit 1
   fi
   if [[ ! -f "$pkg_path" ]]; then
     err "迁移包不存在: $pkg_path"
     exit 1
   fi
 
-  local input_project
-  read -r -p "目标项目目录 [${PROJECT_DIR}]: " input_project
-  PROJECT_DIR="${input_project:-$PROJECT_DIR}"
+  if [[ "$NON_INTERACTIVE" != "1" ]]; then
+    local input_project
+    read -r -p "目标项目目录 [${PROJECT_DIR}]: " input_project
+    PROJECT_DIR="${input_project:-$PROJECT_DIR}"
+  fi
   ENV_FILE="${PROJECT_DIR}/.env"
   VENV_DIR="${PROJECT_DIR}/venv"
 
@@ -363,46 +400,53 @@ main() {
   default_controller_url="http://127.0.0.1:${CONTROLLER_PORT}"
   CONTROLLER_URL="$(get_env_value CONTROLLER_URL)"
   CONTROLLER_URL="${CONTROLLER_URL:-$default_controller_url}"
-  read -r -p "CONTROLLER_URL [${CONTROLLER_URL}]（支持省略 http/https）: " input_url
-  CONTROLLER_URL="${input_url:-$CONTROLLER_URL}"
-  local controller_host controller_scheme
-  controller_host="$(extract_url_host "$CONTROLLER_URL")"
-  controller_scheme="http"
-  if [[ "$ENABLE_HTTPS" == "1" && "$controller_host" != "127.0.0.1" && "$controller_host" != "localhost" ]]; then
-    controller_scheme="https"
-  fi
-  CONTROLLER_URL="$(normalize_input_url "$CONTROLLER_URL" "$controller_scheme")"
+  if [[ "$NON_INTERACTIVE" != "1" ]]; then
+    read -r -p "CONTROLLER_URL [${CONTROLLER_URL}]（支持省略 http/https）: " input_url
+    CONTROLLER_URL="${input_url:-$CONTROLLER_URL}"
+    local controller_host controller_scheme
+    controller_host="$(extract_url_host "$CONTROLLER_URL")"
+    controller_scheme="http"
+    if [[ "$ENABLE_HTTPS" == "1" && "$controller_host" != "127.0.0.1" && "$controller_host" != "localhost" ]]; then
+      controller_scheme="https"
+    fi
+    CONTROLLER_URL="$(normalize_input_url "$CONTROLLER_URL" "$controller_scheme")"
 
-  read -r -p "BOT_TOKEN [保持现值请回车]: " input_bot
-  BOT_TOKEN="${input_bot:-$BOT_TOKEN}"
-  while [[ -z "$BOT_TOKEN" ]]; do
-    warn "BOT_TOKEN 不能为空。"
-    read -r -p "请重新输入 BOT_TOKEN: " BOT_TOKEN
-  done
-
-  read -r -p "ADMIN_CHAT_IDS [${ADMIN_CHAT_IDS}]: " input_admin
-  ADMIN_CHAT_IDS="${input_admin:-$ADMIN_CHAT_IDS}"
-
-  read -r -p "ENABLE_HTTPS（1=启用 caddy 自动证书，0=关闭） [${ENABLE_HTTPS}]: " input_https_switch
-  ENABLE_HTTPS="${input_https_switch:-$ENABLE_HTTPS}"
-  if [[ "$ENABLE_HTTPS" != "1" && "$ENABLE_HTTPS" != "0" ]]; then
-    warn "ENABLE_HTTPS 无效，回退为 0"
-    ENABLE_HTTPS="0"
-  fi
-  if [[ "$ENABLE_HTTPS" == "1" ]]; then
-    read -r -p "HTTPS_DOMAIN（例如 panel.example.com） [${HTTPS_DOMAIN}]: " input_https_domain
-    HTTPS_DOMAIN="${input_https_domain:-$HTTPS_DOMAIN}"
-    HTTPS_DOMAIN="$(sanitize_domain_input "$HTTPS_DOMAIN")"
-    while [[ -z "$HTTPS_DOMAIN" ]] || ! is_valid_domain "$HTTPS_DOMAIN"; do
-      warn "HTTPS_DOMAIN 无效，请填写域名（例如 panel.example.com）。"
-      read -r -p "请重新输入 HTTPS_DOMAIN: " HTTPS_DOMAIN
-      HTTPS_DOMAIN="$(sanitize_domain_input "$HTTPS_DOMAIN")"
+    read -r -p "BOT_TOKEN [保持现值请回车]: " input_bot
+    BOT_TOKEN="${input_bot:-$BOT_TOKEN}"
+    while [[ -z "$BOT_TOKEN" ]]; do
+      warn "BOT_TOKEN 不能为空。"
+      read -r -p "请重新输入 BOT_TOKEN: " BOT_TOKEN
     done
-    read -r -p "HTTPS_ACME_EMAIL（可选） [${HTTPS_ACME_EMAIL}]: " input_https_email
-    HTTPS_ACME_EMAIL="${input_https_email:-$HTTPS_ACME_EMAIL}"
-  else
-    HTTPS_DOMAIN=""
-    HTTPS_ACME_EMAIL=""
+
+    read -r -p "ADMIN_CHAT_IDS [${ADMIN_CHAT_IDS}]: " input_admin
+    ADMIN_CHAT_IDS="${input_admin:-$ADMIN_CHAT_IDS}"
+
+    read -r -p "ENABLE_HTTPS（1=启用 caddy 自动证书，0=关闭） [${ENABLE_HTTPS}]: " input_https_switch
+    ENABLE_HTTPS="${input_https_switch:-$ENABLE_HTTPS}"
+    if [[ "$ENABLE_HTTPS" != "1" && "$ENABLE_HTTPS" != "0" ]]; then
+      warn "ENABLE_HTTPS 无效，回退为 0"
+      ENABLE_HTTPS="0"
+    fi
+    if [[ "$ENABLE_HTTPS" == "1" ]]; then
+      read -r -p "HTTPS_DOMAIN（例如 panel.example.com） [${HTTPS_DOMAIN}]: " input_https_domain
+      HTTPS_DOMAIN="${input_https_domain:-$HTTPS_DOMAIN}"
+      HTTPS_DOMAIN="$(sanitize_domain_input "$HTTPS_DOMAIN")"
+      while [[ -z "$HTTPS_DOMAIN" ]] || ! is_valid_domain "$HTTPS_DOMAIN"; do
+        warn "HTTPS_DOMAIN 无效，请填写域名（例如 panel.example.com）。"
+        read -r -p "请重新输入 HTTPS_DOMAIN: " HTTPS_DOMAIN
+        HTTPS_DOMAIN="$(sanitize_domain_input "$HTTPS_DOMAIN")"
+      done
+      read -r -p "HTTPS_ACME_EMAIL（可选） [${HTTPS_ACME_EMAIL}]: " input_https_email
+      HTTPS_ACME_EMAIL="${input_https_email:-$HTTPS_ACME_EMAIL}"
+    else
+      HTTPS_DOMAIN=""
+      HTTPS_ACME_EMAIL=""
+    fi
+  fi
+
+  if [[ -z "$BOT_TOKEN" ]]; then
+    err "BOT_TOKEN 为空，无法继续导入。请先修正 .env 后重试。"
+    exit 1
   fi
 
   if [[ -n "$CONTROLLER_PUBLIC_URL" ]]; then

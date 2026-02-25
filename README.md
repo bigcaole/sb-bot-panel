@@ -8,6 +8,7 @@
 
 - `agent/sb_agent.py`
   - 节点侧 agent（Python 3.9），轮询 controller `/nodes/{node_code}/sync`，生成并热更新 `sing-box` 配置。
+  - 当 UFW 已启用时，agent 会自动放行 TUIC 相关 UDP 端口（含监听端口与端口池范围）。
 - `scripts/install.sh`
   - Debian 12 中文交互式安装/更新脚本（含域名解析检查、防火墙、服务部署、证书检查 timer）。
 - `scripts/menu.sh`
@@ -209,6 +210,18 @@ sudo bash scripts/admin/install_admin.sh --configure-only
 
 ```bash
 sudo bash scripts/admin/menu_admin.sh
+
+## Bot 远程管理（管理服务器）
+
+在 Telegram 的 `管理服务器` 菜单中已支持：
+
+- 安装/更新（后台执行 `install_admin.sh --reuse-config`）
+- 配置向导（远程修改 `.env` 后后台重载）
+- 启动/停止 controller
+- 状态查看（controller/bot/caddy）
+- 查看日志（controller/bot/caddy）
+- HTTPS 证书状态 / 刷新
+- 迁移导出 / 迁移导入（导入走非交互模式）
 ```
 
 安装后可直接用快捷命令打开菜单：

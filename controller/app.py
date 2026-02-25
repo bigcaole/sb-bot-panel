@@ -65,6 +65,10 @@ class SetUserSpeedRequest(BaseModel):
     speed_mbps: int = Field(ge=1, le=10000)
 
 
+class SetUserStatusRequest(BaseModel):
+    status: str = Field(min_length=1)
+
+
 class UpdateNodeRequest(BaseModel):
     region: Optional[str] = None
     host: Optional[str] = None
@@ -464,6 +468,54 @@ def set_user_speed(
         conn.commit()
 
     return {"ok": True, "user_code": user_code, "speed_mbps": payload.speed_mbps}
+
+
+@app.post("/users/{user_code}/set_status")
+def set_user_status(
+    user_code: str, payload: SetUserStatusRequest
+) -> Dict[str, Union[bool, str]]:
+    status_value = str(payload.status or "").strip().lower()
+    if status_value not in ("active", "disabled"):
+        raise HTTPException(status_code=400, detail="status must be active or disabled")
+
+    with get_connection() as conn:
+        user_row = conn.execute(
+            "SELECT user_code FROM users WHERE user_code = ?",
+            (user_code,),
+        ).fetchone()
+        if user_row is None:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        conn.execute(
+            "UPDATE users SET status = ? WHERE user_code = ?",
+            (status_value, user_code),
+        )
+        conn.commit()
+
+    return {"ok": True, "user_code": user_code, "status": status_value}
+
+
+@app.delete("/users/{user_code}")
+def delete_user(user_code: str) -> Dict[str, Union[bool, str]]:
+    with get_connection() as conn:
+        user_row = conn.execute(
+            "SELECT user_code FROM users WHERE user_code = ?",
+            (user_code,),
+        ).fetchone()
+        if user_row is None:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        binding_row = conn.execute(
+            "SELECT 1 FROM user_nodes WHERE user_code = ? LIMIT 1",
+            (user_code,),
+        ).fetchone()
+        if binding_row is not None:
+            raise HTTPException(status_code=400, detail="该用户仍有节点绑定，请先解绑后再删除")
+
+        conn.execute("DELETE FROM users WHERE user_code = ?", (user_code,))
+        conn.commit()
+
+    return {"ok": True, "user_code": user_code}
 
 
 @app.post("/nodes/create")

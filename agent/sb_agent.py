@@ -21,6 +21,7 @@ AGENT_LOG_DIR = "/var/log/sb-agent"
 AGENT_LOG_PATH = "/var/log/sb-agent/agent.log"
 SING_BOX_CERTMAGIC_DIR = "/var/lib/sing-box/certmagic"
 TUIC_TC_STATE_PATH = "/etc/sb-agent/tuic_tc_state.json"
+TUIC_UFW_STATE_PATH = "/etc/sb-agent/tuic_ufw_state.json"
 
 DEFAULT_POLL_INTERVAL = 15
 
@@ -674,6 +675,71 @@ def save_tuic_tc_state(state: Dict[str, Any]) -> None:
     _write_json(TUIC_TC_STATE_PATH, state, mode=0o600)
 
 
+def load_tuic_ufw_state() -> Dict[str, Any]:
+    state = _read_json(TUIC_UFW_STATE_PATH, {})
+    if isinstance(state, dict):
+        return state
+    return {}
+
+
+def save_tuic_ufw_state(state: Dict[str, Any]) -> None:
+    _write_json(TUIC_UFW_STATE_PATH, state, mode=0o600)
+
+
+def build_tuic_ufw_ports(
+    config: AgentConfig, node: Dict[str, Any], tuic_records: List[Dict[str, Any]]
+) -> List[int]:
+    ports = set()
+    fallback_port = int(config.tuic_listen_port)
+    if 1 <= fallback_port <= 65535:
+        ports.add(fallback_port)
+
+    start = parse_int(node.get("tuic_port_start"), 0)
+    end = parse_int(node.get("tuic_port_end"), 0)
+    if 1 <= start <= 65535 and 1 <= end <= 65535 and start <= end:
+        # 控制端口池通常规模不大，放行整段可避免新分配端口未及时放行导致连接失败。
+        if end - start <= 2048:
+            for port in range(start, end + 1):
+                ports.add(port)
+
+    for record in tuic_records:
+        port = parse_int(record.get("tuic_port"), 0)
+        if 1 <= port <= 65535:
+            ports.add(port)
+    return sorted(list(ports))
+
+
+def apply_tuic_ufw_rules(ports: List[int]) -> None:
+    if not command_exists("ufw"):
+        LOGGER.warning("未检测到 ufw 命令，跳过 TUIC 防火墙规则同步")
+        return
+
+    desired_ports = sorted(list(set(port for port in ports if 1 <= int(port) <= 65535)))
+    desired_state = {"ports": desired_ports}
+    current_state = load_tuic_ufw_state()
+    if canonical_json(current_state) == canonical_json(desired_state):
+        return
+
+    code, stdout, _ = run_command(["ufw", "status"])
+    if code != 0:
+        LOGGER.warning("获取 ufw 状态失败，跳过 TUIC 防火墙规则同步")
+        return
+    if "Status: inactive" in stdout:
+        LOGGER.warning("UFW 未启用，跳过 TUIC 防火墙规则同步")
+        return
+
+    changed_count = 0
+    for port in desired_ports:
+        code, _, stderr = run_command(["ufw", "allow", "{0}/udp".format(port)])
+        if code == 0:
+            changed_count += 1
+            continue
+        LOGGER.warning("UFW 放行失败: port=%s/udp stderr=%s", port, stderr.strip())
+
+    save_tuic_ufw_state(desired_state)
+    LOGGER.info("TUIC 防火墙规则已同步（目标端口数=%s，执行放行命令=%s）", len(desired_ports), changed_count)
+
+
 def tc_run(command: List[str], ignore_error: bool = False) -> bool:
     code, _, stderr = run_command(command)
     if code != 0 and not ignore_error:
@@ -805,12 +871,15 @@ def handle_once(config: AgentConfig) -> None:
     maybe_report_reality(config, node, state)
 
     rendered, tuic_speed_rules = build_sing_box_config(config, node, users, state)
+    tuic_records = build_tuic_user_records(users)
     changed = write_sing_box_config_if_changed(rendered)
     if changed:
         LOGGER.info("检测到配置变更，开始检查并重载 sing-box")
         check_and_reload_sing_box()
     else:
         LOGGER.info("配置无变化")
+    if config.tuic_domain and config.acme_email:
+        apply_tuic_ufw_rules(build_tuic_ufw_ports(config, node, tuic_records))
     apply_tuic_speed_limits(tuic_speed_rules)
 
 

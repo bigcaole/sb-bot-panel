@@ -3,6 +3,9 @@ import logging
 import re
 import time
 import ipaddress
+import asyncio
+import shlex
+import subprocess
 from datetime import datetime
 from urllib.parse import urlparse
 
@@ -102,6 +105,13 @@ USER_NODES_INPUT = 300
 USER_SPEED_PENDING_KEY = "user_speed_pending"
 USER_SPEED_ACTIVE_KEY = "user_speed_active"
 USER_SPEED_INPUT, USER_SPEED_CONFIRM = 400, 401
+MAINTAIN_CONFIG_INPUT = 700
+MAINTAIN_IMPORT_INPUT = 701
+
+ADMIN_PROJECT_DIR = os.getenv("SB_PANEL_DIR", "/root/sb-bot-panel").strip() or "/root/sb-bot-panel"
+ADMIN_ENV_FILE = os.path.join(ADMIN_PROJECT_DIR, ".env")
+ADMIN_UPDATE_SCRIPT = os.path.join(ADMIN_PROJECT_DIR, "scripts/admin/install_admin.sh")
+ADMIN_IMPORT_SCRIPT = os.path.join(ADMIN_PROJECT_DIR, "scripts/admin/sb_migrate_import.sh")
 
 
 SUBMENUS = {
@@ -153,9 +163,17 @@ SUBMENUS = {
     "maintain": {
         "title": "管理服务器",
         "buttons": [
-            ("服务状态", "action:maintain_status"),
+            ("安装/更新", "action:maintain_update"),
+            ("配置向导", "action:maintain_config"),
+            ("启动controller", "action:maintain_controller_start"),
+            ("停止controller", "action:maintain_controller_stop"),
+            ("状态查看", "action:maintain_status"),
+            ("查看日志", "action:maintain_logs"),
+            ("HTTPS证书状态", "action:maintain_https_status"),
+            ("HTTPS证书刷新", "action:maintain_https_reload"),
             ("立即备份", "action:maintain_backup"),
             ("生成迁移包", "action:maintain_migrate_export"),
+            ("迁移导入", "action:maintain_migrate_import"),
             ("访问安全", "action:maintain_acl_status"),
             ("返回", "menu:main"),
         ],
@@ -186,6 +204,145 @@ def parse_chat_id_list(raw_value: str) -> list:
 
 
 ADMIN_CHAT_ID_LIST = parse_chat_id_list(os.getenv("ADMIN_CHAT_IDS", ""))
+MAINTAIN_ALLOWED_ENV_KEYS = [
+    "CONTROLLER_PORT",
+    "CONTROLLER_URL",
+    "CONTROLLER_PUBLIC_URL",
+    "PANEL_BASE_URL",
+    "AUTH_TOKEN",
+    "BOT_TOKEN",
+    "ADMIN_CHAT_IDS",
+    "ENABLE_HTTPS",
+    "HTTPS_DOMAIN",
+    "HTTPS_ACME_EMAIL",
+    "MIGRATE_DIR",
+    "BOT_MENU_TTL",
+    "BOT_NODE_MONITOR_INTERVAL",
+    "BOT_NODE_OFFLINE_THRESHOLD",
+]
+
+
+def truncate_output(text: str, limit: int = 3200) -> str:
+    raw = str(text or "").strip()
+    if not raw:
+        return "(空)"
+    if len(raw) <= limit:
+        return raw
+    return raw[:limit] + "\n...（输出已截断）"
+
+
+async def run_local_shell(command: str, timeout: int = 30) -> tuple:
+    proc = await asyncio.create_subprocess_shell(
+        command,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout_bytes, stderr_bytes = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.communicate()
+        return -1, "", "命令执行超时"
+    stdout = (stdout_bytes or b"").decode("utf-8", errors="replace")
+    stderr = (stderr_bytes or b"").decode("utf-8", errors="replace")
+    return int(proc.returncode or 0), stdout, stderr
+
+
+def launch_background_job(shell_command: str, job_tag: str) -> str:
+    timestamp = int(time.time())
+    safe_tag = re.sub(r"[^a-zA-Z0-9_-]+", "-", job_tag).strip("-") or "job"
+    log_path = "/tmp/sb-bot-{0}-{1}.log".format(safe_tag, timestamp)
+    full_command = "{0} > {1} 2>&1".format(shell_command, shlex.quote(log_path))
+    try:
+        process = subprocess.Popen(  # nosec B603
+            ["bash", "-lc", full_command],
+            start_new_session=True,
+        )
+        logger.info("background_job tag=%s pid=%s cmd=%s", safe_tag, process.pid, shell_command)
+    except Exception as exc:
+        logger.error("launch background job failed: %s", exc)
+    return log_path
+
+
+def load_env_map(env_path: str = ADMIN_ENV_FILE) -> dict:
+    result = {}
+    if not os.path.exists(env_path):
+        return result
+    try:
+        with open(env_path, "r", encoding="utf-8") as file_obj:
+            for raw_line in file_obj:
+                line = raw_line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                result[key.strip()] = value.strip()
+    except OSError:
+        return {}
+    return result
+
+
+def write_env_updates(updates: dict, env_path: str = ADMIN_ENV_FILE) -> tuple:
+    if not updates:
+        return False, "没有可更新项"
+
+    lines = []
+    existing_keys = set()
+    if os.path.exists(env_path):
+        try:
+            with open(env_path, "r", encoding="utf-8") as file_obj:
+                lines = file_obj.readlines()
+        except OSError as exc:
+            return False, "读取 .env 失败: {0}".format(exc)
+
+    output_lines = []
+    for raw_line in lines:
+        stripped = raw_line.strip()
+        if stripped.startswith("#") or "=" not in stripped:
+            output_lines.append(raw_line)
+            continue
+        key = stripped.split("=", 1)[0].strip()
+        if key in updates:
+            output_lines.append("{0}={1}\n".format(key, updates[key]))
+            existing_keys.add(key)
+        else:
+            output_lines.append(raw_line)
+
+    for key, value in updates.items():
+        if key not in existing_keys:
+            output_lines.append("{0}={1}\n".format(key, value))
+
+    try:
+        os.makedirs(os.path.dirname(env_path), exist_ok=True)
+        with open(env_path, "w", encoding="utf-8") as file_obj:
+            file_obj.writelines(output_lines)
+    except OSError as exc:
+        return False, "写入 .env 失败: {0}".format(exc)
+    return True, ""
+
+
+def normalize_simple_url(raw_value: str, default_scheme: str = "http") -> str:
+    value = str(raw_value or "").strip()
+    if not value:
+        return ""
+    if value.startswith("http://") or value.startswith("https://"):
+        return value.rstrip("/")
+    scheme = "https" if default_scheme == "https" else "http"
+    return "{0}://{1}".format(scheme, value.rstrip("/"))
+
+
+def build_maintain_logs_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("controller日志", callback_data="maintain:logs:controller"),
+                InlineKeyboardButton("bot日志", callback_data="maintain:logs:bot"),
+            ],
+            [
+                InlineKeyboardButton("caddy日志", callback_data="maintain:logs:caddy"),
+            ],
+            [InlineKeyboardButton("返回", callback_data="menu:maintain")],
+        ]
+    )
 
 
 def is_admin_chat(update: Update) -> bool:
@@ -603,6 +760,56 @@ def build_user_speed_confirm_keyboard(user_code: str) -> InlineKeyboardMarkup:
     )
 
 
+def build_user_delete_picker_keyboard(users: list) -> InlineKeyboardMarkup:
+    rows = []
+    for user in users:
+        user_code = str(user.get("user_code", ""))
+        display_name = str(user.get("display_name") or "").strip()
+        button_text = f"{display_name}（{user_code}）" if display_name else user_code
+        rows.append([InlineKeyboardButton(button_text, callback_data=f"userdelete:pick:{user_code}")])
+    rows.append([InlineKeyboardButton("返回", callback_data="menu:user")])
+    return InlineKeyboardMarkup(rows)
+
+
+def build_user_delete_confirm_keyboard(user_code: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("确认删除", callback_data=f"userdelete:apply:{user_code}"),
+                InlineKeyboardButton("取消", callback_data="menu:user"),
+            ]
+        ]
+    )
+
+
+def build_user_toggle_picker_keyboard(users: list) -> InlineKeyboardMarkup:
+    rows = []
+    for user in users:
+        user_code = str(user.get("user_code", ""))
+        display_name = str(user.get("display_name") or "").strip()
+        status_text = str(user.get("status", "") or "-")
+        button_text = (
+            f"{display_name}（{user_code}）| {status_text}" if display_name else f"{user_code} | {status_text}"
+        )
+        rows.append([InlineKeyboardButton(button_text, callback_data=f"usertoggle:pick:{user_code}")])
+    rows.append([InlineKeyboardButton("返回", callback_data="menu:user")])
+    return InlineKeyboardMarkup(rows)
+
+
+def build_user_toggle_confirm_keyboard(user_code: str, target_status: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "确认修改",
+                    callback_data=f"usertoggle:apply:{user_code}:{target_status}",
+                ),
+                InlineKeyboardButton("取消", callback_data="menu:user"),
+            ]
+        ]
+    )
+
+
 def build_user_nodes_assign_list_keyboard(
     user_code: str, nodes: list
 ) -> InlineKeyboardMarkup:
@@ -776,6 +983,8 @@ def localize_controller_error(error_message: str) -> str:
         "User already assigned to this node": "该用户已绑定该节点",
         "No available TUIC port in node pool": "该节点端口池已满，暂无可用TUIC端口",
         "User-node binding not found": "该用户未绑定该节点",
+        "该用户仍有节点绑定，请先解绑后再删除": "该用户仍有节点绑定，请先解绑后再删除",
+        "status must be active or disabled": "状态值无效，仅支持 active/disabled",
         "agent_ip must be a valid IPv4/IPv6 address": "节点来源IP格式无效，请填写正确的IP地址",
     }
     return mapping.get(error_message, error_message)
@@ -1257,6 +1466,50 @@ async def render_user_speed_picker(query) -> None:
     )
 
 
+async def render_user_delete_picker(query) -> None:
+    users, error_message, _ = await controller_request("GET", "/users")
+    if error_message:
+        await query.edit_message_text(
+            f"获取用户列表失败：{localize_controller_error(error_message)}",
+            reply_markup=build_submenu("user"),
+        )
+        return
+
+    if not users:
+        await query.edit_message_text(
+            "暂无用户，请先创建用户",
+            reply_markup=build_back_keyboard("menu:user"),
+        )
+        return
+
+    await query.edit_message_text(
+        "请选择要删除的用户：",
+        reply_markup=build_user_delete_picker_keyboard(users),
+    )
+
+
+async def render_user_toggle_picker(query) -> None:
+    users, error_message, _ = await controller_request("GET", "/users")
+    if error_message:
+        await query.edit_message_text(
+            f"获取用户列表失败：{localize_controller_error(error_message)}",
+            reply_markup=build_submenu("user"),
+        )
+        return
+
+    if not users:
+        await query.edit_message_text(
+            "暂无用户，请先创建用户",
+            reply_markup=build_back_keyboard("menu:user"),
+        )
+        return
+
+    await query.edit_message_text(
+        "请选择要禁用/启用的用户：",
+        reply_markup=build_user_toggle_picker_keyboard(users),
+    )
+
+
 async def render_query_user_picker(query) -> None:
     users, error_message, _ = await controller_request("GET", "/users")
     if error_message:
@@ -1431,6 +1684,196 @@ async def run_admin_node_access_status_action(query, back_menu_callback: str) ->
         "\n".join(lines),
         reply_markup=build_back_keyboard(back_menu_callback),
     )
+
+
+def mask_sensitive_env_value(key: str, value: str) -> str:
+    if key == "BOT_TOKEN":
+        if not value:
+            return "(未设置)"
+        if len(value) <= 10:
+            return "***"
+        return value[:6] + "***" + value[-4:]
+    if key == "AUTH_TOKEN":
+        if not value:
+            return "(空=关闭鉴权)"
+        if len(value) <= 8:
+            return "***"
+        return value[:4] + "***" + value[-2:]
+    return value or "(空)"
+
+
+async def start_maintain_config_wizard(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    query = update.callback_query
+    if not query:
+        return ConversationHandler.END
+    if not await ensure_admin_callback(update):
+        return ConversationHandler.END
+    await query.answer()
+
+    env_map = load_env_map()
+    lines = ["远程配置向导", "", "当前关键配置："]
+    show_keys = [
+        "CONTROLLER_PORT",
+        "CONTROLLER_URL",
+        "CONTROLLER_PUBLIC_URL",
+        "PANEL_BASE_URL",
+        "AUTH_TOKEN",
+        "BOT_TOKEN",
+        "ADMIN_CHAT_IDS",
+        "ENABLE_HTTPS",
+        "HTTPS_DOMAIN",
+        "MIGRATE_DIR",
+    ]
+    for key in show_keys:
+        lines.append("{0}={1}".format(key, mask_sensitive_env_value(key, env_map.get(key, ""))))
+    lines.append("")
+    lines.append("请输入要修改的项（每行一个）：")
+    lines.append("KEY=VALUE")
+    lines.append("示例：")
+    lines.append("CONTROLLER_PORT=8080")
+    lines.append("PANEL_BASE_URL=panel.example.com")
+    lines.append("ENABLE_HTTPS=1")
+    lines.append("")
+    lines.append("发送 /cancel 取消。")
+
+    await query.edit_message_text("\n".join(lines))
+    return MAINTAIN_CONFIG_INPUT
+
+
+async def maintain_config_input(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    if not update.message or not update.message.text:
+        return MAINTAIN_CONFIG_INPUT
+
+    raw_text = update.message.text.strip()
+    if not raw_text:
+        await update.message.reply_text("输入为空，请按 KEY=VALUE 格式重新发送。")
+        return MAINTAIN_CONFIG_INPUT
+
+    updates = {}
+    for line in raw_text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if "=" not in stripped:
+            await update.message.reply_text("格式错误：{0}\n请按 KEY=VALUE 输入。".format(stripped))
+            return MAINTAIN_CONFIG_INPUT
+        key, value = stripped.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if key not in MAINTAIN_ALLOWED_ENV_KEYS:
+            await update.message.reply_text("不允许修改的键：{0}".format(key))
+            return MAINTAIN_CONFIG_INPUT
+        updates[key] = value
+
+    if not updates:
+        await update.message.reply_text("未检测到有效修改项，请重新输入。")
+        return MAINTAIN_CONFIG_INPUT
+
+    if "CONTROLLER_PORT" in updates:
+        port_value = updates["CONTROLLER_PORT"]
+        if not port_value.isdigit() or int(port_value) < 1 or int(port_value) > 65535:
+            await update.message.reply_text("CONTROLLER_PORT 必须是 1-65535 的整数。")
+            return MAINTAIN_CONFIG_INPUT
+    for key in ("BOT_MENU_TTL", "BOT_NODE_MONITOR_INTERVAL", "BOT_NODE_OFFLINE_THRESHOLD"):
+        if key in updates:
+            if not updates[key].isdigit():
+                await update.message.reply_text("{0} 必须为整数。".format(key))
+                return MAINTAIN_CONFIG_INPUT
+    if "ENABLE_HTTPS" in updates and updates["ENABLE_HTTPS"] not in ("0", "1"):
+        await update.message.reply_text("ENABLE_HTTPS 仅支持 0 或 1。")
+        return MAINTAIN_CONFIG_INPUT
+
+    if "CONTROLLER_URL" in updates:
+        updates["CONTROLLER_URL"] = normalize_simple_url(updates["CONTROLLER_URL"], "http")
+    if "CONTROLLER_PUBLIC_URL" in updates:
+        default_scheme = "https" if str(updates.get("ENABLE_HTTPS", "")).strip() == "1" else "http"
+        updates["CONTROLLER_PUBLIC_URL"] = normalize_simple_url(updates["CONTROLLER_PUBLIC_URL"], default_scheme)
+    if "PANEL_BASE_URL" in updates:
+        default_scheme = "https" if str(updates.get("ENABLE_HTTPS", "")).strip() == "1" else "http"
+        updates["PANEL_BASE_URL"] = normalize_simple_url(updates["PANEL_BASE_URL"], default_scheme)
+
+    ok, err_text = write_env_updates(updates)
+    if not ok:
+        await update.message.reply_text("写入配置失败：{0}".format(err_text))
+        return ConversationHandler.END
+
+    update_cmd = "cd {0} && bash {1} --reuse-config".format(
+        shlex.quote(ADMIN_PROJECT_DIR),
+        shlex.quote(ADMIN_UPDATE_SCRIPT),
+    )
+    log_path = launch_background_job(update_cmd, "maintain-config-apply")
+    await update.message.reply_text(
+        "配置已写入，正在后台应用（复用原配置重载服务）。\n"
+        "日志文件：{0}\n\n"
+        "若你改了 BOT_TOKEN，机器人可能会短暂重连。".format(log_path),
+        reply_markup=build_submenu("maintain"),
+    )
+    return ConversationHandler.END
+
+
+async def cancel_maintain_config_command(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    del context
+    if update.message:
+        await update.message.reply_text("已取消。", reply_markup=build_submenu("maintain"))
+    return ConversationHandler.END
+
+
+async def start_maintain_import_wizard(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    query = update.callback_query
+    if not query:
+        return ConversationHandler.END
+    if not await ensure_admin_callback(update):
+        return ConversationHandler.END
+    await query.answer()
+    await query.edit_message_text(
+        "迁移导入\n\n请输入迁移包路径（例如 /root/sb-migrate-20260225-120000.tar.gz）。\n发送 /cancel 取消。"
+    )
+    return MAINTAIN_IMPORT_INPUT
+
+
+async def maintain_import_input(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    del context
+    if not update.message or not update.message.text:
+        return MAINTAIN_IMPORT_INPUT
+    pkg_path = update.message.text.strip()
+    if not pkg_path:
+        await update.message.reply_text("路径不能为空，请重新输入。")
+        return MAINTAIN_IMPORT_INPUT
+
+    import_cmd = (
+        "cd {project} && bash {script} --non-interactive --package {pkg}"
+    ).format(
+        project=shlex.quote(ADMIN_PROJECT_DIR),
+        script=shlex.quote(ADMIN_IMPORT_SCRIPT),
+        pkg=shlex.quote(pkg_path),
+    )
+    log_path = launch_background_job(import_cmd, "maintain-migrate-import")
+    await update.message.reply_text(
+        "迁移导入任务已启动（后台执行）。\n"
+        "日志文件：{0}\n\n"
+        "提示：导入过程会重启 controller/bot。".format(log_path),
+        reply_markup=build_submenu("maintain"),
+    )
+    return ConversationHandler.END
+
+
+async def cancel_maintain_import_command(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    del context
+    if update.message:
+        await update.message.reply_text("已取消。", reply_markup=build_submenu("maintain"))
+    return ConversationHandler.END
 
 
 async def render_user_nodes_manage(query, user_code: str, notice: str = "") -> None:
@@ -3083,6 +3526,129 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await render_query_user_picker(query)
         return
 
+    if callback_data == "action:user_delete":
+        await render_user_delete_picker(query)
+        return
+
+    if callback_data.startswith("userdelete:pick:"):
+        parts = callback_data.split(":", maxsplit=2)
+        if len(parts) != 3:
+            await query.edit_message_text("请求无效，请重试。", reply_markup=build_submenu("user"))
+            return
+        user_code = parts[2]
+        user_data, error_message, status_code = await controller_request("GET", f"/users/{user_code}")
+        if error_message:
+            localized = localize_controller_error(error_message)
+            if status_code == 404 and localized == "用户不存在":
+                await query.edit_message_text("用户不存在", reply_markup=build_submenu("user"))
+                return
+            await query.edit_message_text(
+                f"获取用户信息失败：{localized}",
+                reply_markup=build_submenu("user"),
+            )
+            return
+        display_name = str(user_data.get("display_name") or "").strip()
+        status_text = str(user_data.get("status", "-"))
+        user_label = f"{display_name}（{user_code}）" if display_name else user_code
+        await query.edit_message_text(
+            "请确认删除用户：\n\n"
+            f"用户：{user_label}\n"
+            f"状态：{status_text}\n\n"
+            "注意：若该用户仍有节点绑定，将无法删除。",
+            reply_markup=build_user_delete_confirm_keyboard(user_code),
+        )
+        return
+
+    if callback_data.startswith("userdelete:apply:"):
+        parts = callback_data.split(":", maxsplit=2)
+        if len(parts) != 3:
+            await query.edit_message_text("请求无效，请重试。", reply_markup=build_submenu("user"))
+            return
+        user_code = parts[2]
+        result, error_message, status_code = await controller_request("DELETE", f"/users/{user_code}")
+        if error_message:
+            localized = localize_controller_error(error_message)
+            if status_code == 404 and localized == "用户不存在":
+                await query.edit_message_text("用户不存在", reply_markup=build_submenu("user"))
+                return
+            await query.edit_message_text(
+                f"删除失败：{localized}",
+                reply_markup=build_submenu("user"),
+            )
+            return
+        if isinstance(result, dict) and bool(result.get("ok")):
+            await query.edit_message_text(
+                f"删除成功：{user_code}",
+                reply_markup=build_submenu("user"),
+            )
+            return
+        await query.edit_message_text("删除结果异常，请重试。", reply_markup=build_submenu("user"))
+        return
+
+    if callback_data == "action:user_toggle":
+        await render_user_toggle_picker(query)
+        return
+
+    if callback_data.startswith("usertoggle:pick:"):
+        parts = callback_data.split(":", maxsplit=2)
+        if len(parts) != 3:
+            await query.edit_message_text("请求无效，请重试。", reply_markup=build_submenu("user"))
+            return
+        user_code = parts[2]
+        user_data, error_message, status_code = await controller_request("GET", f"/users/{user_code}")
+        if error_message:
+            localized = localize_controller_error(error_message)
+            if status_code == 404 and localized == "用户不存在":
+                await query.edit_message_text("用户不存在", reply_markup=build_submenu("user"))
+                return
+            await query.edit_message_text(
+                f"获取用户信息失败：{localized}",
+                reply_markup=build_submenu("user"),
+            )
+            return
+        display_name = str(user_data.get("display_name") or "").strip()
+        current_status = str(user_data.get("status", "active")).strip().lower()
+        target_status = "disabled" if current_status == "active" else "active"
+        target_text = "禁用" if target_status == "disabled" else "启用"
+        user_label = f"{display_name}（{user_code}）" if display_name else user_code
+        await query.edit_message_text(
+            "请确认用户状态变更：\n\n"
+            f"用户：{user_label}\n"
+            f"当前状态：{current_status}\n"
+            f"目标状态：{target_status}（{target_text}）",
+            reply_markup=build_user_toggle_confirm_keyboard(user_code, target_status),
+        )
+        return
+
+    if callback_data.startswith("usertoggle:apply:"):
+        parts = callback_data.split(":", maxsplit=3)
+        if len(parts) != 4:
+            await query.edit_message_text("请求无效，请重试。", reply_markup=build_submenu("user"))
+            return
+        user_code = parts[2]
+        target_status = parts[3]
+        _, error_message, status_code = await controller_request(
+            "POST",
+            f"/users/{user_code}/set_status",
+            payload={"status": target_status},
+        )
+        if error_message:
+            localized = localize_controller_error(error_message)
+            if status_code == 404 and localized == "用户不存在":
+                await query.edit_message_text("用户不存在", reply_markup=build_submenu("user"))
+                return
+            await query.edit_message_text(
+                f"状态更新失败：{localized}",
+                reply_markup=build_submenu("user"),
+            )
+            return
+        status_text = "disabled（禁用）" if target_status == "disabled" else "active（启用）"
+        await query.edit_message_text(
+            f"状态更新成功：{user_code} -> {status_text}",
+            reply_markup=build_submenu("user"),
+        )
+        return
+
     if callback_data.startswith("query:user:"):
         parts = callback_data.split(":", maxsplit=2)
         if len(parts) != 3:
@@ -3146,29 +3712,156 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await run_admin_backup_action(query, "menu:maintain")
         return
 
+    if callback_data == "action:maintain_update":
+        update_cmd = "cd {0} && bash {1} --reuse-config".format(
+            shlex.quote(ADMIN_PROJECT_DIR),
+            shlex.quote(ADMIN_UPDATE_SCRIPT),
+        )
+        log_path = launch_background_job(update_cmd, "maintain-update")
+        await query.edit_message_text(
+            "安装/更新任务已启动（后台执行）。\n"
+            f"日志文件：{log_path}\n\n"
+            "说明：该任务会拉取更新、校验依赖并重启服务。",
+            reply_markup=build_back_keyboard("menu:maintain"),
+        )
+        return
+
+    if callback_data == "action:maintain_controller_start":
+        code, stdout, stderr = await run_local_shell("systemctl start sb-controller", timeout=20)
+        if code == 0:
+            await query.edit_message_text(
+                "已执行：启动 controller。",
+                reply_markup=build_back_keyboard("menu:maintain"),
+            )
+        else:
+            await query.edit_message_text(
+                "启动 controller 失败：\n{0}".format(truncate_output(stderr or stdout)),
+                reply_markup=build_back_keyboard("menu:maintain"),
+            )
+        return
+
+    if callback_data == "action:maintain_controller_stop":
+        code, stdout, stderr = await run_local_shell("systemctl stop sb-controller", timeout=20)
+        if code == 0:
+            await query.edit_message_text(
+                "已执行：停止 controller。\n可通过“启动controller”恢复。",
+                reply_markup=build_back_keyboard("menu:maintain"),
+            )
+        else:
+            await query.edit_message_text(
+                "停止 controller 失败：\n{0}".format(truncate_output(stderr or stdout)),
+                reply_markup=build_back_keyboard("menu:maintain"),
+            )
+        return
+
     if callback_data == "action:maintain_migrate_export":
         await run_admin_migrate_export_action(query, "menu:maintain")
         return
 
-    if callback_data == "action:maintain_status":
-        health, error_message, _ = await controller_request("GET", "/health")
-        if error_message:
+    if callback_data == "action:maintain_logs":
+        await query.edit_message_text(
+            "请选择要查看的服务日志：",
+            reply_markup=build_maintain_logs_keyboard(),
+        )
+        return
+
+    if callback_data.startswith("maintain:logs:"):
+        parts = callback_data.split(":", maxsplit=2)
+        if len(parts) != 3:
+            await query.edit_message_text("请求无效，请重试。", reply_markup=build_back_keyboard("menu:maintain"))
+            return
+        target = parts[2]
+        unit_map = {
+            "controller": "sb-controller",
+            "bot": "sb-bot",
+            "caddy": "caddy",
+        }
+        unit = unit_map.get(target, "")
+        if not unit:
+            await query.edit_message_text("不支持的日志目标。", reply_markup=build_back_keyboard("menu:maintain"))
+            return
+        code, stdout, stderr = await run_local_shell(
+            "journalctl -u {0} -n 120 --no-pager".format(shlex.quote(unit)),
+            timeout=25,
+        )
+        if code != 0:
             await query.edit_message_text(
-                "服务状态检查：\n"
-                f"controller 健康检查失败：{localize_controller_error(error_message)}\n\n"
-                "可在服务器执行：\n"
-                "systemctl status sb-controller\n"
-                "systemctl status sb-bot",
+                "读取日志失败：\n{0}".format(truncate_output(stderr or stdout)),
+                reply_markup=build_back_keyboard("action:maintain_logs"),
+            )
+            return
+        await query.edit_message_text(
+            "{0} 最近日志：\n\n{1}".format(unit, truncate_output(stdout)),
+            reply_markup=build_back_keyboard("action:maintain_logs"),
+        )
+        return
+
+    if callback_data == "action:maintain_status":
+        ctl_code, ctl_out, _ = await run_local_shell("systemctl is-active sb-controller", timeout=15)
+        bot_code, bot_out, _ = await run_local_shell("systemctl is-active sb-bot", timeout=15)
+        caddy_code, caddy_out, _ = await run_local_shell("systemctl is-active caddy", timeout=15)
+        health, error_message, _ = await controller_request("GET", "/health")
+        health_text = "异常"
+        if not error_message and isinstance(health, dict) and health.get("ok"):
+            health_text = "正常"
+        await query.edit_message_text(
+            "服务状态检查：\n"
+            f"controller(systemd)：{(ctl_out or '').strip() if ctl_code == 0 else 'unknown'}\n"
+            f"bot(systemd)：{(bot_out or '').strip() if bot_code == 0 else 'unknown'}\n"
+            f"caddy(systemd)：{(caddy_out or '').strip() if caddy_code == 0 else 'unknown'}\n"
+            f"controller /health：{health_text}",
+            reply_markup=build_back_keyboard("menu:maintain"),
+        )
+        return
+
+    if callback_data == "action:maintain_https_status":
+        active_code, active_out, active_err = await run_local_shell("systemctl is-active caddy", timeout=15)
+        validate_code, validate_out, validate_err = await run_local_shell(
+            "caddy validate --config /etc/caddy/Caddyfile", timeout=20
+        )
+        journal_code, journal_out, journal_err = await run_local_shell(
+            "journalctl -u caddy -n 40 --no-pager", timeout=20
+        )
+        status_text = (active_out or "").strip() if active_code == 0 else (active_err or "unknown")
+        validate_text = "通过" if validate_code == 0 else "失败"
+        details = validate_out if validate_code == 0 else (validate_err or validate_out)
+        journal_text = journal_out if journal_code == 0 else (journal_err or "")
+        await query.edit_message_text(
+            "HTTPS 证书状态（Caddy）：\n"
+            f"服务状态：{status_text}\n"
+            f"配置校验：{validate_text}\n"
+            f"校验输出：{truncate_output(details, 900)}\n\n"
+            "最近日志：\n"
+            f"{truncate_output(journal_text, 1800)}",
+            reply_markup=build_back_keyboard("menu:maintain"),
+        )
+        return
+
+    if callback_data == "action:maintain_https_reload":
+        reload_code, reload_out, reload_err = await run_local_shell(
+            "bash -lc 'caddy validate --config /etc/caddy/Caddyfile && systemctl reload caddy'",
+            timeout=30,
+        )
+        if reload_code == 0:
+            await query.edit_message_text(
+                "已执行 HTTPS 证书刷新（caddy reload）。",
                 reply_markup=build_back_keyboard("menu:maintain"),
             )
             return
-        ok = bool(isinstance(health, dict) and health.get("ok"))
+        restart_code, restart_out, restart_err = await run_local_shell(
+            "systemctl restart caddy",
+            timeout=30,
+        )
+        if restart_code == 0:
+            await query.edit_message_text(
+                "reload 失败，已自动执行 caddy restart 并成功。",
+                reply_markup=build_back_keyboard("menu:maintain"),
+            )
+            return
         await query.edit_message_text(
-            "服务状态检查：\n"
-            f"controller /health：{'正常' if ok else '异常'}\n\n"
-            "bot 状态请在服务器执行：\n"
-            "systemctl status sb-bot\n"
-            "journalctl -u sb-bot -n 100 --no-pager",
+            "HTTPS 证书刷新失败：\n{0}".format(
+                truncate_output(reload_err or reload_out or restart_err or restart_out)
+            ),
             reply_markup=build_back_keyboard("menu:maintain"),
         )
         return
@@ -3658,6 +4351,30 @@ def main() -> None:
         fallbacks=[CommandHandler("cancel", cancel_node_reality_command)],
     )
     application.add_handler(node_reality_conversation)
+    maintain_config_conversation = ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(start_maintain_config_wizard, pattern=r"^action:maintain_config$")
+        ],
+        states={
+            MAINTAIN_CONFIG_INPUT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, maintain_config_input)
+            ]
+        },
+        fallbacks=[CommandHandler("cancel", cancel_maintain_config_command)],
+    )
+    application.add_handler(maintain_config_conversation)
+    maintain_import_conversation = ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(start_maintain_import_wizard, pattern=r"^action:maintain_migrate_import$")
+        ],
+        states={
+            MAINTAIN_IMPORT_INPUT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, maintain_import_input)
+            ]
+        },
+        fallbacks=[CommandHandler("cancel", cancel_maintain_import_command)],
+    )
+    application.add_handler(maintain_import_conversation)
     application.add_handler(CommandHandler("cancel", cancel_idle))
     application.add_handler(CallbackQueryHandler(handle_callback))
     application.add_handler(CallbackQueryHandler(refresh_callback_menu_ttl), group=1)
