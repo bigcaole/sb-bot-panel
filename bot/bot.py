@@ -5,7 +5,7 @@ import time
 from datetime import datetime
 
 import httpx
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import BotCommand, BotCommandScopeChat, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.error import BadRequest, Forbidden
 from telegram.ext import (
     Application,
@@ -381,30 +381,21 @@ async def run_node_monitor_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 def build_main_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
-            [
-                InlineKeyboardButton("用户管理", callback_data="menu:user"),
-                InlineKeyboardButton("限速管理", callback_data="menu:speed"),
-            ],
-            [
-                InlineKeyboardButton("查询", callback_data="menu:query"),
-                InlineKeyboardButton("备份与维护", callback_data="menu:backup"),
-            ],
-            [
-                InlineKeyboardButton("节点管理", callback_data="menu:nodes"),
-                InlineKeyboardButton("维护/迁移", callback_data="menu:maintain"),
-            ],
+            [InlineKeyboardButton("用户管理", callback_data="menu:user")],
+            [InlineKeyboardButton("限速管理", callback_data="menu:speed")],
+            [InlineKeyboardButton("查询", callback_data="menu:query")],
+            [InlineKeyboardButton("备份与维护", callback_data="menu:backup")],
+            [InlineKeyboardButton("节点管理", callback_data="menu:nodes")],
+            [InlineKeyboardButton("维护/迁移", callback_data="menu:maintain")],
         ]
     )
 
 
 def build_submenu(submenu_key: str) -> InlineKeyboardMarkup:
-    rows = []
-    buttons = SUBMENUS[submenu_key]["buttons"]
-    for i in range(0, len(buttons), 2):
-        pair = buttons[i : i + 2]
-        rows.append(
-            [InlineKeyboardButton(text, callback_data=data) for text, data in pair]
-        )
+    rows = [
+        [InlineKeyboardButton(text, callback_data=data)]
+        for text, data in SUBMENUS[submenu_key]["buttons"]
+    ]
     return InlineKeyboardMarkup(rows)
 
 
@@ -1419,6 +1410,55 @@ async def whoami(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"你的 chat_id 是: {chat_id}\n"
         "可将该数字写入 ADMIN_CHAT_IDS（逗号分隔）以限制管理员权限。"
     )
+
+
+def clear_all_wizard_state(context: ContextTypes.DEFAULT_TYPE) -> None:
+    context.user_data.pop(WIZARD_KEY, None)
+    context.user_data.pop(NODES_WIZARD_KEY, None)
+    context.user_data.pop(USER_NODES_WIZARD_KEY, None)
+    context.user_data.pop(NODE_EDIT_KEY, None)
+    context.user_data.pop(NODE_REALITY_KEY, None)
+    pop_user_speed_pending(context)
+
+
+async def cancel_idle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    remember_known_chat(update, context)
+    clear_all_wizard_state(context)
+    if not is_admin_chat(update):
+        await deny_non_admin(update)
+        return
+    if update.message:
+        await reply_text_with_auto_clear(
+            update.message,
+            context,
+            "已取消，已返回主菜单。",
+            reply_markup=build_main_menu(),
+        )
+
+
+async def configure_command_menu(application: Application) -> None:
+    admin_commands = [
+        BotCommand("start", "打开主菜单"),
+        BotCommand("menu", "显示主菜单"),
+        BotCommand("cancel", "取消当前操作"),
+        BotCommand("whoami", "查看当前 chat_id"),
+    ]
+    public_commands = [
+        BotCommand("whoami", "查看当前 chat_id"),
+    ]
+
+    try:
+        await application.bot.set_my_commands(public_commands)
+        if ADMIN_CHAT_ID_LIST:
+            for chat_id in ADMIN_CHAT_ID_LIST:
+                await application.bot.set_my_commands(
+                    admin_commands,
+                    scope=BotCommandScopeChat(chat_id=chat_id),
+                )
+        else:
+            await application.bot.set_my_commands(admin_commands)
+    except Exception as exc:  # pragma: no cover
+        logger.warning("configure command menu failed: %s", exc)
 
 
 async def start_create_user_wizard(
@@ -3216,7 +3256,7 @@ def main() -> None:
     if not token:
         raise RuntimeError("BOT_TOKEN environment variable is not set.")
 
-    application = Application.builder().token(token).build()
+    application = Application.builder().token(token).post_init(configure_command_menu).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("menu", menu))
     application.add_handler(CommandHandler("whoami", whoami))
@@ -3383,6 +3423,7 @@ def main() -> None:
         fallbacks=[CommandHandler("cancel", cancel_node_reality_command)],
     )
     application.add_handler(node_reality_conversation)
+    application.add_handler(CommandHandler("cancel", cancel_idle))
     application.add_handler(CallbackQueryHandler(handle_callback))
     application.add_handler(CallbackQueryHandler(refresh_callback_menu_ttl), group=1)
     if application.job_queue:
