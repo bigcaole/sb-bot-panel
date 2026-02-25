@@ -35,10 +35,16 @@ MIGRATE_DIR="$MIGRATE_DIR_DEFAULT"
 BOT_MENU_TTL="60"
 BOT_NODE_MONITOR_INTERVAL="60"
 BOT_NODE_OFFLINE_THRESHOLD="120"
+SELF_CHECK_OK=0
+SELF_CHECK_WARN=0
+SELF_CHECK_FAIL=0
 
 msg() { echo -e "\033[1;32m[信息]\033[0m $*"; }
 warn() { echo -e "\033[1;33m[警告]\033[0m $*"; }
 err() { echo -e "\033[1;31m[错误]\033[0m $*" >&2; }
+check_ok() { echo -e "\033[1;32m[自检-通过]\033[0m $*"; SELF_CHECK_OK=$((SELF_CHECK_OK + 1)); }
+check_warn() { echo -e "\033[1;33m[自检-警告]\033[0m $*"; SELF_CHECK_WARN=$((SELF_CHECK_WARN + 1)); }
+check_fail() { echo -e "\033[1;31m[自检-失败]\033[0m $*"; SELF_CHECK_FAIL=$((SELF_CHECK_FAIL + 1)); }
 
 require_root() {
   if [[ "${EUID}" -ne 0 ]]; then
@@ -306,8 +312,8 @@ prompt_env_config() {
   read -r -p "ADMIN_CHAT_IDS（可选；逗号分隔，限制谁能操作 bot） [${ADMIN_CHAT_IDS}]: " input_admin
   ADMIN_CHAT_IDS="${input_admin:-$ADMIN_CHAT_IDS}"
 
-  read -r -p "MIGRATE_DIR（迁移包/备份包输出目录） [${MIGRATE_DIR}]: " input_migrate
-  MIGRATE_DIR="${input_migrate:-$MIGRATE_DIR}"
+  read -r -p "MIGRATE_DIR（迁移包/备份包输出目录，直接回车使用默认） [${MIGRATE_DIR}]: " input_migrate
+  MIGRATE_DIR="${input_migrate:-${MIGRATE_DIR:-$MIGRATE_DIR_DEFAULT}}"
   if [[ -z "$MIGRATE_DIR" ]]; then
     MIGRATE_DIR="$MIGRATE_DIR_DEFAULT"
   fi
@@ -558,6 +564,123 @@ restart_services() {
   fi
 }
 
+check_env_key() {
+  local key="$1"
+  local value
+  value="$(get_env_value "$key")"
+  if [[ -n "$value" ]]; then
+    check_ok ".env 参数存在：${key}"
+  else
+    check_fail ".env 参数缺失或为空：${key}"
+  fi
+}
+
+run_self_checks() {
+  echo ""
+  msg "开始执行安装后自检..."
+  SELF_CHECK_OK=0
+  SELF_CHECK_WARN=0
+  SELF_CHECK_FAIL=0
+
+  if [[ -f "$ENV_FILE" ]]; then
+    check_ok "环境文件存在：$ENV_FILE"
+  else
+    check_fail "环境文件不存在：$ENV_FILE"
+  fi
+
+  check_env_key "CONTROLLER_PORT"
+  check_env_key "CONTROLLER_URL"
+  check_env_key "PANEL_BASE_URL"
+  check_env_key "BOT_TOKEN"
+  check_env_key "MIGRATE_DIR"
+
+  if systemctl is-enabled sb-controller >/dev/null 2>&1; then
+    check_ok "sb-controller 已设为开机启动"
+  else
+    check_warn "sb-controller 未启用开机启动"
+  fi
+  if systemctl is-enabled sb-bot >/dev/null 2>&1; then
+    check_ok "sb-bot 已设为开机启动"
+  else
+    check_warn "sb-bot 未启用开机启动"
+  fi
+
+  if systemctl is-active sb-controller >/dev/null 2>&1; then
+    check_ok "sb-controller 运行中"
+  else
+    check_fail "sb-controller 未运行"
+  fi
+  if systemctl is-active sb-bot >/dev/null 2>&1; then
+    check_ok "sb-bot 运行中"
+  else
+    check_fail "sb-bot 未运行"
+  fi
+
+  if curl -fsSL --max-time 5 "http://127.0.0.1:${CONTROLLER_PORT}/health" >/tmp/sb-controller-health.json 2>/dev/null; then
+    if grep -q '"ok"[[:space:]]*:[[:space:]]*true' /tmp/sb-controller-health.json; then
+      check_ok "本地 health 检查通过：http://127.0.0.1:${CONTROLLER_PORT}/health"
+    else
+      check_warn "本地 health 可访问但返回体异常"
+    fi
+  else
+    check_fail "本地 health 检查失败：http://127.0.0.1:${CONTROLLER_PORT}/health"
+  fi
+
+  if [[ "$ENABLE_HTTPS" == "1" ]]; then
+    check_env_key "HTTPS_DOMAIN"
+
+    if systemctl is-enabled caddy >/dev/null 2>&1; then
+      check_ok "caddy 已设为开机启动"
+    else
+      check_warn "caddy 未启用开机启动"
+    fi
+
+    if systemctl is-active caddy >/dev/null 2>&1; then
+      check_ok "caddy 运行中"
+    else
+      check_fail "caddy 未运行"
+    fi
+
+    if caddy validate --config /etc/caddy/Caddyfile >/tmp/sb-caddy-selfcheck.log 2>&1; then
+      check_ok "Caddyfile 配置校验通过"
+    else
+      check_fail "Caddyfile 配置校验失败（见 /tmp/sb-caddy-selfcheck.log）"
+    fi
+
+    if grep -q "${HTTPS_DOMAIN}" /etc/caddy/Caddyfile 2>/dev/null; then
+      check_ok "Caddyfile 已包含域名：${HTTPS_DOMAIN}"
+    else
+      check_fail "Caddyfile 未包含域名：${HTTPS_DOMAIN}"
+    fi
+
+    local cert_count
+    cert_count="$(find /var/lib/caddy -type f \( -name "*.crt" -o -name "*.pem" \) 2>/dev/null | grep -F "${HTTPS_DOMAIN}" | wc -l | tr -d '[:space:]')"
+    if [[ "${cert_count:-0}" =~ ^[0-9]+$ ]] && (( cert_count > 0 )); then
+      check_ok "已发现 ${HTTPS_DOMAIN} 证书文件（自动续期由 caddy 接管）"
+    else
+      check_warn "暂未发现 ${HTTPS_DOMAIN} 证书文件（可能是首次签发未完成）"
+    fi
+
+    if curl -fsSL --max-time 8 "${PANEL_BASE_URL}/health" >/tmp/sb-controller-public-health.json 2>/dev/null; then
+      if grep -q '"ok"[[:space:]]*:[[:space:]]*true' /tmp/sb-controller-public-health.json; then
+        check_ok "公网 URL health 检查通过：${PANEL_BASE_URL}/health"
+      else
+        check_warn "公网 URL 可访问但返回体异常：${PANEL_BASE_URL}/health"
+      fi
+    else
+      check_warn "公网 URL health 检查未通过：${PANEL_BASE_URL}/health（可能 DNS/防火墙/端口冲突）"
+    fi
+  else
+    check_warn "未启用 HTTPS（ENABLE_HTTPS=0），跳过证书申请/续期检查"
+  fi
+
+  echo ""
+  msg "自检完成：通过=${SELF_CHECK_OK} 警告=${SELF_CHECK_WARN} 失败=${SELF_CHECK_FAIL}"
+  if (( SELF_CHECK_FAIL > 0 )); then
+    warn "存在自检失败项，请按上方提示修复后再试。"
+  fi
+}
+
 show_summary() {
   echo ""
   msg "管理服务器安装/配置完成。"
@@ -605,6 +728,7 @@ main() {
   write_caddy_config_if_needed
   restart_services
   show_summary
+  run_self_checks
 }
 
 main "$@"
