@@ -23,9 +23,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-PANEL_BASE_URL = os.getenv("PANEL_BASE_URL", "http://127.0.0.1:8080").rstrip("/")
+CONTROLLER_URL = os.getenv("CONTROLLER_URL", "http://127.0.0.1:8080").rstrip("/")
+if not CONTROLLER_URL:
+    CONTROLLER_URL = "http://127.0.0.1:8080"
+CONTROLLER_AUTH_TOKEN = os.getenv("AUTH_TOKEN", "").strip()
+
+PANEL_BASE_URL = os.getenv("PANEL_BASE_URL", CONTROLLER_URL).rstrip("/")
 if not PANEL_BASE_URL:
-    PANEL_BASE_URL = "http://127.0.0.1:8080"
+    PANEL_BASE_URL = CONTROLLER_URL
 
 WIZARD_KEY = "create_user_wizard"
 CREATE_DISPLAY_NAME, CREATE_TUIC_PORT, CREATE_SPEED_MBPS, CREATE_VALID_DAYS, CREATE_CONFIRM = range(5)
@@ -103,6 +108,15 @@ SUBMENUS = {
             ("返回", "menu:main"),
         ],
     },
+    "maintain": {
+        "title": "维护/迁移",
+        "buttons": [
+            ("立即备份", "action:maintain_backup"),
+            ("生成迁移包", "action:maintain_migrate_export"),
+            ("查看服务状态", "action:maintain_status"),
+            ("返回", "menu:main"),
+        ],
+    },
 }
 
 
@@ -128,6 +142,7 @@ def build_main_menu() -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton("节点管理", callback_data="menu:nodes"),
+                InlineKeyboardButton("维护/迁移", callback_data="menu:maintain"),
             ],
         ]
     )
@@ -655,10 +670,13 @@ def format_node_reality_setup_text(node_code: str, node: dict) -> str:
 async def controller_request(
     method: str, path: str, payload: dict = None
 ) -> tuple:
-    url = f"http://127.0.0.1:8080{path}"
+    url = f"{CONTROLLER_URL}{path}"
+    headers = {}
+    if CONTROLLER_AUTH_TOKEN:
+        headers["Authorization"] = f"Bearer {CONTROLLER_AUTH_TOKEN}"
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.request(method, url, json=payload)
+            response = await client.request(method, url, json=payload, headers=headers)
     except httpx.HTTPError as exc:
         return None, f"无法连接控制器接口（{exc}）", 0
 
@@ -952,6 +970,62 @@ async def render_query_user_detail(query, user_code: str) -> None:
     )
 
 
+async def run_admin_backup_action(query, back_menu_callback: str) -> None:
+    result, error_message, _ = await controller_request("POST", "/admin/backup")
+    if error_message:
+        await query.edit_message_text(
+            f"执行备份失败：{localize_controller_error(error_message)}",
+            reply_markup=build_back_keyboard(back_menu_callback),
+        )
+        return
+
+    backup_path = str(result.get("path", "")) if isinstance(result, dict) else ""
+    size_bytes = int(result.get("size_bytes", 0)) if isinstance(result, dict) else 0
+    created_at = int(result.get("created_at", 0)) if isinstance(result, dict) else 0
+    created_text = (
+        datetime.fromtimestamp(created_at).strftime("%Y-%m-%d %H:%M:%S")
+        if created_at > 0
+        else "-"
+    )
+    await query.edit_message_text(
+        "备份已生成\n\n"
+        f"路径：{backup_path}\n"
+        f"大小：{size_bytes} bytes\n"
+        f"时间：{created_text}\n\n"
+        "可用以下命令拉取备份：\n"
+        f"scp root@你的服务器IP:{backup_path} ./",
+        reply_markup=build_back_keyboard(back_menu_callback),
+    )
+
+
+async def run_admin_migrate_export_action(query, back_menu_callback: str) -> None:
+    result, error_message, _ = await controller_request("POST", "/admin/migrate/export")
+    if error_message:
+        await query.edit_message_text(
+            f"生成迁移包失败：{localize_controller_error(error_message)}",
+            reply_markup=build_back_keyboard(back_menu_callback),
+        )
+        return
+
+    export_path = str(result.get("path", "")) if isinstance(result, dict) else ""
+    size_bytes = int(result.get("size_bytes", 0)) if isinstance(result, dict) else 0
+    created_at = int(result.get("created_at", 0)) if isinstance(result, dict) else 0
+    created_text = (
+        datetime.fromtimestamp(created_at).strftime("%Y-%m-%d %H:%M:%S")
+        if created_at > 0
+        else "-"
+    )
+    await query.edit_message_text(
+        "迁移包已生成（保存在服务器本地）\n\n"
+        f"路径：{export_path}\n"
+        f"大小：{size_bytes} bytes\n"
+        f"时间：{created_text}\n\n"
+        "可用以下命令拉取迁移包：\n"
+        f"scp root@你的服务器IP:{export_path} ./",
+        reply_markup=build_back_keyboard(back_menu_callback),
+    )
+
+
 async def render_user_nodes_manage(query, user_code: str, notice: str = "") -> None:
     user, user_error, user_status = await controller_request("GET", f"/users/{user_code}")
     if user_error:
@@ -1172,12 +1246,16 @@ async def create_user_confirm(
         "valid_days": wizard_data["valid_days"],
         "note": "",
     }
+    headers = {}
+    if CONTROLLER_AUTH_TOKEN:
+        headers["Authorization"] = f"Bearer {CONTROLLER_AUTH_TOKEN}"
 
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.post(
-                "http://127.0.0.1:8080/users/create",
+                f"{CONTROLLER_URL}/users/create",
                 json=payload,
+                headers=headers,
             )
     except httpx.HTTPError as exc:
         await query.edit_message_text(
@@ -1439,12 +1517,16 @@ async def nodes_create_confirm(
     reality_server_name = wizard_data.get("reality_server_name", "")
     if reality_server_name:
         payload["reality_server_name"] = reality_server_name
+    headers = {}
+    if CONTROLLER_AUTH_TOKEN:
+        headers["Authorization"] = f"Bearer {CONTROLLER_AUTH_TOKEN}"
 
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.post(
-                "http://127.0.0.1:8080/nodes/create",
+                f"{CONTROLLER_URL}/nodes/create",
                 json=payload,
+                headers=headers,
             )
     except httpx.HTTPError as exc:
         await query.edit_message_text(
@@ -2363,30 +2445,37 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
 
     if callback_data == "action:backup_now":
-        result, error_message, _ = await controller_request("POST", "/admin/backup")
+        await run_admin_backup_action(query, "menu:backup")
+        return
+
+    if callback_data == "action:maintain_backup":
+        await run_admin_backup_action(query, "menu:maintain")
+        return
+
+    if callback_data == "action:maintain_migrate_export":
+        await run_admin_migrate_export_action(query, "menu:maintain")
+        return
+
+    if callback_data == "action:maintain_status":
+        health, error_message, _ = await controller_request("GET", "/health")
         if error_message:
             await query.edit_message_text(
-                f"执行备份失败：{localize_controller_error(error_message)}",
-                reply_markup=build_back_keyboard("menu:backup"),
+                "服务状态检查：\n"
+                f"controller 健康检查失败：{localize_controller_error(error_message)}\n\n"
+                "可在服务器执行：\n"
+                "systemctl status sb-controller\n"
+                "systemctl status sb-bot",
+                reply_markup=build_back_keyboard("menu:maintain"),
             )
             return
-
-        backup_path = str(result.get("path", "")) if isinstance(result, dict) else ""
-        size_bytes = int(result.get("size_bytes", 0)) if isinstance(result, dict) else 0
-        created_at = int(result.get("created_at", 0)) if isinstance(result, dict) else 0
-        created_text = (
-            datetime.fromtimestamp(created_at).strftime("%Y-%m-%d %H:%M:%S")
-            if created_at > 0
-            else "-"
-        )
+        ok = bool(isinstance(health, dict) and health.get("ok"))
         await query.edit_message_text(
-            "备份已生成\n\n"
-            f"路径：{backup_path}\n"
-            f"大小：{size_bytes} bytes\n"
-            f"时间：{created_text}\n\n"
-            "可用以下命令拉取备份：\n"
-            f"scp root@你的服务器IP:{backup_path} ./",
-            reply_markup=build_back_keyboard("menu:backup"),
+            "服务状态检查：\n"
+            f"controller /health：{'正常' if ok else '异常'}\n\n"
+            "bot 状态请在服务器执行：\n"
+            "systemctl status sb-bot\n"
+            "journalctl -u sb-bot -n 100 --no-pager",
+            reply_markup=build_back_keyboard("menu:maintain"),
         )
         return
 

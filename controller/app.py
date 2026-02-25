@@ -1,21 +1,34 @@
 import base64
+import os
 import sqlite3
 import tarfile
 import time
 import uuid
 from pathlib import Path
+import shutil
+import tempfile
 from typing import Dict, List, Optional, Union
 from urllib.parse import quote
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import PlainTextResponse
+from fastapi import FastAPI, Header, HTTPException
+from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 DB_PATH = BASE_DIR / "data" / "app.db"
+AUTH_TOKEN = os.getenv("AUTH_TOKEN", "").strip()
 
 app = FastAPI()
+
+
+def verify_admin_authorization(authorization: Optional[str]) -> Optional[JSONResponse]:
+    if not AUTH_TOKEN:
+        return None
+    expected = "Bearer {0}".format(AUTH_TOKEN)
+    if authorization != expected:
+        return JSONResponse(status_code=401, content={"ok": False, "error": "unauthorized"})
+    return None
 
 
 class CreateUserRequest(BaseModel):
@@ -163,8 +176,18 @@ def health() -> Dict[str, bool]:
     return {"ok": True}
 
 
-@app.post("/admin/backup")
-def create_backup() -> Dict[str, Union[bool, int, str]]:
+@app.post(
+    "/admin/backup",
+    summary="Create controller backup",
+    description="AUTH_TOKEN 为空时不校验；非空时需要请求头 Authorization: Bearer <AUTH_TOKEN>。",
+)
+def create_backup(
+    authorization: Optional[str] = Header(default=None, alias="Authorization")
+) -> Union[Dict[str, Union[bool, int, str]], JSONResponse]:
+    auth_error = verify_admin_authorization(authorization)
+    if auth_error is not None:
+        return auth_error
+
     created_at = int(time.time())
     data_dir = BASE_DIR / "data"
     backup_dir = Path("/var/backups/sb-controller")
@@ -181,6 +204,64 @@ def create_backup() -> Dict[str, Union[bool, int, str]]:
         size_bytes = int(backup_path.stat().st_size)
     except OSError as exc:
         raise HTTPException(status_code=500, detail="Backup failed: {0}".format(exc)) from exc
+
+    return {
+        "ok": True,
+        "path": str(backup_path),
+        "size_bytes": size_bytes,
+        "created_at": created_at,
+    }
+
+
+@app.post(
+    "/admin/migrate/export",
+    summary="Create migration export package",
+    description="AUTH_TOKEN 为空时不校验；非空时需要请求头 Authorization: Bearer <AUTH_TOKEN>。",
+)
+def create_migrate_export(
+    authorization: Optional[str] = Header(default=None, alias="Authorization")
+) -> Union[Dict[str, Union[bool, int, str]], JSONResponse]:
+    auth_error = verify_admin_authorization(authorization)
+    if auth_error is not None:
+        return auth_error
+
+    created_at = int(time.time())
+    migrate_dir = Path("/var/backups/sb-migrate")
+    backup_name = time.strftime("sb-migrate-%Y%m%d-%H%M%S", time.localtime(created_at)) + ".tar.gz"
+    backup_path = migrate_dir / backup_name
+
+    stage_dir = Path(tempfile.mkdtemp(prefix="sb-migrate-stage-"))
+    try:
+        project_stage = stage_dir / "sb-bot-panel"
+        project_stage.mkdir(parents=True, exist_ok=True)
+
+        data_dir = BASE_DIR / "data"
+        env_file = BASE_DIR / ".env"
+        scripts_dir = BASE_DIR / "scripts"
+        if data_dir.exists():
+            shutil.copytree(data_dir, project_stage / "data", dirs_exist_ok=True)
+        if env_file.exists():
+            shutil.copy2(env_file, project_stage / ".env")
+        if scripts_dir.exists():
+            shutil.copytree(scripts_dir, project_stage / "scripts", dirs_exist_ok=True)
+
+        systemd_stage = stage_dir / "systemd"
+        systemd_stage.mkdir(parents=True, exist_ok=True)
+        for service_name in ("sb-controller.service", "sb-bot.service"):
+            service_path = Path("/etc/systemd/system") / service_name
+            if service_path.exists():
+                shutil.copy2(service_path, systemd_stage / service_name)
+
+        migrate_dir.mkdir(parents=True, exist_ok=True)
+        with tarfile.open(backup_path, "w:gz") as archive:
+            archive.add(project_stage, arcname="sb-bot-panel")
+            if any(systemd_stage.iterdir()):
+                archive.add(systemd_stage, arcname="systemd")
+        size_bytes = int(backup_path.stat().st_size)
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail="Migrate export failed: {0}".format(exc)) from exc
+    finally:
+        shutil.rmtree(stage_dir, ignore_errors=True)
 
     return {
         "ok": True,

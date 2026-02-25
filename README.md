@@ -137,3 +137,122 @@ REALITY 密钥策略：
 - `ufw allow 443/tcp`
 - `ufw allow 8443/udp`（或你的 TUIC 端口）
 - `ufw status`
+
+## 管理服务器一键安装（controller + bot）
+
+管理服务器侧新增脚本目录：`scripts/admin/`，用于一键安装、配置、服务管理和迁移。
+
+### 新装（推荐从菜单进入）
+
+```bash
+git clone <你的仓库地址> sb-bot-panel && cd sb-bot-panel && sudo bash scripts/admin/menu_admin.sh
+```
+
+菜单里选择 `1) 安装/更新` 即可完成：
+
+- 依赖安装（apt）
+- venv 创建与 `pip install -r requirements.txt`
+- 写入 `.env`
+- 写入并启用 systemd：
+  - `sb-controller.service`
+  - `sb-bot.service`
+
+### 仅重新配置（改 token/chat id）
+
+```bash
+sudo bash scripts/admin/install_admin.sh --configure-only
+```
+
+或通过菜单：
+
+- `2) 配置向导（仅写 .env 并重启）`
+
+## 管理服务器菜单（中文数字）
+
+```bash
+sudo bash scripts/admin/menu_admin.sh
+```
+
+菜单项：
+
+1. 安装/更新（git pull + 依赖 + venv + 重启）
+2. 配置向导（仅写 `.env` 并重启）
+3. 启动 controller
+4. 停止 controller
+5. 启动 bot
+6. 停止 bot
+7. 状态查看（controller/bot）
+8. 查看日志（controller/bot）
+9. 迁移：导出迁移包
+10. 迁移：导入迁移包
+11. 卸载
+12. 退出
+
+## 迁移导出/导入（管理服务器）
+
+默认迁移包目录：`/var/backups/sb-migrate/`
+
+### 旧机导出
+
+- 进入菜单后执行：`9) 迁移：导出迁移包`
+- 脚本会停止 `sb-controller` 与 `sb-bot`，导出完成后可选是否自动拉起
+- 生成文件名示例：`sb-migrate-YYYYmmdd-HHMMSS.tar.gz`
+- 导出内容：
+  - `data/`（必须）
+  - `.env`（必须）
+  - `scripts/`（建议）
+  - `sb-controller.service` / `sb-bot.service`（如果存在则附带）
+
+### 传输迁移包
+
+```bash
+scp root@旧IP:/var/backups/sb-migrate/sb-migrate-xxxx.tar.gz root@新IP:/root/
+```
+
+### 新机导入
+
+- 在新机先准备项目目录（建议先 `git clone`）
+- 进入菜单执行：`10) 迁移：导入迁移包`
+- 导入脚本会：
+  - 备份旧项目目录到 `/var/backups/sb-migrate/restore-backup-*.tar.gz`
+  - 恢复 `data/.env/scripts`
+  - 进入参数修正向导（CONTROLLER_URL / BOT_TOKEN / ADMIN_CHAT_IDS）
+  - 自动安装依赖、重建 venv、重写 systemd、重启服务
+  - 自检 `/health` 与 bot 服务状态
+
+## .env 配置项（管理服务器）
+
+参考：`/Users/cwzs/Documents/sb-bot-panel/.env.example`
+
+- `CONTROLLER_URL=http://127.0.0.1:8080`
+- `CONTROLLER_PUBLIC_URL=http://your-public-ip:8080`（可选，对外地址）
+- `CONTROLLER_PORT=8080`
+- `AUTH_TOKEN=devtoken123`（可空；空值表示关闭 `/admin/*` 鉴权）
+- `BOT_TOKEN=xxxxxxxx`（必填）
+- `ADMIN_CHAT_IDS=123,456`（可空）
+- `MIGRATE_DIR=/var/backups/sb-migrate`
+
+## 安全提示
+
+- `/admin/backup`、`/admin/migrate/export` 支持可选 Bearer 鉴权：
+  - `AUTH_TOKEN` 为空：不校验，保持兼容行为
+  - `AUTH_TOKEN` 非空：必须带 `Authorization: Bearer <AUTH_TOKEN>`
+- 建议同时使用防火墙限制管理端口来源（仅可信 IP）。
+- 公有仓库通常不需要 token。
+- 私有仓库建议使用 deploy key 或 PAT（Personal Access Token）。
+
+### AUTH_TOKEN 开关与验证
+
+1. 启用鉴权：在 `.env` 设置非空 `AUTH_TOKEN`，重启 `sb-controller`
+2. 关闭鉴权：将 `.env` 里的 `AUTH_TOKEN=` 留空，重启 `sb-controller`
+
+验证命令（启用鉴权时）：
+
+```bash
+# 不带 token，应返回 401
+curl -i -X POST http://127.0.0.1:8080/admin/backup
+
+# 带 token，应返回 200
+curl -i -X POST http://127.0.0.1:8080/admin/backup \
+  -H "Authorization: Bearer your_auth_token"
+```
