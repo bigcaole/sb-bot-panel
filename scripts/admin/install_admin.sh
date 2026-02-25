@@ -175,7 +175,14 @@ EOF
 
   local s_ui_path
   s_ui_path="$(command -v s-ui || true)"
-  if [[ -z "$s_ui_path" || "$s_ui_path" == "/usr/local/bin/s-ui" ]]; then
+  if [[ -z "$s_ui_path" ]]; then
+    cat >/usr/local/bin/s-ui <<EOF
+#!/usr/bin/env bash
+# sb-bot-panel-admin-shortcut
+exec bash "${PROJECT_DIR}/scripts/admin/menu_admin.sh" "\$@"
+EOF
+    chmod 0755 /usr/local/bin/s-ui
+  elif [[ "$s_ui_path" == "/usr/local/bin/s-ui" ]] && grep -q "sb-bot-panel-admin-shortcut" /usr/local/bin/s-ui 2>/dev/null; then
     cat >/usr/local/bin/s-ui <<EOF
 #!/usr/bin/env bash
 # sb-bot-panel-admin-shortcut
