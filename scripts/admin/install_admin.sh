@@ -128,8 +128,12 @@ is_valid_domain() {
 }
 
 ensure_project_dir() {
-  read -r -p "项目目录（默认 /root/sb-bot-panel） [${PROJECT_DIR}]: " input_dir
-  PROJECT_DIR="${input_dir:-$PROJECT_DIR}"
+  if [[ "$MODE" == "reuse-config" && -d "$PROJECT_DIR" && -f "$PROJECT_DIR/controller/app.py" && -f "$PROJECT_DIR/bot/bot.py" ]]; then
+    msg "更新模式使用项目目录：${PROJECT_DIR}"
+  else
+    read -r -p "项目目录（默认 /root/sb-bot-panel） [${PROJECT_DIR}]: " input_dir
+    PROJECT_DIR="${input_dir:-$PROJECT_DIR}"
+  fi
   VENV_DIR="${PROJECT_DIR}/venv"
   ENV_FILE="${PROJECT_DIR}/.env"
 
