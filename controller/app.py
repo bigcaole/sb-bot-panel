@@ -1,5 +1,6 @@
 import base64
 import ipaddress
+import json
 import os
 import sqlite3
 import tarfile
@@ -8,7 +9,7 @@ import uuid
 from pathlib import Path
 import shutil
 import tempfile
-from typing import Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 from urllib.parse import quote
 
 from fastapi import FastAPI, Header, HTTPException, Request
@@ -67,6 +68,16 @@ class SetUserSpeedRequest(BaseModel):
 
 class SetUserStatusRequest(BaseModel):
     status: str = Field(min_length=1)
+
+
+class CreateNodeTaskRequest(BaseModel):
+    task_type: str = Field(min_length=1)
+    payload: Optional[Dict[str, Any]] = None
+
+
+class ReportNodeTaskRequest(BaseModel):
+    status: str = Field(min_length=1)
+    result: str = ""
 
 
 class UpdateNodeRequest(BaseModel):
@@ -182,6 +193,27 @@ def init_db() -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS node_tasks(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                node_code TEXT NOT NULL,
+                task_type TEXT NOT NULL,
+                payload_json TEXT,
+                status TEXT NOT NULL,
+                created_at INTEGER,
+                updated_at INTEGER,
+                result_text TEXT,
+                FOREIGN KEY (node_code) REFERENCES nodes(node_code)
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_node_tasks_node_status_id
+            ON node_tasks(node_code, status, id)
+            """
+        )
         conn.commit()
 
 
@@ -231,6 +263,43 @@ def verify_node_agent_ip(request: Request, node_code: str, expected_agent_ip: Op
             status_code=403,
             detail="node source ip not allowed for {0}".format(node_code),
         )
+
+
+ALLOWED_NODE_TASK_TYPES = {
+    "restart_singbox",
+    "status_singbox",
+    "status_agent",
+    "logs_singbox",
+    "logs_agent",
+    "update_sync",
+    "config_set",
+}
+
+
+def parse_task_payload(payload_json: Optional[str]) -> Dict[str, Any]:
+    raw = str(payload_json or "").strip()
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except ValueError:
+        return {}
+    if isinstance(parsed, dict):
+        return parsed
+    return {}
+
+
+def build_task_row_dict(row: sqlite3.Row) -> Dict[str, Any]:
+    return {
+        "id": int(row["id"]),
+        "node_code": str(row["node_code"]),
+        "task_type": str(row["task_type"]),
+        "payload": parse_task_payload(row["payload_json"]),
+        "status": str(row["status"]),
+        "created_at": int(row["created_at"] or 0),
+        "updated_at": int(row["updated_at"] or 0),
+        "result_text": str(row["result_text"] or ""),
+    }
 
 
 @app.on_event("startup")
@@ -675,6 +744,197 @@ def get_node_stats(node_code: str) -> Dict[str, Union[int, str]]:
             (node_code,),
         ).fetchone()
     return {"node_code": node_code, "bound_users": int(count_row["bound_users"])}
+
+
+@app.post("/nodes/{node_code}/tasks/create", response_model=None)
+def create_node_task(
+    node_code: str,
+    payload: CreateNodeTaskRequest,
+    authorization: Optional[str] = Header(default=None, alias="Authorization"),
+) -> Union[Dict[str, Any], JSONResponse]:
+    auth_error = verify_admin_authorization(authorization)
+    if auth_error is not None:
+        return auth_error
+
+    task_type = str(payload.task_type or "").strip()
+    if task_type not in ALLOWED_NODE_TASK_TYPES:
+        raise HTTPException(status_code=400, detail="unsupported task_type")
+    payload_obj = payload.payload if isinstance(payload.payload, dict) else {}
+    payload_json = json.dumps(payload_obj, ensure_ascii=False)
+    now_ts = int(time.time())
+
+    with get_connection() as conn:
+        node_row = conn.execute(
+            "SELECT node_code FROM nodes WHERE node_code = ?",
+            (node_code,),
+        ).fetchone()
+        if node_row is None:
+            raise HTTPException(status_code=404, detail="Node not found")
+
+        cursor = conn.execute(
+            """
+            INSERT INTO node_tasks(node_code, task_type, payload_json, status, created_at, updated_at, result_text)
+            VALUES (?, ?, ?, 'pending', ?, ?, '')
+            """,
+            (node_code, task_type, payload_json, now_ts, now_ts),
+        )
+        conn.commit()
+        task_id = int(cursor.lastrowid or 0)
+
+        created_row = conn.execute(
+            """
+            SELECT id, node_code, task_type, payload_json, status, created_at, updated_at, result_text
+            FROM node_tasks
+            WHERE id = ?
+            """,
+            (task_id,),
+        ).fetchone()
+    if created_row is None:
+        raise HTTPException(status_code=500, detail="create task failed")
+    return build_task_row_dict(created_row)
+
+
+@app.get("/nodes/{node_code}/tasks", response_model=None)
+def list_node_tasks(
+    node_code: str,
+    limit: int = 20,
+    authorization: Optional[str] = Header(default=None, alias="Authorization"),
+) -> Union[List[Dict[str, Any]], JSONResponse]:
+    auth_error = verify_admin_authorization(authorization)
+    if auth_error is not None:
+        return auth_error
+
+    if limit < 1:
+        limit = 1
+    if limit > 100:
+        limit = 100
+
+    with get_connection() as conn:
+        node_row = conn.execute(
+            "SELECT node_code FROM nodes WHERE node_code = ?",
+            (node_code,),
+        ).fetchone()
+        if node_row is None:
+            raise HTTPException(status_code=404, detail="Node not found")
+        rows = conn.execute(
+            """
+            SELECT id, node_code, task_type, payload_json, status, created_at, updated_at, result_text
+            FROM node_tasks
+            WHERE node_code = ?
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (node_code, limit),
+        ).fetchall()
+    return [build_task_row_dict(row) for row in rows]
+
+
+@app.post("/nodes/{node_code}/tasks/next", response_model=None)
+def get_next_node_task(
+    node_code: str,
+    request: Request,
+    authorization: Optional[str] = Header(default=None, alias="Authorization"),
+) -> Union[Dict[str, Any], JSONResponse]:
+    auth_error = verify_admin_authorization(authorization)
+    if auth_error is not None:
+        return auth_error
+
+    now_ts = int(time.time())
+    with get_connection() as conn:
+        node_row = conn.execute(
+            "SELECT node_code, agent_ip FROM nodes WHERE node_code = ?",
+            (node_code,),
+        ).fetchone()
+        if node_row is None:
+            raise HTTPException(status_code=404, detail="Node not found")
+        verify_node_agent_ip(request, node_code, node_row["agent_ip"])
+
+        row = conn.execute(
+            """
+            SELECT id, node_code, task_type, payload_json, status, created_at, updated_at, result_text
+            FROM node_tasks
+            WHERE node_code = ? AND status = 'pending'
+            ORDER BY id ASC
+            LIMIT 1
+            """,
+            (node_code,),
+        ).fetchone()
+        if row is None:
+            return {"ok": True, "task": None}
+
+        cursor = conn.execute(
+            """
+            UPDATE node_tasks
+            SET status = 'running', updated_at = ?
+            WHERE id = ? AND status = 'pending'
+            """,
+            (now_ts, int(row["id"])),
+        )
+        if int(cursor.rowcount or 0) <= 0:
+            return {"ok": True, "task": None}
+        conn.commit()
+
+        running_row = conn.execute(
+            """
+            SELECT id, node_code, task_type, payload_json, status, created_at, updated_at, result_text
+            FROM node_tasks
+            WHERE id = ?
+            """,
+            (int(row["id"]),),
+        ).fetchone()
+
+    if running_row is None:
+        return {"ok": True, "task": None}
+    return {"ok": True, "task": build_task_row_dict(running_row)}
+
+
+@app.post("/nodes/{node_code}/tasks/{task_id}/report", response_model=None)
+def report_node_task(
+    node_code: str,
+    task_id: int,
+    payload: ReportNodeTaskRequest,
+    request: Request,
+    authorization: Optional[str] = Header(default=None, alias="Authorization"),
+) -> Union[Dict[str, Any], JSONResponse]:
+    auth_error = verify_admin_authorization(authorization)
+    if auth_error is not None:
+        return auth_error
+
+    status_value = str(payload.status or "").strip().lower()
+    if status_value not in ("running", "success", "failed"):
+        raise HTTPException(status_code=400, detail="status must be running/success/failed")
+    result_text = str(payload.result or "")
+    if len(result_text) > 12000:
+        result_text = result_text[:12000]
+    now_ts = int(time.time())
+
+    with get_connection() as conn:
+        node_row = conn.execute(
+            "SELECT node_code, agent_ip FROM nodes WHERE node_code = ?",
+            (node_code,),
+        ).fetchone()
+        if node_row is None:
+            raise HTTPException(status_code=404, detail="Node not found")
+        verify_node_agent_ip(request, node_code, node_row["agent_ip"])
+
+        task_row = conn.execute(
+            "SELECT id FROM node_tasks WHERE id = ? AND node_code = ?",
+            (task_id, node_code),
+        ).fetchone()
+        if task_row is None:
+            raise HTTPException(status_code=404, detail="Task not found")
+
+        conn.execute(
+            """
+            UPDATE node_tasks
+            SET status = ?, result_text = ?, updated_at = ?
+            WHERE id = ? AND node_code = ?
+            """,
+            (status_value, result_text, now_ts, task_id, node_code),
+        )
+        conn.commit()
+
+    return {"ok": True, "node_code": node_code, "task_id": task_id, "status": status_value}
 
 
 # Used by node-side agent polling periodically to sync node and bound-user config.

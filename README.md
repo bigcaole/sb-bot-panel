@@ -210,6 +210,7 @@ sudo bash scripts/admin/install_admin.sh --configure-only
 
 ```bash
 sudo bash scripts/admin/menu_admin.sh
+```
 
 ## Bot 远程管理（管理服务器）
 
@@ -222,7 +223,22 @@ sudo bash scripts/admin/menu_admin.sh
 - 查看日志（controller/bot/caddy）
 - HTTPS 证书状态 / 刷新
 - 迁移导出 / 迁移导入（导入走非交互模式）
-```
+- 访问安全状态（检查节点来源 IP 白名单配置）
+
+## Bot 远程管理（节点服务器）
+
+在 Telegram 的 `节点与线路 -> 节点远程运维` 中可按节点下发任务：
+
+- 同步更新（节点执行 `scripts/install.sh --sync-only`）
+- 重启 sing-box
+- 查看 sing-box / sb-agent 状态
+- 查看 sing-box / sb-agent 日志（通过任务回传）
+- 修改节点参数（写入 `/etc/sb-agent/config.json`，如 `poll_interval`、`tuic_domain`、`tuic_listen_port` 等）
+
+安全建议：
+
+- 强烈建议配置 `AUTH_TOKEN`（否则上述远程接口在开放端口下无鉴权）。
+- 每个节点设置 `agent_ip` 白名单，并在管理服务器 UFW 仅放行节点 IP 到 controller 端口。
 
 安装后可直接用快捷命令打开菜单：
 

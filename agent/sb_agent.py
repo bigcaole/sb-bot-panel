@@ -203,14 +203,57 @@ def sync_from_controller(config: AgentConfig) -> Dict[str, Any]:
     return data
 
 
-def run_command(command: List[str]) -> Tuple[int, str, str]:
-    result = subprocess.run(
-        command,
-        capture_output=True,
-        text=True,
-        check=False,
+def fetch_next_node_task(config: AgentConfig) -> Optional[Dict[str, Any]]:
+    url = "{0}/nodes/{1}/tasks/next".format(config.controller_url, config.node_code)
+    data, status_code, error_message = request_json(
+        "POST",
+        url,
+        auth_token=config.auth_token,
+        payload={},
+        timeout=30,
     )
-    return result.returncode, result.stdout or "", result.stderr or ""
+    if data is None:
+        if status_code in (401, 403, 404):
+            LOGGER.warning("拉取节点任务失败(%s): %s", status_code, error_message)
+        return None
+    task_obj = data.get("task") if isinstance(data, dict) else None
+    if isinstance(task_obj, dict):
+        return task_obj
+    return None
+
+
+def report_node_task(
+    config: AgentConfig, task_id: int, status: str, result: str
+) -> None:
+    url = "{0}/nodes/{1}/tasks/{2}/report".format(
+        config.controller_url, config.node_code, int(task_id)
+    )
+    payload = {
+        "status": status,
+        "result": truncate_text(result, 10000),
+    }
+    _, status_code, error_message = request_json(
+        "POST",
+        url,
+        auth_token=config.auth_token,
+        payload=payload,
+        timeout=30,
+    )
+    if status_code not in (200, 201):
+        LOGGER.warning("回传节点任务结果失败(%s): %s", status_code, error_message)
+
+
+def run_command(command: List[str]) -> Tuple[int, str, str]:
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return result.returncode, result.stdout or "", result.stderr or ""
+    except Exception as exc:
+        return 1, "", str(exc)
 
 
 def command_exists(name: str) -> bool:
@@ -222,6 +265,13 @@ def parse_int(value: Any, default: int = 0) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def truncate_text(raw: str, limit: int = 4000) -> str:
+    text = str(raw or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "\n...（已截断）"
 
 
 def parse_reality_keypair_output(output: str) -> Tuple[str, str]:
@@ -740,6 +790,167 @@ def apply_tuic_ufw_rules(ports: List[int]) -> None:
     LOGGER.info("TUIC 防火墙规则已同步（目标端口数=%s，执行放行命令=%s）", len(desired_ports), changed_count)
 
 
+def apply_agent_config_patch(patch_payload: Dict[str, Any]) -> Tuple[bool, str]:
+    raw = _read_json(CONFIG_PATH, {})
+    if not isinstance(raw, dict):
+        return False, "当前配置文件不可解析"
+
+    allowed_keys = {
+        "poll_interval",
+        "tuic_domain",
+        "tuic_listen_port",
+        "acme_email",
+        "controller_url",
+        "auth_token",
+        "node_code",
+    }
+    updates: Dict[str, Any] = {}
+    for key, value in patch_payload.items():
+        if key in allowed_keys:
+            updates[key] = value
+
+    if not updates:
+        return False, "未提供可更新字段"
+
+    changed_keys: List[str] = []
+    for key, value in updates.items():
+        if key == "poll_interval":
+            parsed = parse_int(value, 0)
+            if parsed < 5:
+                return False, "poll_interval 必须 >= 5"
+            value = parsed
+        elif key == "tuic_listen_port":
+            parsed = parse_int(value, 0)
+            if parsed < 1 or parsed > 65535:
+                return False, "tuic_listen_port 必须在 1-65535"
+            value = parsed
+        elif key in ("tuic_domain", "acme_email", "auth_token", "node_code"):
+            value = str(value or "").strip()
+            if key == "node_code" and not value:
+                return False, "node_code 不能为空"
+        elif key == "controller_url":
+            value = str(value or "").strip().rstrip("/")
+            if not value:
+                return False, "controller_url 不能为空"
+            if not value.startswith("http://") and not value.startswith("https://"):
+                value = "http://{0}".format(value)
+        if raw.get(key) != value:
+            raw[key] = value
+            changed_keys.append(key)
+
+    if not changed_keys:
+        return True, "配置无变化"
+
+    _write_json(CONFIG_PATH, raw, mode=0o600)
+    return True, "已更新配置项: {0}".format(", ".join(changed_keys))
+
+
+def execute_node_task(config: AgentConfig, task: Dict[str, Any]) -> Tuple[str, str]:
+    task_id = parse_int(task.get("id"), 0)
+    task_type = str(task.get("task_type", "")).strip()
+    payload = task.get("payload")
+    if not isinstance(payload, dict):
+        payload = {}
+    LOGGER.info("执行节点任务 id=%s type=%s", task_id, task_type)
+
+    if task_type == "restart_singbox":
+        code, stdout, stderr = run_command(["systemctl", "restart", "sing-box"])
+        if code == 0:
+            return "success", "sing-box 重启成功"
+        return "failed", truncate_text("重启失败\nstdout:\n{0}\nstderr:\n{1}".format(stdout, stderr))
+
+    if task_type == "status_singbox":
+        _, active_stdout, active_stderr = run_command(["systemctl", "is-active", "sing-box"])
+        _, status_stdout, status_stderr = run_command(
+            ["systemctl", "status", "sing-box", "--no-pager", "-n", "40"]
+        )
+        result_text = (
+            "is-active:\n{0}\n{1}\n\nstatus:\n{2}\n{3}".format(
+                active_stdout.strip(),
+                active_stderr.strip(),
+                status_stdout.strip(),
+                status_stderr.strip(),
+            )
+        )
+        return "success", truncate_text(result_text)
+
+    if task_type == "status_agent":
+        _, active_stdout, active_stderr = run_command(["systemctl", "is-active", "sb-agent"])
+        _, status_stdout, status_stderr = run_command(
+            ["systemctl", "status", "sb-agent", "--no-pager", "-n", "40"]
+        )
+        result_text = (
+            "is-active:\n{0}\n{1}\n\nstatus:\n{2}\n{3}".format(
+                active_stdout.strip(),
+                active_stderr.strip(),
+                status_stdout.strip(),
+                status_stderr.strip(),
+            )
+        )
+        return "success", truncate_text(result_text)
+
+    if task_type == "logs_singbox":
+        lines = parse_int(payload.get("lines"), 120)
+        if lines < 20:
+            lines = 20
+        if lines > 300:
+            lines = 300
+        code, stdout, stderr = run_command(
+            ["journalctl", "-u", "sing-box", "-n", str(lines), "--no-pager"]
+        )
+        if code == 0:
+            return "success", truncate_text(stdout, 8000)
+        return "failed", truncate_text(stderr or stdout, 4000)
+
+    if task_type == "logs_agent":
+        lines = parse_int(payload.get("lines"), 120)
+        if lines < 20:
+            lines = 20
+        if lines > 300:
+            lines = 300
+        code, stdout, stderr = run_command(
+            ["journalctl", "-u", "sb-agent", "-n", str(lines), "--no-pager"]
+        )
+        if code == 0:
+            return "success", truncate_text(stdout, 8000)
+        return "failed", truncate_text(stderr or stdout, 4000)
+
+    if task_type == "update_sync":
+        log_path = "/tmp/sb-node-update-{0}.log".format(int(time.time()))
+        code, stdout, stderr = run_command(
+            [
+                "bash",
+                "-lc",
+                "if [ -d /root/sb-bot-panel ]; then "
+                "cd /root/sb-bot-panel && nohup bash scripts/install.sh --sync-only > {0} 2>&1 & "
+                "else exit 2; fi".format(log_path),
+            ]
+        )
+        if code == 0:
+            return "success", "已启动后台更新任务，日志: {0}".format(log_path)
+        return "failed", truncate_text(stderr or stdout, 4000)
+
+    if task_type == "config_set":
+        ok, msg = apply_agent_config_patch(payload)
+        if ok:
+            return "success", msg
+        return "failed", msg
+
+    return "failed", "unsupported task_type: {0}".format(task_type)
+
+
+def process_node_tasks(config: AgentConfig, max_tasks: int = 3) -> None:
+    for _ in range(max_tasks):
+        task = fetch_next_node_task(config)
+        if not isinstance(task, dict):
+            return
+        task_id = parse_int(task.get("id"), 0)
+        if task_id <= 0:
+            continue
+        status, result = execute_node_task(config, task)
+        report_node_task(config, task_id, status, result)
+
+
 def tc_run(command: List[str], ignore_error: bool = False) -> bool:
     code, _, stderr = run_command(command)
     if code != 0 and not ignore_error:
@@ -881,6 +1092,7 @@ def handle_once(config: AgentConfig) -> None:
     if config.tuic_domain and config.acme_email:
         apply_tuic_ufw_rules(build_tuic_ufw_ports(config, node, tuic_records))
     apply_tuic_speed_limits(tuic_speed_rules)
+    process_node_tasks(config)
 
 
 def _signal_handler(signum: int, frame: Any) -> None:
@@ -894,29 +1106,32 @@ def main() -> int:
     signal.signal(signal.SIGINT, _signal_handler)
     signal.signal(signal.SIGTERM, _signal_handler)
 
+    os.makedirs("/var/log/sing-box", exist_ok=True)
+    os.makedirs(SING_BOX_CERTMAGIC_DIR, exist_ok=True)
+
     try:
-        config = load_config()
+        first_config = load_config()
     except Exception as exc:
         LOGGER.error("加载配置失败: %s", exc)
         return 1
 
-    os.makedirs("/var/log/sing-box", exist_ok=True)
-    os.makedirs(SING_BOX_CERTMAGIC_DIR, exist_ok=True)
-
     LOGGER.info(
         "sb-agent 启动: node_code=%s poll_interval=%s tuic_domain=%s tuic_listen_port=%s",
-        config.node_code,
-        config.poll_interval,
-        config.tuic_domain or "(未启用)",
-        config.tuic_listen_port,
+        first_config.node_code,
+        first_config.poll_interval,
+        first_config.tuic_domain or "(未启用)",
+        first_config.tuic_listen_port,
     )
 
     while not _STOP:
+        sleep_seconds = DEFAULT_POLL_INTERVAL
         try:
+            config = load_config()
             handle_once(config)
+            sleep_seconds = config.poll_interval
         except Exception as exc:
             LOGGER.exception("同步循环异常: %s", exc)
-        for _ in range(config.poll_interval):
+        for _ in range(sleep_seconds):
             if _STOP:
                 break
             time.sleep(1)

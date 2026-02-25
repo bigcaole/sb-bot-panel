@@ -107,6 +107,17 @@ USER_SPEED_ACTIVE_KEY = "user_speed_active"
 USER_SPEED_INPUT, USER_SPEED_CONFIRM = 400, 401
 MAINTAIN_CONFIG_INPUT = 700
 MAINTAIN_IMPORT_INPUT = 701
+NODE_OPS_CONFIG_KEY = "node_ops_config_wizard"
+NODE_OPS_CONFIG_INPUT = 900
+NODE_OPS_ALLOWED_KEYS = {
+    "poll_interval",
+    "tuic_domain",
+    "tuic_listen_port",
+    "acme_email",
+    "controller_url",
+    "auth_token",
+    "node_code",
+}
 
 ADMIN_PROJECT_DIR = os.getenv("SB_PANEL_DIR", "/root/sb-bot-panel").strip() or "/root/sb-bot-panel"
 ADMIN_ENV_FILE = os.path.join(ADMIN_PROJECT_DIR, ".env")
@@ -157,6 +168,7 @@ SUBMENUS = {
         "buttons": [
             ("查看节点列表", "action:nodes_list"),
             ("新增节点", "action:nodes_create"),
+            ("节点远程运维", "action:node_ops"),
             ("返回", "menu:main"),
         ],
     },
@@ -341,6 +353,69 @@ def build_maintain_logs_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton("caddy日志", callback_data="maintain:logs:caddy"),
             ],
             [InlineKeyboardButton("返回", callback_data="menu:maintain")],
+        ]
+    )
+
+
+def build_node_ops_picker_keyboard(nodes: list) -> InlineKeyboardMarkup:
+    rows = []
+    for node in nodes or []:
+        node_code = str(node.get("node_code", "")).strip()
+        if not node_code:
+            continue
+        region = str(node.get("region", "")).strip() or "-"
+        host = str(node.get("host", "")).strip() or "-"
+        enabled_text = "启用" if int(node.get("enabled", 0) or 0) == 1 else "禁用"
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    f"{node_code} | {region} | {enabled_text} | {host}",
+                    callback_data=f"nodeops:panel:{node_code}",
+                )
+            ]
+        )
+    rows.append([InlineKeyboardButton("返回", callback_data="menu:nodes")])
+    return InlineKeyboardMarkup(rows)
+
+
+def build_node_ops_panel_keyboard(node_code: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("同步更新（节点侧）", callback_data=f"nodeops:run:{node_code}:update")],
+            [InlineKeyboardButton("重启 sing-box", callback_data=f"nodeops:run:{node_code}:restart")],
+            [
+                InlineKeyboardButton("查看 sing-box 状态", callback_data=f"nodeops:run:{node_code}:status_sb"),
+                InlineKeyboardButton("查看 sb-agent 状态", callback_data=f"nodeops:run:{node_code}:status_ag"),
+            ],
+            [
+                InlineKeyboardButton("查看 sing-box 日志", callback_data=f"nodeops:run:{node_code}:logs_sb"),
+                InlineKeyboardButton("查看 sb-agent 日志", callback_data=f"nodeops:run:{node_code}:logs_ag"),
+            ],
+            [InlineKeyboardButton("修改节点参数", callback_data=f"nodeops:config:{node_code}")],
+            [InlineKeyboardButton("查看任务记录", callback_data=f"nodeops:tasks:{node_code}")],
+            [InlineKeyboardButton("返回节点远程运维列表", callback_data="action:node_ops")],
+        ]
+    )
+
+
+def build_node_ops_task_done_keyboard(node_code: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("刷新任务记录", callback_data=f"nodeops:tasks:{node_code}"),
+                InlineKeyboardButton("返回运维面板", callback_data=f"nodeops:panel:{node_code}"),
+            ]
+        ]
+    )
+
+
+def build_node_ops_task_list_keyboard(node_code: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("刷新", callback_data=f"nodeops:tasks:{node_code}"),
+                InlineKeyboardButton("返回运维面板", callback_data=f"nodeops:panel:{node_code}"),
+            ]
         ]
     )
 
@@ -977,8 +1052,11 @@ def localize_controller_error(error_message: str) -> str:
     if error_message.startswith("node source ip not allowed for"):
         return "节点来源IP不在白名单中"
     mapping = {
+        "unauthorized": "未授权（请检查 AUTH_TOKEN）",
         "User not found": "用户不存在",
         "Node not found": "节点不存在",
+        "Task not found": "任务不存在",
+        "unsupported task_type": "不支持的任务类型",
         "Node is disabled": "节点已禁用",
         "User already assigned to this node": "该用户已绑定该节点",
         "No available TUIC port in node pool": "该节点端口池已满，暂无可用TUIC端口",
@@ -1205,6 +1283,100 @@ def format_node_reality_setup_text(node_code: str, node: dict) -> str:
     )
 
 
+def format_node_ops_panel_text(node: dict) -> str:
+    node_code = str(node.get("node_code", "")).strip()
+    region = str(node.get("region", "")).strip() or "-"
+    host = str(node.get("host", "")).strip() or "-"
+    enabled_text = "启用" if int(node.get("enabled", 0) or 0) == 1 else "禁用"
+    tags = format_node_tags(node)
+    last_seen_at = 0
+    try:
+        last_seen_at = int(node.get("last_seen_at", 0) or 0)
+    except (TypeError, ValueError):
+        last_seen_at = 0
+    return (
+        "节点远程运维\n\n"
+        f"节点：{node_code}\n"
+        f"地区：{region}\n"
+        f"入口：{host}\n"
+        f"状态：{enabled_text}\n"
+        f"支持协议：{tags}\n"
+        f"最后心跳：{format_last_seen_text(last_seen_at)}\n\n"
+        "说明：以下操作通过 agent 拉取任务执行，通常在 10~30 秒内生效。"
+    )
+
+
+def truncate_task_result_text(value: str, limit: int = 240) -> str:
+    raw = str(value or "").strip().replace("\r\n", "\n")
+    raw = " ".join(raw.split())
+    if not raw:
+        return "(无输出)"
+    if len(raw) <= limit:
+        return raw
+    return raw[:limit] + "..."
+
+
+def format_node_tasks_text(node_code: str, tasks: list) -> str:
+    lines = [f"节点任务记录：{node_code}", ""]
+    if not tasks:
+        lines.append("暂无任务记录。")
+        return "\n".join(lines)
+    for item in tasks:
+        task_id = int(item.get("id", 0) or 0)
+        task_type = str(item.get("task_type", ""))
+        status_text = str(item.get("status", ""))
+        updated_at = int(item.get("updated_at", 0) or 0)
+        updated_text = (
+            datetime.fromtimestamp(updated_at).strftime("%Y-%m-%d %H:%M:%S")
+            if updated_at > 0
+            else "-"
+        )
+        result_text = truncate_task_result_text(item.get("result_text", ""))
+        lines.append(
+            f"#{task_id} | {task_type} | {status_text} | {updated_text}\n结果：{result_text}"
+        )
+    return "\n\n".join(lines[:11])
+
+
+def parse_node_ops_config_updates(raw_text: str) -> tuple:
+    updates = {}
+    for line in raw_text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if "=" not in stripped:
+            return False, {}, f"格式错误：{stripped}（请使用 KEY=VALUE）"
+        key, value = stripped.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if value == "-":
+            value = ""
+        if key not in NODE_OPS_ALLOWED_KEYS:
+            return False, {}, f"不支持的参数：{key}"
+        updates[key] = value
+    if not updates:
+        return False, {}, "未检测到有效修改项"
+
+    if "poll_interval" in updates:
+        if not updates["poll_interval"].isdigit() or int(updates["poll_interval"]) < 5:
+            return False, {}, "poll_interval 必须是 >=5 的整数"
+        updates["poll_interval"] = int(updates["poll_interval"])
+    if "tuic_listen_port" in updates:
+        if not updates["tuic_listen_port"].isdigit():
+            return False, {}, "tuic_listen_port 必须是 1-65535 的整数"
+        port_value = int(updates["tuic_listen_port"])
+        if port_value < 1 or port_value > 65535:
+            return False, {}, "tuic_listen_port 必须是 1-65535 的整数"
+        updates["tuic_listen_port"] = port_value
+    if "controller_url" in updates:
+        updates["controller_url"] = normalize_simple_url(updates["controller_url"], "http")
+        if not updates["controller_url"]:
+            return False, {}, "controller_url 不能为空"
+    if "node_code" in updates and not str(updates["node_code"]).strip():
+        return False, {}, "node_code 不能为空"
+    return True, updates, ""
+
+
 async def controller_request(
     method: str, path: str, payload: dict = None
 ) -> tuple:
@@ -1329,6 +1501,116 @@ async def render_node_reality_setup(query, node_code: str) -> None:
     await query.edit_message_text(
         format_node_reality_setup_text(node_code, node or {}),
         reply_markup=build_node_reality_setup_keyboard(node_code),
+    )
+
+
+async def create_node_task(node_code: str, task_type: str, payload: dict = None) -> tuple:
+    request_payload = {"task_type": task_type}
+    if isinstance(payload, dict):
+        request_payload["payload"] = payload
+    result, error_message, status_code = await controller_request(
+        "POST", f"/nodes/{node_code}/tasks/create", payload=request_payload
+    )
+    return result, error_message, status_code
+
+
+async def render_node_ops_picker(query, notice: str = "") -> None:
+    nodes, error_message, _ = await controller_request("GET", "/nodes")
+    if error_message:
+        await query.edit_message_text(
+            f"获取节点列表失败：{localize_controller_error(error_message)}",
+            reply_markup=build_submenu("nodes"),
+        )
+        return
+    header = "节点远程运维：请选择要操作的节点"
+    if notice:
+        header = f"{notice}\n\n{header}"
+    if not nodes:
+        header = f"{header}\n（暂无节点）"
+    await query.edit_message_text(
+        header,
+        reply_markup=build_node_ops_picker_keyboard(nodes or []),
+    )
+
+
+async def render_node_ops_panel(query, node_code: str, notice: str = "") -> None:
+    node, error_message, status_code = await controller_request("GET", f"/nodes/{node_code}")
+    if error_message:
+        localized = localize_controller_error(error_message)
+        if status_code == 404 and localized == "节点不存在":
+            await render_node_ops_picker(query, notice=f"节点不存在：{node_code}")
+            return
+        await query.edit_message_text(
+            f"获取节点详情失败：{localized}",
+            reply_markup=build_back_keyboard("action:node_ops"),
+        )
+        return
+
+    text = format_node_ops_panel_text(node or {})
+    if notice:
+        text = f"{notice}\n\n{text}"
+    await query.edit_message_text(
+        text,
+        reply_markup=build_node_ops_panel_keyboard(node_code),
+    )
+
+
+async def render_node_ops_tasks(query, node_code: str, notice: str = "") -> None:
+    tasks, error_message, status_code = await controller_request(
+        "GET", f"/nodes/{node_code}/tasks?limit=10"
+    )
+    if error_message:
+        localized = localize_controller_error(error_message)
+        if status_code == 404 and localized == "节点不存在":
+            await render_node_ops_picker(query, notice=f"节点不存在：{node_code}")
+            return
+        await query.edit_message_text(
+            f"获取任务记录失败：{localized}",
+            reply_markup=build_back_keyboard(f"nodeops:panel:{node_code}"),
+        )
+        return
+
+    text = format_node_tasks_text(node_code, tasks if isinstance(tasks, list) else [])
+    if notice:
+        text = f"{notice}\n\n{text}"
+    await query.edit_message_text(
+        text,
+        reply_markup=build_node_ops_task_list_keyboard(node_code),
+    )
+
+
+async def run_node_ops_action(query, node_code: str, action_key: str) -> None:
+    task_mapping = {
+        "restart": ("restart_singbox", None, "已下发“重启 sing-box”任务"),
+        "status_sb": ("status_singbox", None, "已下发“查看 sing-box 状态”任务"),
+        "status_ag": ("status_agent", None, "已下发“查看 sb-agent 状态”任务"),
+        "logs_sb": ("logs_singbox", {"lines": 120}, "已下发“查看 sing-box 日志”任务"),
+        "logs_ag": ("logs_agent", {"lines": 120}, "已下发“查看 sb-agent 日志”任务"),
+        "update": ("update_sync", None, "已下发“节点同步更新”任务"),
+    }
+    if action_key not in task_mapping:
+        await query.edit_message_text(
+            "不支持的远程操作。",
+            reply_markup=build_back_keyboard(f"nodeops:panel:{node_code}"),
+        )
+        return
+    task_type, payload, action_text = task_mapping[action_key]
+    result, error_message, status_code = await create_node_task(node_code, task_type, payload)
+    if error_message:
+        localized = localize_controller_error(error_message)
+        if status_code == 404 and localized == "节点不存在":
+            await render_node_ops_picker(query, notice=f"节点不存在：{node_code}")
+            return
+        await query.edit_message_text(
+            f"任务下发失败：{localized}",
+            reply_markup=build_back_keyboard(f"nodeops:panel:{node_code}"),
+        )
+        return
+    task_id = int(result.get("id", 0) or 0) if isinstance(result, dict) else 0
+    await query.edit_message_text(
+        f"{action_text}\n任务ID：{task_id}\n\n"
+        "说明：agent 轮询到任务后会执行，可点“刷新任务记录”查看结果。",
+        reply_markup=build_node_ops_task_done_keyboard(node_code),
     )
 
 
@@ -1684,6 +1966,123 @@ async def run_admin_node_access_status_action(query, back_menu_callback: str) ->
         "\n".join(lines),
         reply_markup=build_back_keyboard(back_menu_callback),
     )
+
+
+async def start_node_ops_config_wizard(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    query = update.callback_query
+    if not query:
+        return ConversationHandler.END
+    if not await ensure_admin_callback(update):
+        return ConversationHandler.END
+    await query.answer()
+
+    parts = (query.data or "").split(":", maxsplit=2)
+    if len(parts) != 3:
+        await query.edit_message_text("请求无效，请重试。", reply_markup=build_submenu("nodes"))
+        return ConversationHandler.END
+    node_code = parts[2]
+    context.user_data[NODE_OPS_CONFIG_KEY] = {"node_code": node_code}
+    await query.edit_message_text(
+        "节点参数远程修改\n\n"
+        f"目标节点：{node_code}\n"
+        "请输入要修改的参数（每行一个 KEY=VALUE）：\n\n"
+        "可修改键：poll_interval, tuic_domain, tuic_listen_port, acme_email,\n"
+        "controller_url, auth_token, node_code\n\n"
+        "示例：\n"
+        "poll_interval=10\n"
+        "tuic_domain=jp1.cwzs.de\n"
+        "tuic_listen_port=8443\n"
+        "acme_email=-   （使用 - 清空可选字段）\n\n"
+        "发送 /cancel 取消。",
+    )
+    return NODE_OPS_CONFIG_INPUT
+
+
+async def node_ops_config_input(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    if not update.message or not update.message.text:
+        return NODE_OPS_CONFIG_INPUT
+
+    pending = context.user_data.get(NODE_OPS_CONFIG_KEY, {})
+    node_code = str(pending.get("node_code", "")).strip()
+    if not node_code:
+        context.user_data.pop(NODE_OPS_CONFIG_KEY, None)
+        await reply_text_with_auto_clear(
+            update.message,
+            context,
+            "配置状态已失效，请重新进入节点远程运维。",
+            reply_markup=build_submenu("nodes"),
+        )
+        return ConversationHandler.END
+
+    ok, updates, err_text = parse_node_ops_config_updates(update.message.text.strip())
+    if not ok:
+        await update.message.reply_text(
+            f"参数校验失败：{err_text}\n请重新输入，或发送 /cancel 取消。"
+        )
+        return NODE_OPS_CONFIG_INPUT
+
+    result, error_message, status_code = await create_node_task(
+        node_code=node_code,
+        task_type="config_set",
+        payload=updates,
+    )
+    context.user_data.pop(NODE_OPS_CONFIG_KEY, None)
+    if error_message:
+        localized = localize_controller_error(error_message)
+        if status_code == 404 and localized == "节点不存在":
+            await reply_text_with_auto_clear(
+                update.message,
+                context,
+                f"节点不存在：{node_code}",
+                reply_markup=build_submenu("nodes"),
+            )
+            return ConversationHandler.END
+        await reply_text_with_auto_clear(
+            update.message,
+            context,
+            f"任务下发失败：{localized}",
+            reply_markup=build_back_keyboard(f"nodeops:panel:{node_code}"),
+        )
+        return ConversationHandler.END
+
+    task_id = int(result.get("id", 0) or 0) if isinstance(result, dict) else 0
+    await reply_text_with_auto_clear(
+        update.message,
+        context,
+        "已下发节点配置更新任务。\n"
+        f"节点：{node_code}\n"
+        f"任务ID：{task_id}\n\n"
+        "说明：agent 拉取任务后会写入 /etc/sb-agent/config.json 并在下次轮询生效。",
+        reply_markup=build_node_ops_task_done_keyboard(node_code),
+    )
+    return ConversationHandler.END
+
+
+async def cancel_node_ops_config_command(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    node_code = str(context.user_data.get(NODE_OPS_CONFIG_KEY, {}).get("node_code", "")).strip()
+    context.user_data.pop(NODE_OPS_CONFIG_KEY, None)
+    if update.message:
+        if node_code:
+            await reply_text_with_auto_clear(
+                update.message,
+                context,
+                "已取消。",
+                reply_markup=build_back_keyboard(f"nodeops:panel:{node_code}"),
+            )
+        else:
+            await reply_text_with_auto_clear(
+                update.message,
+                context,
+                "已取消。",
+                reply_markup=build_submenu("nodes"),
+            )
+    return ConversationHandler.END
 
 
 def mask_sensitive_env_value(key: str, value: str) -> str:
@@ -3888,6 +4287,36 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await render_nodes_list(query)
         return
 
+    if callback_data == "action:node_ops":
+        await render_node_ops_picker(query)
+        return
+
+    if callback_data.startswith("nodeops:panel:"):
+        parts = callback_data.split(":", maxsplit=2)
+        if len(parts) != 3:
+            await query.edit_message_text("请求无效，请重试。", reply_markup=build_submenu("nodes"))
+            return
+        await render_node_ops_panel(query, parts[2])
+        return
+
+    if callback_data.startswith("nodeops:run:"):
+        parts = callback_data.split(":", maxsplit=3)
+        if len(parts) != 4:
+            await query.edit_message_text("请求无效，请重试。", reply_markup=build_submenu("nodes"))
+            return
+        node_code = parts[2]
+        action_key = parts[3]
+        await run_node_ops_action(query, node_code, action_key)
+        return
+
+    if callback_data.startswith("nodeops:tasks:"):
+        parts = callback_data.split(":", maxsplit=2)
+        if len(parts) != 3:
+            await query.edit_message_text("请求无效，请重试。", reply_markup=build_submenu("nodes"))
+            return
+        await render_node_ops_tasks(query, parts[2])
+        return
+
     if callback_data.startswith("node:detail:"):
         node_code = callback_data.split(":", maxsplit=2)[2]
         await render_node_detail(query, node_code)
@@ -4375,6 +4804,18 @@ def main() -> None:
         fallbacks=[CommandHandler("cancel", cancel_maintain_import_command)],
     )
     application.add_handler(maintain_import_conversation)
+    node_ops_config_conversation = ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(start_node_ops_config_wizard, pattern=r"^nodeops:config:[^:]+$")
+        ],
+        states={
+            NODE_OPS_CONFIG_INPUT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, node_ops_config_input)
+            ]
+        },
+        fallbacks=[CommandHandler("cancel", cancel_node_ops_config_command)],
+    )
+    application.add_handler(node_ops_config_conversation)
     application.add_handler(CommandHandler("cancel", cancel_idle))
     application.add_handler(CallbackQueryHandler(handle_callback))
     application.add_handler(CallbackQueryHandler(refresh_callback_menu_ttl), group=1)
