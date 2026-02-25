@@ -990,13 +990,20 @@ def _build_subscription_links_text(user_code: str) -> str:
             else:
                 lines.append("# {0}: REALITY params missing, skipped vless link".format(node_code))
 
-        # A 模式：节点单端口监听，TUIC 端口使用 nodes.tuic_listen_port（默认 8443）。
-        # B 模式：节点端口池，才使用 user_nodes.tuic_port（当前生成链接逻辑中忽略该字段，仅保留兼容）。
+        # B 模式：优先使用 user_nodes.tuic_port（端口池分配），可支持按用户端口能力（例如限速策略）。
+        # A 模式：当 user_nodes.tuic_port 缺失时，回退 nodes.tuic_listen_port（默认 8443）。
         if supports_tuic == 1:
             try:
-                tuic_port = int(row["tuic_listen_port"] or 8443)
+                assigned_port = int(row["tuic_port"] or 0)
             except (TypeError, ValueError):
-                tuic_port = 8443
+                assigned_port = 0
+            if assigned_port >= 1 and assigned_port <= 65535:
+                tuic_port = assigned_port
+            else:
+                try:
+                    tuic_port = int(row["tuic_listen_port"] or 8443)
+                except (TypeError, ValueError):
+                    tuic_port = 8443
             name = quote("{0}-T".format(node_code), safe="")
             tuic_link = "tuic://{0}:{0}@{1}:{2}?alpn=h3".format(
                 user_row["tuic_secret"], host, tuic_port

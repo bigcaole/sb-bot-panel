@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -19,6 +20,7 @@ SING_BOX_CONFIG_PATH = "/etc/sing-box/config.json"
 AGENT_LOG_DIR = "/var/log/sb-agent"
 AGENT_LOG_PATH = "/var/log/sb-agent/agent.log"
 SING_BOX_CERTMAGIC_DIR = "/var/lib/sing-box/certmagic"
+TUIC_TC_STATE_PATH = "/etc/sb-agent/tuic_tc_state.json"
 
 DEFAULT_POLL_INTERVAL = 15
 
@@ -210,6 +212,17 @@ def run_command(command: List[str]) -> Tuple[int, str, str]:
     return result.returncode, result.stdout or "", result.stderr or ""
 
 
+def command_exists(name: str) -> bool:
+    return shutil.which(name) is not None
+
+
+def parse_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def parse_reality_keypair_output(output: str) -> Tuple[str, str]:
     private_key = ""
     public_key = ""
@@ -375,12 +388,163 @@ def build_tuic_users(users: List[Dict[str, Any]]) -> List[Dict[str, str]]:
     return result
 
 
+def sanitize_tag_suffix(raw: str) -> str:
+    candidate = re.sub(r"[^a-zA-Z0-9_-]+", "-", raw).strip("-")
+    if not candidate:
+        return "user"
+    return candidate[:32]
+
+
+def build_tuic_user_records(users: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    result = []
+    for user in users:
+        if not isinstance(user, dict):
+            continue
+        user_code = str(user.get("user_code", "")).strip()
+        tuic_secret = str(user.get("tuic_secret", "")).strip()
+        if not tuic_secret:
+            continue
+
+        tuic_port = parse_int(user.get("tuic_port"), 0)
+        if tuic_port < 1 or tuic_port > 65535:
+            tuic_port = 0
+
+        speed_mbps = parse_int(user.get("speed_mbps"), 0)
+        if speed_mbps < 0:
+            speed_mbps = 0
+
+        result.append(
+            {
+                "user_code": user_code,
+                "tuic_secret": tuic_secret,
+                "tuic_port": tuic_port,
+                "speed_mbps": speed_mbps,
+            }
+        )
+    return result
+
+
+def build_tuic_speed_rules(tuic_records: List[Dict[str, Any]]) -> List[Dict[str, int]]:
+    # one port -> one user in node pool mode
+    seen_ports = set()
+    rules: List[Dict[str, int]] = []
+    for record in tuic_records:
+        port = parse_int(record.get("tuic_port"), 0)
+        speed = parse_int(record.get("speed_mbps"), 0)
+        if port < 1 or port > 65535 or speed <= 0:
+            continue
+        if port in seen_ports:
+            continue
+        seen_ports.add(port)
+        rules.append({"tuic_port": port, "speed_mbps": speed})
+    rules.sort(key=lambda item: (item["tuic_port"], item["speed_mbps"]))
+    return rules
+
+
+def build_tuic_inbounds_and_routes(
+    config: AgentConfig, tuic_records: List[Dict[str, Any]]
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    tls_template: Dict[str, Any] = {
+        "enabled": True,
+        "server_name": config.tuic_domain,
+        "alpn": ["h3", "h2", "http/1.1"],
+        "acme": {
+            "domain": [config.tuic_domain],
+            "email": config.acme_email,
+            "provider": "letsencrypt",
+            "data_directory": SING_BOX_CERTMAGIC_DIR,
+        },
+    }
+
+    inbounds: List[Dict[str, Any]] = []
+    routes: List[Dict[str, Any]] = []
+    used_ports = set()
+    shared_users: List[Dict[str, str]] = []
+
+    for record in tuic_records:
+        user_code = str(record.get("user_code") or "").strip()
+        secret = str(record.get("tuic_secret") or "").strip()
+        port = parse_int(record.get("tuic_port"), 0)
+        if not secret:
+            continue
+
+        if port < 1 or port > 65535:
+            shared_item = {"uuid": secret, "password": secret}
+            if user_code:
+                shared_item["name"] = user_code
+            shared_users.append(shared_item)
+            continue
+
+        if port in used_ports:
+            LOGGER.warning("检测到重复 TUIC 端口(%s)，已跳过重复用户: %s", port, user_code or "-")
+            continue
+        used_ports.add(port)
+
+        user_item = {"uuid": secret, "password": secret}
+        if user_code:
+            user_item["name"] = user_code
+
+        tag_suffix = sanitize_tag_suffix(user_code or str(port))
+        inbound_tag = "tuic-{0}".format(tag_suffix)
+        inbounds.append(
+            {
+                "type": "tuic",
+                "tag": inbound_tag,
+                "listen": "::",
+                "listen_port": port,
+                "users": [user_item],
+                "congestion_control": "bbr",
+                "zero_rtt_handshake": False,
+                "auth_timeout": "3s",
+                "heartbeat": "10s",
+                "tls": tls_template,
+            }
+        )
+        routes.append({"inbound": [inbound_tag], "outbound": "direct"})
+
+    if shared_users:
+        inbounds.append(
+            {
+                "type": "tuic",
+                "tag": "tuic-in",
+                "listen": "::",
+                "listen_port": config.tuic_listen_port,
+                "users": shared_users,
+                "congestion_control": "bbr",
+                "zero_rtt_handshake": False,
+                "auth_timeout": "3s",
+                "heartbeat": "10s",
+                "tls": tls_template,
+            }
+        )
+        routes.append({"inbound": ["tuic-in"], "outbound": "direct"})
+
+    if not inbounds:
+        inbounds.append(
+            {
+                "type": "tuic",
+                "tag": "tuic-in",
+                "listen": "::",
+                "listen_port": config.tuic_listen_port,
+                "users": [],
+                "congestion_control": "bbr",
+                "zero_rtt_handshake": False,
+                "auth_timeout": "3s",
+                "heartbeat": "10s",
+                "tls": tls_template,
+            }
+        )
+        routes.append({"inbound": ["tuic-in"], "outbound": "direct"})
+
+    return inbounds, routes
+
+
 def build_sing_box_config(
     config: AgentConfig,
     node: Dict[str, Any],
     users: List[Dict[str, Any]],
     state: Dict[str, str],
-) -> Dict[str, Any]:
+) -> Tuple[Dict[str, Any], List[Dict[str, int]]]:
     reality_server_name = str(node.get("reality_server_name") or "").strip()
     handshake_server = reality_server_name or "www.cloudflare.com"
 
@@ -415,32 +579,13 @@ def build_sing_box_config(
     inbounds.append(vless_inbound)
     route_rules.append({"inbound": ["vless-reality-in"], "outbound": "direct"})
 
+    tuic_speed_rules: List[Dict[str, int]] = []
     if config.tuic_domain and config.acme_email:
-        tuic_users = build_tuic_users(users)
-        tuic_inbound = {
-            "type": "tuic",
-            "tag": "tuic-in",
-            "listen": "::",
-            "listen_port": config.tuic_listen_port,
-            "users": tuic_users,
-            "congestion_control": "bbr",
-            "zero_rtt_handshake": False,
-            "auth_timeout": "3s",
-            "heartbeat": "10s",
-            "tls": {
-                "enabled": True,
-                "server_name": config.tuic_domain,
-                "alpn": ["h3", "h2", "http/1.1"],
-                "acme": {
-                    "domain": [config.tuic_domain],
-                    "email": config.acme_email,
-                    "provider": "letsencrypt",
-                    "data_directory": SING_BOX_CERTMAGIC_DIR,
-                },
-            },
-        }
-        inbounds.append(tuic_inbound)
-        route_rules.append({"inbound": ["tuic-in"], "outbound": "direct"})
+        tuic_records = build_tuic_user_records(users)
+        tuic_inbounds, tuic_routes = build_tuic_inbounds_and_routes(config, tuic_records)
+        inbounds.extend(tuic_inbounds)
+        route_rules.extend(tuic_routes)
+        tuic_speed_rules = build_tuic_speed_rules(tuic_records)
     elif config.tuic_domain and not config.acme_email:
         LOGGER.warning("已配置 tuic_domain 但缺少 acme_email，跳过 TUIC 入站生成")
 
@@ -457,7 +602,7 @@ def build_sing_box_config(
             "rules": route_rules,
             "final": "direct",
         },
-    }
+    }, tuic_speed_rules
 
 
 def canonical_json(data: Dict[str, Any]) -> str:
@@ -504,6 +649,150 @@ def check_and_reload_sing_box() -> None:
     LOGGER.info("sing-box 配置已生效（reload-or-restart）")
 
 
+def detect_default_interface() -> str:
+    code, stdout, _ = run_command(["ip", "route", "get", "1.1.1.1"])
+    if code == 0:
+        match = re.search(r"\bdev\s+(\S+)", stdout)
+        if match:
+            return match.group(1)
+    code, stdout, _ = run_command(["ip", "-o", "route", "show", "default"])
+    if code == 0 and stdout.strip():
+        match = re.search(r"\bdev\s+(\S+)", stdout)
+        if match:
+            return match.group(1)
+    return ""
+
+
+def load_tuic_tc_state() -> Dict[str, Any]:
+    state = _read_json(TUIC_TC_STATE_PATH, {})
+    if isinstance(state, dict):
+        return state
+    return {}
+
+
+def save_tuic_tc_state(state: Dict[str, Any]) -> None:
+    _write_json(TUIC_TC_STATE_PATH, state, mode=0o600)
+
+
+def tc_run(command: List[str], ignore_error: bool = False) -> bool:
+    code, _, stderr = run_command(command)
+    if code != 0 and not ignore_error:
+        LOGGER.warning("tc 命令失败: %s ; stderr=%s", " ".join(command), stderr.strip())
+        return False
+    return True
+
+
+def apply_tuic_speed_limits(rules: List[Dict[str, int]]) -> None:
+    if not command_exists("tc") or not command_exists("ip"):
+        LOGGER.warning("未检测到 tc/ip 命令，跳过 TUIC 限速下发")
+        return
+
+    iface = detect_default_interface()
+    if not iface:
+        LOGGER.warning("无法检测默认出口网卡，跳过 TUIC 限速下发")
+        return
+
+    desired_state = {
+        "iface": iface,
+        "rules": sorted(
+            [
+                {"tuic_port": int(item["tuic_port"]), "speed_mbps": int(item["speed_mbps"])}
+                for item in rules
+                if int(item.get("tuic_port", 0)) > 0 and int(item.get("speed_mbps", 0)) > 0
+            ],
+            key=lambda item: (item["tuic_port"], item["speed_mbps"]),
+        ),
+    }
+    current_state = load_tuic_tc_state()
+    if canonical_json(current_state) == canonical_json(desired_state):
+        return
+
+    # 使用 clsact + police 限速，避免改写已有 root qdisc。
+    tc_run(["tc", "qdisc", "del", "dev", iface, "clsact"], ignore_error=True)
+    if not desired_state["rules"]:
+        save_tuic_tc_state(desired_state)
+        LOGGER.info("TUIC 限速规则为空，已清理 tc clsact")
+        return
+
+    if not tc_run(["tc", "qdisc", "add", "dev", iface, "clsact"], ignore_error=False):
+        return
+
+    pref = 100
+    all_ok = True
+    for item in desired_state["rules"]:
+        port = int(item["tuic_port"])
+        speed = int(item["speed_mbps"])
+        rate = "{0}mbit".format(speed)
+        # egress: server -> client, source port is tuic listen port.
+        ok_v4 = tc_run(
+            [
+                "tc",
+                "filter",
+                "add",
+                "dev",
+                iface,
+                "egress",
+                "protocol",
+                "ip",
+                "pref",
+                str(pref),
+                "flower",
+                "ip_proto",
+                "udp",
+                "src_port",
+                str(port),
+                "action",
+                "police",
+                "rate",
+                rate,
+                "burst",
+                "256k",
+                "conform-exceed",
+                "drop",
+            ],
+            ignore_error=False,
+        )
+        pref += 1
+        ok_v6 = tc_run(
+            [
+                "tc",
+                "filter",
+                "add",
+                "dev",
+                iface,
+                "egress",
+                "protocol",
+                "ipv6",
+                "pref",
+                str(pref),
+                "flower",
+                "ip_proto",
+                "udp",
+                "src_port",
+                str(port),
+                "action",
+                "police",
+                "rate",
+                rate,
+                "burst",
+                "256k",
+                "conform-exceed",
+                "drop",
+            ],
+            ignore_error=False,
+        )
+        pref += 1
+        if ok_v4 or ok_v6:
+            LOGGER.info("已下发 TUIC 限速: port=%s speed=%s Mbps", port, speed)
+        else:
+            all_ok = False
+
+    if all_ok:
+        save_tuic_tc_state(desired_state)
+    else:
+        LOGGER.warning("存在 TUIC 限速规则下发失败，将在下一轮继续重试")
+
+
 def handle_once(config: AgentConfig) -> None:
     sync_data = sync_from_controller(config)
     node = sync_data.get("node", {})
@@ -515,13 +804,14 @@ def handle_once(config: AgentConfig) -> None:
     state = ensure_reality_material(node, state)
     maybe_report_reality(config, node, state)
 
-    rendered = build_sing_box_config(config, node, users, state)
+    rendered, tuic_speed_rules = build_sing_box_config(config, node, users, state)
     changed = write_sing_box_config_if_changed(rendered)
     if changed:
         LOGGER.info("检测到配置变更，开始检查并重载 sing-box")
         check_and_reload_sing_box()
     else:
         LOGGER.info("配置无变化")
+    apply_tuic_speed_limits(tuic_speed_rules)
 
 
 def _signal_handler(signum: int, frame: Any) -> None:
