@@ -42,6 +42,7 @@ if MENU_AUTO_CLEAR_SECONDS <= 0:
 MENU_AUTO_CLEAR_JOBS_KEY = "menu_auto_clear_jobs"
 NODE_MONITOR_STATE_KEY = "node_monitor_state"
 KNOWN_CHAT_IDS_KEY = "known_chat_ids"
+MAIN_MENU_MESSAGE_IDS_KEY = "main_menu_message_ids"
 try:
     NODE_MONITOR_INTERVAL_SECONDS = int(
         os.getenv("BOT_NODE_MONITOR_INTERVAL", "60").strip() or "60"
@@ -273,6 +274,43 @@ async def refresh_callback_menu_ttl(
     if not query or not query.message:
         return
     schedule_menu_auto_clear(context, query.message.chat_id, query.message.message_id)
+
+
+def get_main_menu_message_map(context: ContextTypes.DEFAULT_TYPE) -> dict:
+    message_map = context.application.bot_data.setdefault(MAIN_MENU_MESSAGE_IDS_KEY, {})
+    if not isinstance(message_map, dict):
+        message_map = {}
+        context.application.bot_data[MAIN_MENU_MESSAGE_IDS_KEY] = message_map
+    return message_map
+
+
+def register_main_menu_message(
+    context: ContextTypes.DEFAULT_TYPE, chat_id: int, message_id: int
+) -> None:
+    message_map = get_main_menu_message_map(context)
+    existing = message_map.get(chat_id, [])
+    if not isinstance(existing, list):
+        existing = []
+    if message_id not in existing:
+        existing.append(message_id)
+    # 保留最近 20 条记录，避免异常情况下无限增长
+    message_map[chat_id] = existing[-20:]
+
+
+async def purge_main_menu_messages(
+    context: ContextTypes.DEFAULT_TYPE, chat_id: int
+) -> None:
+    message_map = get_main_menu_message_map(context)
+    existing = message_map.get(chat_id, [])
+    if not isinstance(existing, list):
+        existing = []
+    remaining = []
+    for old_message_id in existing:
+        try:
+            await context.bot.delete_message(chat_id=chat_id, message_id=old_message_id)
+        except (BadRequest, Forbidden):
+            remaining.append(old_message_id)
+    message_map[chat_id] = remaining
 
 
 def remember_known_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1380,9 +1418,13 @@ async def send_user_nodes_manage_message(
 
 async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message:
-        await reply_text_with_auto_clear(
+        chat_id = update.message.chat_id
+        await purge_main_menu_messages(context, chat_id)
+
+        sent = await reply_text_with_auto_clear(
             update.message, context, "主菜单", reply_markup=build_main_menu()
         )
+        register_main_menu_message(context, chat_id, sent.message_id)
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1427,13 +1469,7 @@ async def cancel_idle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if not is_admin_chat(update):
         await deny_non_admin(update)
         return
-    if update.message:
-        await reply_text_with_auto_clear(
-            update.message,
-            context,
-            "已取消，已返回主菜单。",
-            reply_markup=build_main_menu(),
-        )
+    await show_main_menu(update, context)
 
 
 async def configure_command_menu(application: Application) -> None:
@@ -2798,6 +2834,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if not is_admin_chat(update):
         await deny_non_admin(update)
         return
+    if query.message:
+        register_main_menu_message(context, query.message.chat_id, query.message.message_id)
 
     callback_data = query.data or ""
     user = query.from_user.username or query.from_user.id

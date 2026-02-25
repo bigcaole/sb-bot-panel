@@ -24,6 +24,7 @@ MIGRATE_DIR_DEFAULT="/var/backups/sb-migrate"
 CONTROLLER_PORT="8080"
 CONTROLLER_URL=""
 CONTROLLER_PUBLIC_URL=""
+PANEL_BASE_URL=""
 AUTH_TOKEN=""
 BOT_TOKEN=""
 ADMIN_CHAT_IDS=""
@@ -109,10 +110,11 @@ get_env_value() {
 }
 
 load_existing_env_defaults() {
-  local old_port old_url old_public_url old_auth old_bot old_admin old_migrate old_menu_ttl old_monitor_interval old_offline_threshold
+  local old_port old_url old_public_url old_panel_base old_auth old_bot old_admin old_migrate old_menu_ttl old_monitor_interval old_offline_threshold
   old_port="$(get_env_value "CONTROLLER_PORT")"
   old_url="$(get_env_value "CONTROLLER_URL")"
   old_public_url="$(get_env_value "CONTROLLER_PUBLIC_URL")"
+  old_panel_base="$(get_env_value "PANEL_BASE_URL")"
   old_auth="$(get_env_value "AUTH_TOKEN")"
   old_bot="$(get_env_value "BOT_TOKEN")"
   old_admin="$(get_env_value "ADMIN_CHAT_IDS")"
@@ -124,6 +126,7 @@ load_existing_env_defaults() {
   CONTROLLER_PORT="${old_port:-8080}"
   CONTROLLER_URL="${old_url:-http://127.0.0.1:${CONTROLLER_PORT}}"
   CONTROLLER_PUBLIC_URL="${old_public_url:-}"
+  PANEL_BASE_URL="${old_panel_base:-}"
   AUTH_TOKEN="${old_auth:-devtoken123}"
   BOT_TOKEN="${old_bot:-}"
   ADMIN_CHAT_IDS="${old_admin:-}"
@@ -140,6 +143,7 @@ prompt_env_config() {
   msg "配置向导说明："
   echo "  - CONTROLLER_PORT：controller 对外监听端口（节点 agent 需要访问）"
   echo "  - CONTROLLER_PUBLIC_URL：可选，对外访问 URL（给节点/外部使用）"
+  echo "  - PANEL_BASE_URL：bot 生成订阅链接使用的基础地址（建议使用域名）"
   echo "  - CONTROLLER_URL：bot 调用 controller 的地址（通常 127.0.0.1）"
   echo "  - AUTH_TOKEN：可选；用于保护 /admin/*，bot/agent 也可携带"
   echo "  - BOT_TOKEN：必填；Telegram 机器人 token"
@@ -169,6 +173,15 @@ prompt_env_config() {
   CONTROLLER_PUBLIC_URL="${CONTROLLER_PUBLIC_URL%/}"
 
   local default_controller_url="http://127.0.0.1:${CONTROLLER_PORT}"
+  local default_panel_base
+  default_panel_base="${PANEL_BASE_URL:-$CONTROLLER_PUBLIC_URL}"
+  if [[ -z "$default_panel_base" ]]; then
+    default_panel_base="$default_controller_url"
+  fi
+  read -r -p "PANEL_BASE_URL（bot订阅链接地址；建议域名） [${default_panel_base}]: " input_panel_base
+  PANEL_BASE_URL="${input_panel_base:-$default_panel_base}"
+  PANEL_BASE_URL="${PANEL_BASE_URL%/}"
+
   read -r -p "CONTROLLER_URL（给 bot 调用，建议本机回环地址） [${CONTROLLER_URL:-$default_controller_url}]: " input_url
   CONTROLLER_URL="${input_url:-${CONTROLLER_URL:-$default_controller_url}}"
   CONTROLLER_URL="${CONTROLLER_URL%/}"
@@ -229,6 +242,9 @@ CONTROLLER_URL=${CONTROLLER_URL}
 
 # 对外访问 controller 的地址（可选，给节点/外部使用）
 CONTROLLER_PUBLIC_URL=${CONTROLLER_PUBLIC_URL}
+
+# Bot 订阅链接基础地址（建议域名）
+PANEL_BASE_URL=${PANEL_BASE_URL}
 
 # controller 监听端口（供 systemd 使用）
 CONTROLLER_PORT=${CONTROLLER_PORT}
@@ -326,6 +342,7 @@ show_summary() {
   echo "项目目录: ${PROJECT_DIR}"
   echo "venv 目录: ${VENV_DIR}"
   echo "Controller: 0.0.0.0:${CONTROLLER_PORT}"
+  echo "PANEL_BASE_URL: ${PANEL_BASE_URL}"
   echo "MIGRATE_DIR: ${MIGRATE_DIR}"
   echo "BOT_MENU_TTL: ${BOT_MENU_TTL}"
   echo "BOT_NODE_MONITOR_INTERVAL: ${BOT_NODE_MONITOR_INTERVAL}"

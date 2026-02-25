@@ -230,6 +230,7 @@ scp root@旧IP:/var/backups/sb-migrate/sb-migrate-xxxx.tar.gz root@新IP:/root/
 
 - `CONTROLLER_URL=http://127.0.0.1:8080`
 - `CONTROLLER_PUBLIC_URL=http://your-public-ip:8080`（可选，对外地址）
+- `PANEL_BASE_URL=https://panel.example.com`（建议填域名，bot 订阅链接将使用该地址）
 - `CONTROLLER_PORT=8080`
 - `AUTH_TOKEN=devtoken123`（可空；空值表示关闭 `/admin/*` 鉴权）
 - `BOT_TOKEN=xxxxxxxx`（必填）
