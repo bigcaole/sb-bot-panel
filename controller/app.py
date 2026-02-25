@@ -1,4 +1,5 @@
 import base64
+import ipaddress
 import os
 import sqlite3
 import tarfile
@@ -10,7 +11,7 @@ import tempfile
 from typing import Dict, List, Optional, Union
 from urllib.parse import quote
 
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 
@@ -43,6 +44,7 @@ class CreateNodeRequest(BaseModel):
     node_code: str = Field(min_length=1)
     region: str = ""
     host: str = Field(min_length=1)
+    agent_ip: Optional[str] = None
     reality_server_name: Optional[str] = None
     tuic_server_name: Optional[str] = None
     tuic_listen_port: Optional[int] = Field(default=None, ge=1, le=65535)
@@ -66,6 +68,7 @@ class SetUserSpeedRequest(BaseModel):
 class UpdateNodeRequest(BaseModel):
     region: Optional[str] = None
     host: Optional[str] = None
+    agent_ip: Optional[str] = None
     reality_server_name: Optional[str] = None
     tuic_server_name: Optional[str] = None
     tuic_listen_port: Optional[int] = Field(default=None, ge=1, le=65535)
@@ -117,6 +120,7 @@ def init_db() -> None:
                 node_code TEXT PRIMARY KEY,
                 region TEXT,
                 host TEXT,
+                agent_ip TEXT,
                 reality_server_name TEXT,
                 tuic_server_name TEXT,
                 tuic_listen_port INTEGER,
@@ -138,6 +142,8 @@ def init_db() -> None:
         node_column_names = set(row["name"] for row in node_columns)
         if "reality_server_name" not in node_column_names:
             conn.execute("ALTER TABLE nodes ADD COLUMN reality_server_name TEXT")
+        if "agent_ip" not in node_column_names:
+            conn.execute("ALTER TABLE nodes ADD COLUMN agent_ip TEXT")
         if "tuic_server_name" not in node_column_names:
             conn.execute("ALTER TABLE nodes ADD COLUMN tuic_server_name TEXT")
         if "tuic_listen_port" not in node_column_names:
@@ -173,6 +179,54 @@ def init_db() -> None:
             """
         )
         conn.commit()
+
+
+def validate_agent_ip(agent_ip: Optional[str]) -> Optional[str]:
+    if agent_ip is None:
+        return None
+    value = str(agent_ip).strip()
+    if value == "":
+        return ""
+    try:
+        ipaddress.ip_address(value)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="agent_ip must be a valid IPv4/IPv6 address") from exc
+    return value
+
+
+def get_request_ip(request: Request) -> str:
+    xff = request.headers.get("x-forwarded-for", "").strip()
+    if xff:
+        first = xff.split(",")[0].strip()
+        if first:
+            return first
+    if request.client and request.client.host:
+        return str(request.client.host).strip()
+    return ""
+
+
+def verify_node_agent_ip(request: Request, node_code: str, expected_agent_ip: Optional[str]) -> None:
+    expected = str(expected_agent_ip or "").strip()
+    if not expected:
+        return
+    try:
+        expected_normalized = str(ipaddress.ip_address(expected))
+    except ValueError:
+        raise HTTPException(status_code=500, detail="node agent_ip config invalid")
+
+    request_ip_raw = get_request_ip(request)
+    if not request_ip_raw:
+        raise HTTPException(status_code=403, detail="node source ip unavailable")
+    try:
+        request_normalized = str(ipaddress.ip_address(request_ip_raw))
+    except ValueError:
+        raise HTTPException(status_code=403, detail="node source ip invalid")
+
+    if request_normalized != expected_normalized:
+        raise HTTPException(
+            status_code=403,
+            detail="node source ip not allowed for {0}".format(node_code),
+        )
 
 
 @app.on_event("startup")
@@ -282,6 +336,53 @@ def create_migrate_export(
     }
 
 
+@app.get(
+    "/admin/node_access/status",
+    summary="Node access control status",
+    description="AUTH_TOKEN 为空时不校验；非空时需要请求头 Authorization: Bearer <AUTH_TOKEN>。",
+    response_model=None,
+)
+def get_node_access_status(
+    authorization: Optional[str] = Header(default=None, alias="Authorization")
+) -> Union[Dict[str, Union[int, str, List]], JSONResponse]:
+    auth_error = verify_admin_authorization(authorization)
+    if auth_error is not None:
+        return auth_error
+
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT node_code, agent_ip, enabled
+            FROM nodes
+            ORDER BY node_code
+            """
+        ).fetchall()
+
+    locked_nodes = []
+    unlocked_nodes = []
+    for row in rows:
+        node_code = str(row["node_code"])
+        agent_ip = str(row["agent_ip"] or "").strip()
+        item = {
+            "node_code": node_code,
+            "agent_ip": agent_ip if agent_ip else "",
+            "enabled": int(row["enabled"] or 0),
+        }
+        if agent_ip:
+            locked_nodes.append(item)
+        else:
+            unlocked_nodes.append(item)
+
+    return {
+        "total_nodes": len(rows),
+        "locked_nodes": len(locked_nodes),
+        "unlocked_nodes": len(unlocked_nodes),
+        "locked_items": locked_nodes,
+        "unlocked_items": unlocked_nodes,
+        "hint": "建议每个节点设置 agent_ip，并在防火墙中只放行节点IP到 controller 端口。",
+    }
+
+
 @app.post("/users/create")
 def create_user(payload: CreateUserRequest) -> Dict[str, Union[int, str]]:
     now = int(time.time())
@@ -380,6 +481,7 @@ def create_node(payload: CreateNodeRequest) -> Dict[str, Union[int, str, None]]:
     monitor_enabled = 0 if payload.monitor_enabled is None else payload.monitor_enabled
     if monitor_enabled not in (0, 1):
         raise HTTPException(status_code=400, detail="monitor_enabled must be 0 or 1")
+    agent_ip = validate_agent_ip(payload.agent_ip)
 
     with get_connection() as conn:
         try:
@@ -389,6 +491,7 @@ def create_node(payload: CreateNodeRequest) -> Dict[str, Union[int, str, None]]:
                     node_code,
                     region,
                     host,
+                    agent_ip,
                     reality_server_name,
                     tuic_server_name,
                     tuic_listen_port,
@@ -399,12 +502,13 @@ def create_node(payload: CreateNodeRequest) -> Dict[str, Union[int, str, None]]:
                     supports_reality,
                     supports_tuic,
                     note
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     payload.node_code,
                     payload.region,
                     payload.host,
+                    agent_ip,
                     payload.reality_server_name,
                     payload.tuic_server_name,
                     payload.tuic_listen_port,
@@ -425,6 +529,7 @@ def create_node(payload: CreateNodeRequest) -> Dict[str, Union[int, str, None]]:
         "node_code": payload.node_code,
         "region": payload.region,
         "host": payload.host,
+        "agent_ip": agent_ip,
         "reality_server_name": payload.reality_server_name,
         "tuic_server_name": payload.tuic_server_name,
         "tuic_listen_port": payload.tuic_listen_port,
@@ -447,6 +552,7 @@ def list_nodes() -> List[Dict[str, Union[int, str, None]]]:
                 node_code,
                 region,
                 host,
+                agent_ip,
                 reality_server_name,
                 tuic_server_name,
                 tuic_listen_port,
@@ -477,6 +583,7 @@ def get_node(node_code: str) -> Dict[str, Union[int, str, None]]:
                 node_code,
                 region,
                 host,
+                agent_ip,
                 reality_server_name,
                 tuic_server_name,
                 tuic_listen_port,
@@ -519,8 +626,9 @@ def get_node_stats(node_code: str) -> Dict[str, Union[int, str]]:
 
 
 # Used by node-side agent polling periodically to sync node and bound-user config.
+# If nodes.agent_ip is set, this endpoint enforces source-IP matching for extra safety.
 @app.get("/nodes/{node_code}/sync")
-def get_node_sync(node_code: str) -> Dict[str, Union[Dict, List, int]]:
+def get_node_sync(node_code: str, request: Request) -> Dict[str, Union[Dict, List, int]]:
     generated_at = int(time.time())
     with get_connection() as conn:
         node_row = conn.execute(
@@ -530,6 +638,7 @@ def get_node_sync(node_code: str) -> Dict[str, Union[Dict, List, int]]:
                 enabled,
                 region,
                 host,
+                agent_ip,
                 reality_server_name,
                 tuic_server_name,
                 tuic_listen_port,
@@ -548,6 +657,7 @@ def get_node_sync(node_code: str) -> Dict[str, Union[Dict, List, int]]:
         ).fetchone()
         if node_row is None:
             raise HTTPException(status_code=404, detail="Node not found")
+        verify_node_agent_ip(request, node_code, node_row["agent_ip"])
         conn.execute(
             "UPDATE nodes SET last_seen_at = ? WHERE node_code = ?",
             (generated_at, node_code),
@@ -587,6 +697,8 @@ def update_node(
     node_code: str, payload: UpdateNodeRequest
 ) -> Dict[str, Union[int, str, None]]:
     update_data = payload.model_dump(exclude_unset=True)
+    if "agent_ip" in update_data:
+        update_data["agent_ip"] = validate_agent_ip(update_data.get("agent_ip"))
     if "tuic_port_start" in update_data and update_data["tuic_port_start"] is None:
         raise HTTPException(status_code=400, detail="tuic_port_start must be an integer in 1-65535")
     if "tuic_port_end" in update_data and update_data["tuic_port_end"] is None:
@@ -635,6 +747,7 @@ def update_node(
                 node_code,
                 region,
                 host,
+                agent_ip,
                 reality_server_name,
                 tuic_server_name,
                 tuic_listen_port,
@@ -666,6 +779,7 @@ def update_node(
             allowed_fields = {
                 "region",
                 "host",
+                "agent_ip",
                 "reality_server_name",
                 "tuic_server_name",
                 "tuic_listen_port",
@@ -700,6 +814,7 @@ def update_node(
                 node_code,
                 region,
                 host,
+                agent_ip,
                 reality_server_name,
                 tuic_server_name,
                 tuic_listen_port,

@@ -319,7 +319,12 @@ scp root@旧IP:/var/backups/sb-migrate/sb-migrate-xxxx.tar.gz root@新IP:/root/
 - `/admin/backup`、`/admin/migrate/export` 支持可选 Bearer 鉴权：
   - `AUTH_TOKEN` 为空：不校验，保持兼容行为
   - `AUTH_TOKEN` 非空：必须带 `Authorization: Bearer <AUTH_TOKEN>`
-- 建议同时使用防火墙限制管理端口来源（仅可信 IP）。
+- 节点同步接口 `/nodes/{node_code}/sync` 已支持来源 IP 白名单：
+  - 在节点创建/编辑时设置 `agent_ip`
+  - `agent_ip` 已设置时，只有该 IP 才能拉取该节点 sync（其余返回 403）
+- 建议同时使用防火墙限制管理端口来源（仅节点 IP）：
+  - `ufw allow from <节点IP> to any port <CONTROLLER_PORT> proto tcp`
+  - `ufw deny <CONTROLLER_PORT>/tcp`
 - 公有仓库通常不需要 token。
 - 私有仓库建议使用 deploy key 或 PAT（Personal Access Token）。
 

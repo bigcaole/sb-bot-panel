@@ -2,7 +2,9 @@ import os
 import logging
 import re
 import time
+import ipaddress
 from datetime import datetime
+from urllib.parse import urlparse
 
 import httpx
 from telegram import BotCommand, BotCommandScopeChat, InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -28,6 +30,16 @@ CONTROLLER_URL = os.getenv("CONTROLLER_URL", "http://127.0.0.1:8080").rstrip("/"
 if not CONTROLLER_URL:
     CONTROLLER_URL = "http://127.0.0.1:8080"
 CONTROLLER_AUTH_TOKEN = os.getenv("AUTH_TOKEN", "").strip()
+_parsed_controller_url = urlparse(CONTROLLER_URL)
+if _parsed_controller_url.port:
+    CONTROLLER_PORT_HINT = int(_parsed_controller_url.port)
+elif _parsed_controller_url.scheme == "https":
+    CONTROLLER_PORT_HINT = 443
+else:
+    CONTROLLER_PORT_HINT = 8080
+raw_controller_port = os.getenv("CONTROLLER_PORT", "").strip()
+if raw_controller_port.isdigit():
+    CONTROLLER_PORT_HINT = int(raw_controller_port)
 
 PANEL_BASE_URL = os.getenv("PANEL_BASE_URL", CONTROLLER_URL).rstrip("/")
 if not PANEL_BASE_URL:
@@ -67,12 +79,13 @@ NODES_WIZARD_KEY = "nodes_create_wizard"
     NODE_CREATE_NODE_CODE,
     NODE_CREATE_REGION,
     NODE_CREATE_HOST,
+    NODE_CREATE_AGENT_IP,
     NODE_CREATE_REALITY_SERVER_NAME,
     NODE_CREATE_TUIC_PORT_START,
     NODE_CREATE_TUIC_PORT_END,
     NODE_CREATE_NOTE,
     NODE_CREATE_CONFIRM,
-) = range(100, 108)
+) = range(100, 109)
 NODE_EDIT_KEY = "node_edit_wizard"
 (
     NODE_EDIT_HOST,
@@ -80,7 +93,8 @@ NODE_EDIT_KEY = "node_edit_wizard"
     NODE_EDIT_POOL,
     NODE_EDIT_CONFIRM,
     NODE_EDIT_TUIC_SNI,
-) = range(200, 205)
+    NODE_EDIT_AGENT_IP,
+) = range(200, 206)
 NODE_REALITY_KEY = "node_reality_setup_wizard"
 NODE_REALITY_PASTE, NODE_REALITY_CONFIRM = 500, 501
 USER_NODES_WIZARD_KEY = "user_nodes_wizard"
@@ -137,11 +151,12 @@ SUBMENUS = {
         ],
     },
     "maintain": {
-        "title": "维护/迁移",
+        "title": "管理服务器",
         "buttons": [
+            ("服务状态", "action:maintain_status"),
             ("立即备份", "action:maintain_backup"),
             ("生成迁移包", "action:maintain_migrate_export"),
-            ("查看服务状态", "action:maintain_status"),
+            ("访问安全", "action:maintain_acl_status"),
             ("返回", "menu:main"),
         ],
     },
@@ -419,12 +434,11 @@ async def run_node_monitor_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 def build_main_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
-            [InlineKeyboardButton("用户管理", callback_data="menu:user")],
-            [InlineKeyboardButton("限速管理", callback_data="menu:speed")],
-            [InlineKeyboardButton("查询", callback_data="menu:query")],
-            [InlineKeyboardButton("备份与维护", callback_data="menu:backup")],
-            [InlineKeyboardButton("节点管理", callback_data="menu:nodes")],
-            [InlineKeyboardButton("维护/迁移", callback_data="menu:maintain")],
+            [InlineKeyboardButton("用户与订阅", callback_data="menu:user")],
+            [InlineKeyboardButton("节点与线路", callback_data="menu:nodes")],
+            [InlineKeyboardButton("查询与告警", callback_data="menu:query")],
+            [InlineKeyboardButton("限速策略", callback_data="menu:speed")],
+            [InlineKeyboardButton("管理服务器", callback_data="menu:maintain")],
         ]
     )
 
@@ -492,6 +506,7 @@ def build_node_detail_keyboard(
         [
             [InlineKeyboardButton("启用/禁用", callback_data=f"node:toggle:{node_code}")],
             [InlineKeyboardButton(monitor_text, callback_data=f"node:monitor_toggle:{node_code}")],
+            [InlineKeyboardButton("设置节点来源IP白名单", callback_data=f"node:edit_agent_ip:{node_code}")],
             [InlineKeyboardButton("修改入口（影响两种协议）", callback_data=f"node:edit_host:{node_code}")],
             [InlineKeyboardButton("修改REALITY伪装域名（R）", callback_data=f"node:edit_sni:{node_code}")],
             [InlineKeyboardButton("修改TUIC证书域名（T）", callback_data=f"node:edit_tuic_sni:{node_code}")],
@@ -746,11 +761,14 @@ def get_node_edit_scope_text(field: str) -> str:
         "host": "VLESS+REALITY & TUIC（两种协议）",
         "sni": "仅 VLESS+REALITY",
         "pool": "仅 TUIC",
+        "agent_ip": "仅控制面通信（agent -> controller）",
     }
     return mapping.get(field, "未知范围")
 
 
 def localize_controller_error(error_message: str) -> str:
+    if error_message.startswith("node source ip not allowed for"):
+        return "节点来源IP不在白名单中"
     mapping = {
         "User not found": "用户不存在",
         "Node not found": "节点不存在",
@@ -758,6 +776,7 @@ def localize_controller_error(error_message: str) -> str:
         "User already assigned to this node": "该用户已绑定该节点",
         "No available TUIC port in node pool": "该节点端口池已满，暂无可用TUIC端口",
         "User-node binding not found": "该用户未绑定该节点",
+        "agent_ip must be a valid IPv4/IPv6 address": "节点来源IP格式无效，请填写正确的IP地址",
     }
     return mapping.get(error_message, error_message)
 
@@ -791,6 +810,10 @@ def get_node_edit_old_new_values(field: str, node: dict, pending_edit: dict) -> 
             f"{pending_edit.get('new_pool_end', '')}"
         )
         return old_value, new_value
+    if field == "agent_ip":
+        old_value = str(node.get("agent_ip") or "未设置")
+        new_value = str(pending_edit.get("new_value", "")) or "未设置"
+        return old_value, new_value
     return "", ""
 
 
@@ -809,6 +832,7 @@ def format_nodes_create_summary(
     node_code: str,
     region: str,
     host: str,
+    agent_ip: str,
     reality_server_name: str,
     tuic_port_start: int,
     tuic_port_end: int,
@@ -821,6 +845,7 @@ def format_nodes_create_summary(
         f"节点代码：{node_code}\n"
         f"地区：{region}\n"
         f"主机：{host}\n"
+        f"节点来源IP白名单：{agent_ip}\n"
         f"Reality域名：{reality_text}\n"
         f"TUIC端口池：{tuic_port_start}-{tuic_port_end}\n"
         f"备注：{note_text}"
@@ -854,9 +879,18 @@ def build_node_tags_map(nodes: list) -> dict:
     return tags_map
 
 
+def is_valid_ip_address(value: str) -> bool:
+    try:
+        ipaddress.ip_address(value)
+        return True
+    except ValueError:
+        return False
+
+
 def format_node_detail_text(node: dict) -> str:
     reality_server_name = node.get("reality_server_name") or "未设置"
     tuic_server_name = node.get("tuic_server_name") or "未设置"
+    agent_ip = str(node.get("agent_ip") or "").strip() or "未设置（建议设置）"
     enabled_text = "启用" if int(node.get("enabled", 0)) == 1 else "禁用"
     monitor_text = "开启" if int(node.get("monitor_enabled", 0) or 0) == 1 else "关闭"
     try:
@@ -872,6 +906,7 @@ def format_node_detail_text(node: dict) -> str:
     return (
         f"节点：{node.get('node_code', '')}\n"
         f"地区：{node.get('region', '')}\n"
+        f"节点来源IP白名单：{agent_ip}\n"
         f"支持协议：{tags}（R=VLESS+REALITY，T=TUIC）\n"
         "【VLESS+REALITY】\n"
         f"入口(用于连接)：{node.get('host', '')}\n"
@@ -1333,6 +1368,71 @@ async def run_admin_migrate_export_action(query, back_menu_callback: str) -> Non
     )
 
 
+async def run_admin_node_access_status_action(query, back_menu_callback: str) -> None:
+    result, error_message, _ = await controller_request("GET", "/admin/node_access/status")
+    if error_message:
+        await query.edit_message_text(
+            f"获取访问安全状态失败：{localize_controller_error(error_message)}",
+            reply_markup=build_back_keyboard(back_menu_callback),
+        )
+        return
+
+    if not isinstance(result, dict):
+        await query.edit_message_text(
+            "访问安全状态返回异常。",
+            reply_markup=build_back_keyboard(back_menu_callback),
+        )
+        return
+
+    total_nodes = int(result.get("total_nodes", 0) or 0)
+    locked_nodes = int(result.get("locked_nodes", 0) or 0)
+    unlocked_nodes = int(result.get("unlocked_nodes", 0) or 0)
+    locked_items = result.get("locked_items", [])
+    unlocked_items = result.get("unlocked_items", [])
+
+    lines = [
+        "节点访问安全状态",
+        f"总节点数：{total_nodes}",
+        f"已锁定来源IP：{locked_nodes}",
+        f"未锁定来源IP：{unlocked_nodes}",
+        "",
+        "已锁定节点：",
+    ]
+    if isinstance(locked_items, list) and locked_items:
+        for item in locked_items[:20]:
+            node_code = str(item.get("node_code", ""))
+            agent_ip = str(item.get("agent_ip", ""))
+            lines.append(f"- {node_code} -> {agent_ip}")
+    else:
+        lines.append("- （暂无）")
+
+    lines.append("")
+    lines.append("未锁定节点：")
+    if isinstance(unlocked_items, list) and unlocked_items:
+        for item in unlocked_items[:20]:
+            node_code = str(item.get("node_code", ""))
+            lines.append(f"- {node_code}")
+    else:
+        lines.append("- （暂无）")
+
+    lines.append("")
+    lines.append("建议：新增节点后立即设置“节点来源IP白名单”。")
+    lines.append(f"防火墙参考（controller 端口 {CONTROLLER_PORT_HINT}）：")
+    if isinstance(locked_items, list) and locked_items:
+        for item in locked_items[:20]:
+            agent_ip = str(item.get("agent_ip", "")).strip()
+            if agent_ip:
+                lines.append(
+                    f"ufw allow from {agent_ip} to any port {CONTROLLER_PORT_HINT} proto tcp"
+                )
+    lines.append(f"ufw deny {CONTROLLER_PORT_HINT}/tcp")
+
+    await query.edit_message_text(
+        "\n".join(lines),
+        reply_markup=build_back_keyboard(back_menu_callback),
+    )
+
+
 async def render_user_nodes_manage(query, user_code: str, notice: str = "") -> None:
     user, user_error, user_status = await controller_request("GET", f"/users/{user_code}")
     if user_error:
@@ -1778,6 +1878,27 @@ async def nodes_create_host(
         return NODE_CREATE_HOST
 
     context.user_data.setdefault(NODES_WIZARD_KEY, {})["host"] = host
+    await update.message.reply_text(
+        "请输入节点公网IP（用于限制 agent -> controller 来源IP，仅支持 IP 地址）："
+    )
+    return NODE_CREATE_AGENT_IP
+
+
+async def nodes_create_agent_ip(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    if not update.message or not update.message.text:
+        return NODE_CREATE_AGENT_IP
+
+    agent_ip = update.message.text.strip()
+    if not agent_ip:
+        await update.message.reply_text("节点公网IP不能为空，请重新输入：")
+        return NODE_CREATE_AGENT_IP
+    if not is_valid_ip_address(agent_ip):
+        await update.message.reply_text("IP格式无效，请输入正确的IPv4/IPv6地址：")
+        return NODE_CREATE_AGENT_IP
+
+    context.user_data.setdefault(NODES_WIZARD_KEY, {})["agent_ip"] = agent_ip
     await update.message.reply_text("请输入 Reality 域名（可选，输入 - 跳过）：")
     return NODE_CREATE_REALITY_SERVER_NAME
 
@@ -1865,6 +1986,7 @@ async def nodes_create_note(
             wizard_data["node_code"],
             wizard_data["region"],
             wizard_data["host"],
+            wizard_data["agent_ip"],
             wizard_data.get("reality_server_name", ""),
             wizard_data["tuic_port_start"],
             wizard_data["tuic_port_end"],
@@ -1892,6 +2014,7 @@ async def nodes_create_confirm(
         "node_code",
         "region",
         "host",
+        "agent_ip",
         "tuic_port_start",
         "tuic_port_end",
         "note",
@@ -1905,6 +2028,7 @@ async def nodes_create_confirm(
         "node_code": wizard_data["node_code"],
         "region": wizard_data["region"],
         "host": wizard_data["host"],
+        "agent_ip": wizard_data["agent_ip"],
         "tuic_port_start": wizard_data["tuic_port_start"],
         "tuic_port_end": wizard_data["tuic_port_end"],
         "note": wizard_data["note"],
@@ -1952,10 +2076,14 @@ async def nodes_create_confirm(
         f"节点代码：{result.get('node_code', payload['node_code'])}\n"
         f"地区：{result.get('region', payload['region'])}\n"
         f"主机：{result.get('host', payload['host'])}\n"
+        f"节点来源IP白名单：{result.get('agent_ip', payload['agent_ip'])}\n"
         f"Reality域名：{reality_text}\n"
         f"TUIC端口池：{result.get('tuic_port_start', payload['tuic_port_start'])}-"
         f"{result.get('tuic_port_end', payload['tuic_port_end'])}\n"
-        f"状态：{'启用' if int(result.get('enabled', 1)) == 1 else '禁用'}",
+        f"状态：{'启用' if int(result.get('enabled', 1)) == 1 else '禁用'}\n\n"
+        f"建议在管理服务器放行该IP到controller端口：\n"
+        f"ufw allow from {result.get('agent_ip', payload['agent_ip'])} "
+        f"to any port {CONTROLLER_PORT_HINT} proto tcp",
         reply_markup=build_submenu("nodes"),
     )
     context.user_data.pop(NODES_WIZARD_KEY, None)
@@ -2278,6 +2406,26 @@ async def start_node_edit_host(
     return NODE_EDIT_HOST
 
 
+async def start_node_edit_agent_ip(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    query = update.callback_query
+    if not query:
+        return ConversationHandler.END
+    if not await ensure_admin_callback(update):
+        return ConversationHandler.END
+    await query.answer()
+    callback_data = query.data or ""
+    user = query.from_user.username or query.from_user.id
+    logger.info("button_click user=%s data=%s", user, callback_data)
+    node_code = callback_data.split(":", maxsplit=2)[2]
+    context.user_data[NODE_EDIT_KEY] = {"node_code": node_code, "field": "agent_ip"}
+    await query.edit_message_text(
+        "请输入节点公网IP（仅允许该IP访问 controller 同步接口），发送 /cancel 取消。"
+    )
+    return NODE_EDIT_AGENT_IP
+
+
 async def start_node_edit_sni(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> int:
@@ -2481,6 +2629,38 @@ async def node_edit_tuic_sni_input(
     return ConversationHandler.END
 
 
+async def node_edit_agent_ip_input(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    if not update.message or not update.message.text:
+        return NODE_EDIT_AGENT_IP
+    raw_value = update.message.text.strip()
+    if not raw_value:
+        await update.message.reply_text("IP不能为空，请重新输入：")
+        return NODE_EDIT_AGENT_IP
+    if not is_valid_ip_address(raw_value):
+        await update.message.reply_text("IP格式无效，请输入正确的IPv4/IPv6地址：")
+        return NODE_EDIT_AGENT_IP
+
+    node_code = context.user_data.get(NODE_EDIT_KEY, {}).get("node_code", "")
+    if not node_code:
+        await reply_text_with_auto_clear(
+            update.message,
+            context,
+            "编辑状态已丢失，请重新进入节点详情。",
+            reply_markup=build_submenu("nodes"),
+        )
+        return ConversationHandler.END
+
+    context.user_data[NODE_EDIT_KEY] = {
+        "node_code": node_code,
+        "field": "agent_ip",
+        "new_value": raw_value,
+        "patch_payload": {"agent_ip": raw_value},
+    }
+    return await prompt_node_edit_confirmation(update.message, context)
+
+
 async def prompt_node_edit_confirmation(
     message, context: ContextTypes.DEFAULT_TYPE
 ) -> int:
@@ -2489,7 +2669,9 @@ async def prompt_node_edit_confirmation(
     field = str(pending_edit.get("field", ""))
     patch_payload = pending_edit.get("patch_payload")
 
-    if not node_code or field not in ("host", "sni", "pool") or not isinstance(patch_payload, dict):
+    if not node_code or field not in ("host", "sni", "pool", "agent_ip") or not isinstance(
+        patch_payload, dict
+    ):
         context.user_data.pop(NODE_EDIT_KEY, None)
         await reply_text_with_auto_clear(
             message,
@@ -2534,6 +2716,9 @@ async def prompt_node_edit_confirmation(
     old_value, new_value = get_node_edit_old_new_values(field, node, pending_edit)
     scope_text = get_node_edit_scope_text(field)
     bound_users = int(stats.get("bound_users", 0)) if isinstance(stats, dict) else 0
+    warning_line = "确认后将影响所有已绑定该节点的用户订阅内容"
+    if field == "agent_ip":
+        warning_line = "确认后仅影响该节点 agent 的同步访问来源校验"
 
     await reply_text_with_auto_clear(
         message,
@@ -2543,7 +2728,7 @@ async def prompt_node_edit_confirmation(
         f"影响范围：仅该节点 {node_code}\n"
         f"影响用户数：{bound_users}（已绑定该节点的用户）\n"
         f"旧值 -> 新值：{old_value} -> {new_value}\n\n"
-        "确认后将影响所有已绑定该节点的用户订阅内容",
+        f"{warning_line}",
         reply_markup=build_node_edit_confirm_keyboard(field, node_code),
     )
     return NODE_EDIT_CONFIRM
@@ -2593,6 +2778,7 @@ async def apply_node_edit_callback(
         "host": "入口已更新",
         "sni": "伪装域名SNI已更新",
         "pool": "TUIC端口池已更新",
+        "agent_ip": "节点来源IP白名单已更新",
     }
     await render_node_detail(query, node_code, notice=success_notice_map.get(field, "修改成功"))
     return ConversationHandler.END
@@ -2987,6 +3173,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         )
         return
 
+    if callback_data == "action:maintain_acl_status":
+        await run_admin_node_access_status_action(query, "menu:maintain")
+        return
+
     if callback_data == "action:backup_audit":
         await query.edit_message_text(
             "【操作日志】尚未实现（需要落库审计表或接入日志系统）。",
@@ -3372,6 +3562,9 @@ def main() -> None:
             NODE_CREATE_HOST: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, nodes_create_host)
             ],
+            NODE_CREATE_AGENT_IP: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, nodes_create_agent_ip)
+            ],
             NODE_CREATE_REALITY_SERVER_NAME: [
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND, nodes_create_reality_server_name
@@ -3408,6 +3601,7 @@ def main() -> None:
     node_edit_conversation = ConversationHandler(
         entry_points=[
             CallbackQueryHandler(start_node_edit_host, pattern=r"^node:edit_host:[^:]+$"),
+            CallbackQueryHandler(start_node_edit_agent_ip, pattern=r"^node:edit_agent_ip:[^:]+$"),
             CallbackQueryHandler(start_node_edit_sni, pattern=r"^node:edit_sni:[^:]+$"),
             CallbackQueryHandler(start_node_edit_tuic_sni, pattern=r"^node:edit_tuic_sni:[^:]+$"),
             CallbackQueryHandler(start_node_edit_pool, pattern=r"^node:edit_pool:[^:]+$"),
@@ -3425,10 +3619,13 @@ def main() -> None:
             NODE_EDIT_TUIC_SNI: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, node_edit_tuic_sni_input)
             ],
+            NODE_EDIT_AGENT_IP: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, node_edit_agent_ip_input)
+            ],
             NODE_EDIT_CONFIRM: [
                 CallbackQueryHandler(
                     apply_node_edit_callback,
-                    pattern=r"^node:apply_edit:(host|sni|pool):[^:]+$",
+                    pattern=r"^node:apply_edit:(host|sni|pool|agent_ip):[^:]+$",
                 ),
                 CallbackQueryHandler(
                     cancel_node_edit_callback,
