@@ -180,6 +180,7 @@ def health() -> Dict[str, bool]:
     "/admin/backup",
     summary="Create controller backup",
     description="AUTH_TOKEN 为空时不校验；非空时需要请求头 Authorization: Bearer <AUTH_TOKEN>。",
+    response_model=None,
 )
 def create_backup(
     authorization: Optional[str] = Header(default=None, alias="Authorization")
@@ -217,6 +218,7 @@ def create_backup(
     "/admin/migrate/export",
     summary="Create migration export package",
     description="AUTH_TOKEN 为空时不校验；非空时需要请求头 Authorization: Bearer <AUTH_TOKEN>。",
+    response_model=None,
 )
 def create_migrate_export(
     authorization: Optional[str] = Header(default=None, alias="Authorization")
