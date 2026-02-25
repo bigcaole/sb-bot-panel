@@ -37,7 +37,18 @@ run_install() {
     err "未找到 install.sh: $INSTALL_SCRIPT"
     return
   fi
-  bash "$INSTALL_SCRIPT"
+  if [[ -d "${ROOT_DIR}/.git" ]] && command -v git >/dev/null 2>&1; then
+    msg "检测到 Git 仓库，尝试拉取最新代码..."
+    git -C "$ROOT_DIR" pull --ff-only origin main || warn "git pull 失败，请手动处理分支后重试。"
+  fi
+
+  if [[ -f "$CONFIG_PATH" ]]; then
+    msg "检测到现有配置，执行无交互更新（复用原参数）..."
+    bash "$INSTALL_SCRIPT" --sync-only
+  else
+    msg "未检测到现有配置，执行首次安装流程..."
+    bash "$INSTALL_SCRIPT"
+  fi
 }
 
 run_reconfigure() {
@@ -162,8 +173,8 @@ show_menu() {
   echo "========================================"
   echo " sb-agent 中文管理菜单"
   echo "========================================"
-  echo " 1) 安装/更新（调用 install.sh）"
-  echo " 2) 配置（重写 /etc/sb-agent/config.json）"
+  echo " 1) 更新同步（保留原配置，自动 git pull）"
+  echo " 2) 配置（修改 /etc/sb-agent/config.json）"
   echo " 3) 启动 sb-agent"
   echo " 4) 停止 sb-agent"
   echo " 5) 重启 sb-agent"

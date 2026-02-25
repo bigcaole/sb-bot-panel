@@ -5,14 +5,18 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 MODE="${1:-install}"
-if [[ "$MODE" != "install" && "$MODE" != "--configure-only" ]]; then
+if [[ "$MODE" != "install" && "$MODE" != "--configure-only" && "$MODE" != "--sync-only" ]]; then
   echo "用法:"
   echo "  sudo bash scripts/install.sh              # 完整安装/更新"
   echo "  sudo bash scripts/install.sh --configure-only  # 仅重写配置并重启服务"
+  echo "  sudo bash scripts/install.sh --sync-only  # 无交互同步代码并重启（复用现有配置）"
   exit 1
 fi
 if [[ "$MODE" == "--configure-only" ]]; then
   MODE="configure-only"
+fi
+if [[ "$MODE" == "--sync-only" ]]; then
+  MODE="sync-only"
 fi
 
 CONFIG_PATH="/etc/sb-agent/config.json"
@@ -65,6 +69,34 @@ ask_yes_no() {
     return 0
   fi
   return 1
+}
+
+install_menu_shortcuts() {
+  cat >/usr/local/bin/sb-node <<EOF
+#!/usr/bin/env bash
+exec bash "${ROOT_DIR}/scripts/menu.sh" "\$@"
+EOF
+  chmod 0755 /usr/local/bin/sb-node
+
+  local s_ui_path
+  s_ui_path="$(command -v s-ui || true)"
+  if [[ -z "$s_ui_path" ]]; then
+    cat >/usr/local/bin/s-ui <<EOF
+#!/usr/bin/env bash
+# sb-node-menu-shortcut
+exec bash "${ROOT_DIR}/scripts/menu.sh" "\$@"
+EOF
+    chmod 0755 /usr/local/bin/s-ui
+  elif [[ "$s_ui_path" == "/usr/local/bin/s-ui" ]] && grep -q "sb-node-menu-shortcut" /usr/local/bin/s-ui 2>/dev/null; then
+    cat >/usr/local/bin/s-ui <<EOF
+#!/usr/bin/env bash
+# sb-node-menu-shortcut
+exec bash "${ROOT_DIR}/scripts/menu.sh" "\$@"
+EOF
+    chmod 0755 /usr/local/bin/s-ui
+  else
+    warn "检测到已有 s-ui 命令(${s_ui_path})，跳过覆盖。可使用 sb-node 打开菜单。"
+  fi
 }
 
 get_public_ipv4() {
@@ -211,6 +243,32 @@ read_old_config_value() {
   local key="$1"
   if [[ -f "$CONFIG_PATH" ]] && command -v jq >/dev/null 2>&1; then
     jq -r --arg k "$key" '.[$k] // ""' "$CONFIG_PATH" 2>/dev/null || true
+  fi
+}
+
+load_existing_config_or_fail() {
+  if [[ ! -f "$CONFIG_PATH" ]]; then
+    err "未找到现有配置: $CONFIG_PATH，无法执行 --sync-only。请先运行完整安装。"
+    exit 1
+  fi
+  CONTROLLER_URL="$(read_old_config_value "controller_url")"
+  NODE_CODE="$(read_old_config_value "node_code")"
+  AUTH_TOKEN="$(read_old_config_value "auth_token")"
+  TUIC_DOMAIN="$(read_old_config_value "tuic_domain")"
+  ACME_EMAIL="$(read_old_config_value "acme_email")"
+  TUIC_LISTEN_PORT="$(read_old_config_value "tuic_listen_port")"
+  POLL_INTERVAL="$(read_old_config_value "poll_interval")"
+
+  CONTROLLER_URL="${CONTROLLER_URL:-http://127.0.0.1:8080}"
+  NODE_CODE="${NODE_CODE:-JP1}"
+  TUIC_DOMAIN="${TUIC_DOMAIN:-}"
+  ACME_EMAIL="${ACME_EMAIL:-}"
+
+  if ! [[ "${TUIC_LISTEN_PORT}" =~ ^[0-9]+$ ]] || (( TUIC_LISTEN_PORT < 1 || TUIC_LISTEN_PORT > 65535 )); then
+    TUIC_LISTEN_PORT=8443
+  fi
+  if ! [[ "${POLL_INTERVAL}" =~ ^[0-9]+$ ]] || (( POLL_INTERVAL < 5 )); then
+    POLL_INTERVAL=15
   fi
 }
 
@@ -396,6 +454,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+ExecStartPre=/usr/bin/install -m 0755 ${ROOT_DIR}/agent/sb_agent.py ${AGENT_MAIN}
 ExecStart=${AGENT_VENV}/bin/python ${AGENT_MAIN}
 Restart=always
 RestartSec=5
@@ -455,6 +514,25 @@ reload_and_enable_services() {
   fi
 }
 
+reload_and_enable_services_noninteractive() {
+  systemctl daemon-reload
+
+  if command -v sing-box >/dev/null 2>&1; then
+    if sing-box check -c "$SINGBOX_CONFIG" >/dev/null 2>&1; then
+      systemctl enable --now sing-box >/dev/null || true
+    else
+      warn "当前 sing-box 配置检查未通过，先等待 sb-agent 下发新配置。"
+    fi
+  fi
+
+  systemctl enable sb-agent >/dev/null
+  systemctl restart sb-agent
+
+  if systemctl is-enabled sb-cert-check.timer >/dev/null 2>&1; then
+    systemctl restart sb-cert-check.timer >/dev/null || true
+  fi
+}
+
 show_summary() {
   local ip
   ip="$(get_public_ipv4)"
@@ -489,6 +567,9 @@ main() {
   if [[ "$MODE" == "install" ]]; then
     install_base_packages
     install_sing_box
+  elif [[ "$MODE" == "sync-only" ]]; then
+    msg "同步模式：复用现有配置，不进行交互提问。"
+    load_existing_config_or_fail
   else
     msg "仅配置模式：跳过依赖与 sing-box 安装步骤"
     if ! command -v jq >/dev/null 2>&1; then
@@ -501,15 +582,24 @@ main() {
   install_agent_files
   write_bootstrap_singbox_config_if_missing
 
-  prompt_config
-  check_domain_resolution_interactive
-  configure_ufw_rules
-  write_config_json
+  if [[ "$MODE" == "sync-only" ]]; then
+    msg "已加载现有配置：$CONFIG_PATH"
+  else
+    prompt_config
+    check_domain_resolution_interactive
+    configure_ufw_rules
+    write_config_json
+  fi
 
   install_singbox_service_if_missing
   install_sb_agent_service
   install_cert_check_timer_files
-  reload_and_enable_services
+  install_menu_shortcuts
+  if [[ "$MODE" == "sync-only" ]]; then
+    reload_and_enable_services_noninteractive
+  else
+    reload_and_enable_services
+  fi
 
   show_summary
 }

@@ -47,7 +47,7 @@ sudo bash /path/to/sb-bot-panel/scripts/menu.sh
 
 菜单项：
 
-1. 安装/更新（调用 `install.sh`）
+1. 更新同步（保留原配置，自动 `git pull`，无交互）
 2. 配置（重写 `/etc/sb-agent/config.json`）
 3. 启动 sb-agent
 4. 停止 sb-agent
@@ -59,6 +59,22 @@ sudo bash /path/to/sb-bot-panel/scripts/menu.sh
 10. 证书状态检查
 11. 触发证书重新申请/刷新（先备份再清理）
 12. 卸载
+
+说明：
+
+- 首次安装后，后续更新建议直接用菜单 `1`，不会重复询问端口/域名等参数。
+- 需要改参数时才用菜单 `2`。
+- 也可命令行直接执行：
+
+```bash
+sudo bash scripts/install.sh --sync-only
+```
+
+- 安装后可用快捷命令打开节点菜单：
+
+```bash
+sb-node
+```
 
 ## 域名证书前置条件（TUIC）
 
