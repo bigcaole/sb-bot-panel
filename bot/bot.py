@@ -172,6 +172,45 @@ def parse_chat_id_list(raw_value: str) -> list:
 ADMIN_CHAT_ID_LIST = parse_chat_id_list(os.getenv("ADMIN_CHAT_IDS", ""))
 
 
+def is_admin_chat(update: Update) -> bool:
+    if not ADMIN_CHAT_ID_LIST:
+        return True
+    chat = update.effective_chat
+    if not chat:
+        return False
+    return int(chat.id) in ADMIN_CHAT_ID_LIST
+
+
+def get_no_permission_text() -> str:
+    return (
+        "当前账号无权限使用管理功能。\n"
+        "请联系管理员将你的 chat_id 加入 ADMIN_CHAT_IDS。\n"
+        "可先发送 /whoami 获取自己的 chat_id。"
+    )
+
+
+async def deny_non_admin(update: Update) -> None:
+    query = update.callback_query
+    if query:
+        try:
+            await query.answer("无权限", show_alert=True)
+        except BadRequest:
+            pass
+        return
+    if update.message:
+        await update.message.reply_text(get_no_permission_text())
+
+
+async def ensure_admin_callback(update: Update) -> bool:
+    query = update.callback_query
+    if not query:
+        return False
+    if is_admin_chat(update):
+        return True
+    await deny_non_admin(update)
+    return False
+
+
 async def _menu_auto_clear_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     data = context.job.data if context.job else {}
     chat_id = data.get("chat_id")
@@ -1357,11 +1396,17 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     remember_known_chat(update, context)
+    if not is_admin_chat(update):
+        await deny_non_admin(update)
+        return
     await show_main_menu(update, context)
 
 
 async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     remember_known_chat(update, context)
+    if not is_admin_chat(update):
+        await deny_non_admin(update)
+        return
     await show_main_menu(update, context)
 
 
@@ -1381,6 +1426,8 @@ async def start_create_user_wizard(
 ) -> int:
     query = update.callback_query
     if not query:
+        return ConversationHandler.END
+    if not await ensure_admin_callback(update):
         return ConversationHandler.END
 
     await query.answer()
@@ -1597,6 +1644,8 @@ async def start_nodes_create_wizard(
 ) -> int:
     query = update.callback_query
     if not query:
+        return ConversationHandler.END
+    if not await ensure_admin_callback(update):
         return ConversationHandler.END
 
     await query.answer()
@@ -1869,6 +1918,8 @@ async def start_user_nodes_wizard(
     query = update.callback_query
     if not query:
         return ConversationHandler.END
+    if not await ensure_admin_callback(update):
+        return ConversationHandler.END
 
     await query.answer()
     callback_data = query.data or ""
@@ -1885,6 +1936,8 @@ async def start_user_nodes_manual_input(
 ) -> int:
     query = update.callback_query
     if not query:
+        return ConversationHandler.END
+    if not await ensure_admin_callback(update):
         return ConversationHandler.END
 
     await query.answer()
@@ -1933,6 +1986,8 @@ async def start_user_speed_wizard(
     query = update.callback_query
     if not query:
         return ConversationHandler.END
+    if not await ensure_admin_callback(update):
+        return ConversationHandler.END
 
     await query.answer()
     callback_data = query.data or ""
@@ -1949,6 +2004,8 @@ async def start_user_speed_input(
 ) -> int:
     query = update.callback_query
     if not query:
+        return ConversationHandler.END
+    if not await ensure_admin_callback(update):
         return ConversationHandler.END
 
     await query.answer()
@@ -2133,6 +2190,8 @@ async def start_node_edit_host(
     query = update.callback_query
     if not query:
         return ConversationHandler.END
+    if not await ensure_admin_callback(update):
+        return ConversationHandler.END
     await query.answer()
     callback_data = query.data or ""
     user = query.from_user.username or query.from_user.id
@@ -2148,6 +2207,8 @@ async def start_node_edit_sni(
 ) -> int:
     query = update.callback_query
     if not query:
+        return ConversationHandler.END
+    if not await ensure_admin_callback(update):
         return ConversationHandler.END
     await query.answer()
     callback_data = query.data or ""
@@ -2165,6 +2226,8 @@ async def start_node_edit_pool(
     query = update.callback_query
     if not query:
         return ConversationHandler.END
+    if not await ensure_admin_callback(update):
+        return ConversationHandler.END
     await query.answer()
     callback_data = query.data or ""
     user = query.from_user.username or query.from_user.id
@@ -2180,6 +2243,8 @@ async def start_node_edit_tuic_sni(
 ) -> int:
     query = update.callback_query
     if not query:
+        return ConversationHandler.END
+    if not await ensure_admin_callback(update):
         return ConversationHandler.END
     await query.answer()
     callback_data = query.data or ""
@@ -2499,6 +2564,8 @@ async def start_node_reality_paste(
     query = update.callback_query
     if not query:
         return ConversationHandler.END
+    if not await ensure_admin_callback(update):
+        return ConversationHandler.END
     await query.answer()
 
     callback_data = query.data or ""
@@ -2688,6 +2755,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if not query:
         return
     remember_known_chat(update, context)
+    if not is_admin_chat(update):
+        await deny_non_admin(update)
+        return
 
     callback_data = query.data or ""
     user = query.from_user.username or query.from_user.id

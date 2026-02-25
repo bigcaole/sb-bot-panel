@@ -38,6 +38,9 @@ show_config_guide() {
   echo "  - BOT_TOKEN（必填；Telegram 机器人 token）"
   echo "  - ADMIN_CHAT_IDS（可选；限制谁能使用 bot）"
   echo "  - MIGRATE_DIR（迁移包/备份包输出目录）"
+  echo "  - BOT_MENU_TTL（bot 菜单按钮自动清理秒数）"
+  echo "  - BOT_NODE_MONITOR_INTERVAL（节点在线检测周期秒数）"
+  echo "  - BOT_NODE_OFFLINE_THRESHOLD（节点离线判定阈值秒数）"
   echo "  - UFW/端口放行（按需开放 controller 端口，并限制来源）"
   echo ""
 }

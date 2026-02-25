@@ -28,6 +28,9 @@ AUTH_TOKEN=""
 BOT_TOKEN=""
 ADMIN_CHAT_IDS=""
 MIGRATE_DIR="$MIGRATE_DIR_DEFAULT"
+BOT_MENU_TTL="60"
+BOT_NODE_MONITOR_INTERVAL="60"
+BOT_NODE_OFFLINE_THRESHOLD="120"
 
 msg() { echo -e "\033[1;32m[信息]\033[0m $*"; }
 warn() { echo -e "\033[1;33m[警告]\033[0m $*"; }
@@ -106,7 +109,7 @@ get_env_value() {
 }
 
 load_existing_env_defaults() {
-  local old_port old_url old_public_url old_auth old_bot old_admin old_migrate
+  local old_port old_url old_public_url old_auth old_bot old_admin old_migrate old_menu_ttl old_monitor_interval old_offline_threshold
   old_port="$(get_env_value "CONTROLLER_PORT")"
   old_url="$(get_env_value "CONTROLLER_URL")"
   old_public_url="$(get_env_value "CONTROLLER_PUBLIC_URL")"
@@ -114,6 +117,9 @@ load_existing_env_defaults() {
   old_bot="$(get_env_value "BOT_TOKEN")"
   old_admin="$(get_env_value "ADMIN_CHAT_IDS")"
   old_migrate="$(get_env_value "MIGRATE_DIR")"
+  old_menu_ttl="$(get_env_value "BOT_MENU_TTL")"
+  old_monitor_interval="$(get_env_value "BOT_NODE_MONITOR_INTERVAL")"
+  old_offline_threshold="$(get_env_value "BOT_NODE_OFFLINE_THRESHOLD")"
 
   CONTROLLER_PORT="${old_port:-8080}"
   CONTROLLER_URL="${old_url:-http://127.0.0.1:${CONTROLLER_PORT}}"
@@ -122,6 +128,9 @@ load_existing_env_defaults() {
   BOT_TOKEN="${old_bot:-}"
   ADMIN_CHAT_IDS="${old_admin:-}"
   MIGRATE_DIR="${old_migrate:-$MIGRATE_DIR_DEFAULT}"
+  BOT_MENU_TTL="${old_menu_ttl:-60}"
+  BOT_NODE_MONITOR_INTERVAL="${old_monitor_interval:-60}"
+  BOT_NODE_OFFLINE_THRESHOLD="${old_offline_threshold:-120}"
 }
 
 prompt_env_config() {
@@ -136,6 +145,9 @@ prompt_env_config() {
   echo "  - BOT_TOKEN：必填；Telegram 机器人 token"
   echo "  - ADMIN_CHAT_IDS：可选；用于限制谁可操作 bot"
   echo "  - MIGRATE_DIR：迁移包/备份包输出目录"
+  echo "  - BOT_MENU_TTL：bot 菜单按钮自动清理秒数"
+  echo "  - BOT_NODE_MONITOR_INTERVAL：节点在线检测周期秒数"
+  echo "  - BOT_NODE_OFFLINE_THRESHOLD：节点离线判定阈值秒数"
   echo ""
 
   read -r -p "CONTROLLER_PORT（controller 对外监听端口；节点 agent 需要访问） [${CONTROLLER_PORT}]: " input_port
@@ -181,6 +193,27 @@ prompt_env_config() {
     MIGRATE_DIR="$MIGRATE_DIR_DEFAULT"
   fi
 
+  read -r -p "BOT_MENU_TTL（bot 菜单自动清理秒数） [${BOT_MENU_TTL}]: " input_menu_ttl
+  BOT_MENU_TTL="${input_menu_ttl:-$BOT_MENU_TTL}"
+  if ! [[ "$BOT_MENU_TTL" =~ ^[0-9]+$ ]] || (( BOT_MENU_TTL < 5 )); then
+    warn "BOT_MENU_TTL 无效，回退为 60"
+    BOT_MENU_TTL="60"
+  fi
+
+  read -r -p "BOT_NODE_MONITOR_INTERVAL（节点监控轮询秒数） [${BOT_NODE_MONITOR_INTERVAL}]: " input_monitor_interval
+  BOT_NODE_MONITOR_INTERVAL="${input_monitor_interval:-$BOT_NODE_MONITOR_INTERVAL}"
+  if ! [[ "$BOT_NODE_MONITOR_INTERVAL" =~ ^[0-9]+$ ]] || (( BOT_NODE_MONITOR_INTERVAL < 10 )); then
+    warn "BOT_NODE_MONITOR_INTERVAL 无效，回退为 60"
+    BOT_NODE_MONITOR_INTERVAL="60"
+  fi
+
+  read -r -p "BOT_NODE_OFFLINE_THRESHOLD（离线判定阈值秒数） [${BOT_NODE_OFFLINE_THRESHOLD}]: " input_offline_threshold
+  BOT_NODE_OFFLINE_THRESHOLD="${input_offline_threshold:-$BOT_NODE_OFFLINE_THRESHOLD}"
+  if ! [[ "$BOT_NODE_OFFLINE_THRESHOLD" =~ ^[0-9]+$ ]] || (( BOT_NODE_OFFLINE_THRESHOLD < 30 )); then
+    warn "BOT_NODE_OFFLINE_THRESHOLD 无效，回退为 120"
+    BOT_NODE_OFFLINE_THRESHOLD="120"
+  fi
+
   echo ""
   msg "UFW/端口放行说明："
   echo "  - 需要放行 ${CONTROLLER_PORT}/tcp（节点 agent 访问 controller）"
@@ -211,6 +244,15 @@ ADMIN_CHAT_IDS=${ADMIN_CHAT_IDS}
 
 # 迁移包目录
 MIGRATE_DIR=${MIGRATE_DIR}
+
+# Bot 菜单按钮自动清理秒数
+BOT_MENU_TTL=${BOT_MENU_TTL}
+
+# 节点在线检测周期秒数
+BOT_NODE_MONITOR_INTERVAL=${BOT_NODE_MONITOR_INTERVAL}
+
+# 节点离线判定阈值秒数
+BOT_NODE_OFFLINE_THRESHOLD=${BOT_NODE_OFFLINE_THRESHOLD}
 EOF
   chmod 0600 "$ENV_FILE"
 }
@@ -285,6 +327,9 @@ show_summary() {
   echo "venv 目录: ${VENV_DIR}"
   echo "Controller: 0.0.0.0:${CONTROLLER_PORT}"
   echo "MIGRATE_DIR: ${MIGRATE_DIR}"
+  echo "BOT_MENU_TTL: ${BOT_MENU_TTL}"
+  echo "BOT_NODE_MONITOR_INTERVAL: ${BOT_NODE_MONITOR_INTERVAL}"
+  echo "BOT_NODE_OFFLINE_THRESHOLD: ${BOT_NODE_OFFLINE_THRESHOLD}"
   echo ""
   echo "快捷查看："
   echo "  systemctl status sb-controller"

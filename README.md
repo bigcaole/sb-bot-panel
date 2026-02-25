@@ -169,6 +169,8 @@ sudo bash scripts/admin/install_admin.sh --configure-only
 
 - `2) 配置向导（仅写 .env 并重启）`
 
+说明：执行安装/配置向导时，会自动写入完整 `.env` 字段（包括 `BOT_MENU_TTL`、`BOT_NODE_MONITOR_INTERVAL`、`BOT_NODE_OFFLINE_THRESHOLD`），无需手工补字段。
+
 ## 管理服务器菜单（中文数字）
 
 ```bash
@@ -264,6 +266,8 @@ scp root@旧IP:/var/backups/sb-migrate/sb-migrate-xxxx.tar.gz root@新IP:/root/
 
 ## 安全提示
 
+- `ADMIN_CHAT_IDS` 为空时，任何 Telegram 账号都可看到并操作管理菜单。
+- 建议生产环境务必填写 `ADMIN_CHAT_IDS`（逗号分隔），仅允许指定 chat_id 使用 bot 管理功能。
 - `/admin/backup`、`/admin/migrate/export` 支持可选 Bearer 鉴权：
   - `AUTH_TOKEN` 为空：不校验，保持兼容行为
   - `AUTH_TOKEN` 非空：必须带 `Authorization: Bearer <AUTH_TOKEN>`
