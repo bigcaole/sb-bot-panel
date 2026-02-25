@@ -6,6 +6,7 @@ from datetime import datetime
 
 import httpx
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.error import BadRequest, Forbidden
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -31,6 +32,14 @@ CONTROLLER_AUTH_TOKEN = os.getenv("AUTH_TOKEN", "").strip()
 PANEL_BASE_URL = os.getenv("PANEL_BASE_URL", CONTROLLER_URL).rstrip("/")
 if not PANEL_BASE_URL:
     PANEL_BASE_URL = CONTROLLER_URL
+try:
+    MENU_AUTO_CLEAR_SECONDS = int(os.getenv("BOT_MENU_TTL", "60").strip() or "60")
+except ValueError:
+    MENU_AUTO_CLEAR_SECONDS = 60
+if MENU_AUTO_CLEAR_SECONDS <= 0:
+    MENU_AUTO_CLEAR_SECONDS = 60
+
+MENU_AUTO_CLEAR_JOBS_KEY = "menu_auto_clear_jobs"
 
 WIZARD_KEY = "create_user_wizard"
 CREATE_DISPLAY_NAME, CREATE_TUIC_PORT, CREATE_SPEED_MBPS, CREATE_VALID_DAYS, CREATE_CONFIRM = range(5)
@@ -127,6 +136,70 @@ for submenu_key, submenu in SUBMENUS.items():
         if callback_data.startswith("action:"):
             ACTION_LABELS[callback_data] = label
             ACTION_PARENT[callback_data] = submenu_key
+
+
+async def _menu_auto_clear_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    data = context.job.data if context.job else {}
+    chat_id = data.get("chat_id")
+    message_id = data.get("message_id")
+    if chat_id is None or message_id is None:
+        return
+
+    key = f"{chat_id}:{message_id}"
+    try:
+        await context.bot.edit_message_reply_markup(
+            chat_id=chat_id,
+            message_id=message_id,
+            reply_markup=None,
+        )
+    except (BadRequest, Forbidden):
+        pass
+    finally:
+        jobs_map = context.application.bot_data.get(MENU_AUTO_CLEAR_JOBS_KEY, {})
+        if isinstance(jobs_map, dict):
+            jobs_map.pop(key, None)
+
+
+def schedule_menu_auto_clear(
+    context: ContextTypes.DEFAULT_TYPE, chat_id: int, message_id: int
+) -> None:
+    if not context.job_queue:
+        return
+
+    jobs_map = context.application.bot_data.setdefault(MENU_AUTO_CLEAR_JOBS_KEY, {})
+    if not isinstance(jobs_map, dict):
+        jobs_map = {}
+        context.application.bot_data[MENU_AUTO_CLEAR_JOBS_KEY] = jobs_map
+
+    key = f"{chat_id}:{message_id}"
+    old_job = jobs_map.get(key)
+    if old_job:
+        old_job.schedule_removal()
+
+    jobs_map[key] = context.job_queue.run_once(
+        _menu_auto_clear_job,
+        MENU_AUTO_CLEAR_SECONDS,
+        data={"chat_id": chat_id, "message_id": message_id},
+        name=f"menu_auto_clear:{key}",
+    )
+
+
+async def reply_text_with_auto_clear(
+    message, context: ContextTypes.DEFAULT_TYPE, text: str, reply_markup=None
+):
+    sent = await message.reply_text(text, reply_markup=reply_markup)
+    if isinstance(reply_markup, InlineKeyboardMarkup):
+        schedule_menu_auto_clear(context, sent.chat_id, sent.message_id)
+    return sent
+
+
+async def refresh_callback_menu_ttl(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    query = update.callback_query
+    if not query or not query.message:
+        return
+    schedule_menu_auto_clear(context, query.message.chat_id, query.message.message_id)
 
 
 def build_main_menu() -> InlineKeyboardMarkup:
@@ -737,16 +810,23 @@ async def render_node_detail(
 
 
 async def send_node_detail_message(
-    message, node_code: str, notice: str = ""
+    message, context: ContextTypes.DEFAULT_TYPE, node_code: str, notice: str = ""
 ) -> None:
     node, error_message, status_code = await controller_request(
         "GET", f"/nodes/{node_code}"
     )
     if error_message:
         if status_code == 404:
-            await message.reply_text(f"节点不存在：{node_code}", reply_markup=build_submenu("nodes"))
+            await reply_text_with_auto_clear(
+                message,
+                context,
+                f"节点不存在：{node_code}",
+                reply_markup=build_submenu("nodes"),
+            )
             return
-        await message.reply_text(
+        await reply_text_with_auto_clear(
+            message,
+            context,
             f"获取节点详情失败：{error_message}",
             reply_markup=build_submenu("nodes"),
         )
@@ -755,7 +835,9 @@ async def send_node_detail_message(
     detail_text = format_node_detail_text(node)
     if notice:
         detail_text = f"{notice}\n\n{detail_text}"
-    await message.reply_text(
+    await reply_text_with_auto_clear(
+        message,
+        context,
         detail_text,
         reply_markup=build_node_detail_keyboard(node_code),
     )
@@ -1061,14 +1143,18 @@ async def render_user_nodes_manage(query, user_code: str, notice: str = "") -> N
 
 
 async def send_user_nodes_manage_message(
-    message, user_code: str, notice: str = ""
+    message, context: ContextTypes.DEFAULT_TYPE, user_code: str, notice: str = ""
 ) -> None:
     user, user_error, user_status = await controller_request("GET", f"/users/{user_code}")
     if user_error:
         if user_status == 404:
-            await message.reply_text("用户不存在", reply_markup=build_submenu("user"))
+            await reply_text_with_auto_clear(
+                message, context, "用户不存在", reply_markup=build_submenu("user")
+            )
             return
-        await message.reply_text(
+        await reply_text_with_auto_clear(
+            message,
+            context,
             f"获取用户信息失败：{localize_controller_error(user_error)}",
             reply_markup=build_submenu("user"),
         )
@@ -1079,9 +1165,13 @@ async def send_user_nodes_manage_message(
     )
     if nodes_error:
         if nodes_status == 404:
-            await message.reply_text("用户不存在", reply_markup=build_submenu("user"))
+            await reply_text_with_auto_clear(
+                message, context, "用户不存在", reply_markup=build_submenu("user")
+            )
             return
-        await message.reply_text(
+        await reply_text_with_auto_clear(
+            message,
+            context,
             f"获取用户节点信息失败：{localize_controller_error(nodes_error)}",
             reply_markup=build_submenu("user"),
         )
@@ -1093,22 +1183,38 @@ async def send_user_nodes_manage_message(
     text = format_user_nodes_manage_text(
         user_code, user or {}, user_nodes or [], node_tags_map, notice
     )
-    await message.reply_text(text, reply_markup=build_user_nodes_manage_keyboard(user_code))
+    await reply_text_with_auto_clear(
+        message,
+        context,
+        text,
+        reply_markup=build_user_nodes_manage_keyboard(user_code),
+    )
 
 
-async def show_main_menu(update: Update) -> None:
+async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message:
-        await update.message.reply_text("主菜单", reply_markup=build_main_menu())
+        await reply_text_with_auto_clear(
+            update.message, context, "主菜单", reply_markup=build_main_menu()
+        )
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    del context
-    await show_main_menu(update)
+    await show_main_menu(update, context)
 
 
 async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await show_main_menu(update, context)
+
+
+async def whoami(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     del context
-    await show_main_menu(update)
+    if not update.message or not update.effective_chat:
+        return
+    chat_id = update.effective_chat.id
+    await update.message.reply_text(
+        f"你的 chat_id 是: {chat_id}\n"
+        "可将该数字写入 ADMIN_CHAT_IDS（逗号分隔）以限制管理员权限。"
+    )
 
 
 async def start_create_user_wizard(
@@ -1208,7 +1314,9 @@ async def create_user_valid_days(
     wizard_data = context.user_data.setdefault(WIZARD_KEY, {})
     wizard_data["valid_days"] = valid_days
 
-    await update.message.reply_text(
+    await reply_text_with_auto_clear(
+        update.message,
+        context,
         format_create_summary(
             wizard_data["display_name"],
             wizard_data["tuic_port"],
@@ -1319,7 +1427,9 @@ async def cancel_wizard_command(
 ) -> int:
     context.user_data.pop(WIZARD_KEY, None)
     if update.message:
-        await update.message.reply_text("已取消", reply_markup=build_submenu("user"))
+        await reply_text_with_auto_clear(
+            update.message, context, "已取消", reply_markup=build_submenu("user")
+        )
     return ConversationHandler.END
 
 
@@ -1464,7 +1574,9 @@ async def nodes_create_note(
     wizard_data = context.user_data.setdefault(NODES_WIZARD_KEY, {})
     wizard_data["note"] = note
 
-    await update.message.reply_text(
+    await reply_text_with_auto_clear(
+        update.message,
+        context,
         format_nodes_create_summary(
             wizard_data["node_code"],
             wizard_data["region"],
@@ -1586,7 +1698,9 @@ async def cancel_nodes_wizard_command(
 ) -> int:
     context.user_data.pop(NODES_WIZARD_KEY, None)
     if update.message:
-        await update.message.reply_text("已取消", reply_markup=build_submenu("nodes"))
+        await reply_text_with_auto_clear(
+            update.message, context, "已取消", reply_markup=build_submenu("nodes")
+        )
     return ConversationHandler.END
 
 
@@ -1638,7 +1752,7 @@ async def user_nodes_input_user_code(
         return USER_NODES_INPUT
 
     context.user_data[USER_NODES_WIZARD_KEY] = {"user_code": raw_value}
-    await send_user_nodes_manage_message(update.message, raw_value)
+    await send_user_nodes_manage_message(update.message, context, raw_value)
     context.user_data.pop(USER_NODES_WIZARD_KEY, None)
     return ConversationHandler.END
 
@@ -1648,7 +1762,9 @@ async def cancel_user_nodes_wizard_command(
 ) -> int:
     context.user_data.pop(USER_NODES_WIZARD_KEY, None)
     if update.message:
-        await update.message.reply_text("已取消", reply_markup=build_submenu("user"))
+        await reply_text_with_auto_clear(
+            update.message, context, "已取消", reply_markup=build_submenu("user")
+        )
     return ConversationHandler.END
 
 
@@ -1742,7 +1858,12 @@ async def user_speed_input_value(
     pending = pending_map.get(user_code, {}) if isinstance(pending_map, dict) else {}
     if not user_code or not pending:
         pop_user_speed_pending(context)
-        await update.message.reply_text("修改状态已丢失，请重新选择用户。", reply_markup=build_submenu("user"))
+        await reply_text_with_auto_clear(
+            update.message,
+            context,
+            "修改状态已丢失，请重新选择用户。",
+            reply_markup=build_submenu("user"),
+        )
         return ConversationHandler.END
 
     pending["new_speed"] = new_speed
@@ -1752,7 +1873,9 @@ async def user_speed_input_value(
     display_name = str(pending.get("display_name") or "").strip()
     user_label = f"{display_name}（{user_code}）" if display_name else user_code
     old_speed = int(pending.get("old_speed", 0) or 0)
-    await update.message.reply_text(
+    await reply_text_with_auto_clear(
+        update.message,
+        context,
         "请确认修改限速：\n\n"
         f"用户：{user_label}\n"
         f"当前限速：{old_speed} Mbps\n"
@@ -1839,7 +1962,9 @@ async def cancel_user_speed_command(
 ) -> int:
     pop_user_speed_pending(context)
     if update.message:
-        await update.message.reply_text("已取消", reply_markup=build_submenu("user"))
+        await reply_text_with_auto_clear(
+            update.message, context, "已取消", reply_markup=build_submenu("user")
+        )
     return ConversationHandler.END
 
 
@@ -1921,7 +2046,12 @@ async def node_edit_host_input(
 
     node_code = context.user_data.get(NODE_EDIT_KEY, {}).get("node_code", "")
     if not node_code:
-        await update.message.reply_text("编辑状态已丢失，请重新进入节点详情。", reply_markup=build_submenu("nodes"))
+        await reply_text_with_auto_clear(
+            update.message,
+            context,
+            "编辑状态已丢失，请重新进入节点详情。",
+            reply_markup=build_submenu("nodes"),
+        )
         return ConversationHandler.END
 
     context.user_data[NODE_EDIT_KEY] = {
@@ -1946,7 +2076,12 @@ async def node_edit_sni_input(
     reality_server_name = "" if raw_value == "-" else raw_value
     node_code = context.user_data.get(NODE_EDIT_KEY, {}).get("node_code", "")
     if not node_code:
-        await update.message.reply_text("编辑状态已丢失，请重新进入节点详情。", reply_markup=build_submenu("nodes"))
+        await reply_text_with_auto_clear(
+            update.message,
+            context,
+            "编辑状态已丢失，请重新进入节点详情。",
+            reply_markup=build_submenu("nodes"),
+        )
         return ConversationHandler.END
 
     context.user_data[NODE_EDIT_KEY] = {
@@ -1980,7 +2115,12 @@ async def node_edit_pool_input(
 
     node_code = context.user_data.get(NODE_EDIT_KEY, {}).get("node_code", "")
     if not node_code:
-        await update.message.reply_text("编辑状态已丢失，请重新进入节点详情。", reply_markup=build_submenu("nodes"))
+        await reply_text_with_auto_clear(
+            update.message,
+            context,
+            "编辑状态已丢失，请重新进入节点详情。",
+            reply_markup=build_submenu("nodes"),
+        )
         return ConversationHandler.END
 
     context.user_data[NODE_EDIT_KEY] = {
@@ -2007,7 +2147,12 @@ async def node_edit_tuic_sni_input(
     tuic_server_name = "" if raw_value == "-" else raw_value
     node_code = context.user_data.get(NODE_EDIT_KEY, {}).get("node_code", "")
     if not node_code:
-        await update.message.reply_text("编辑状态已丢失，请重新进入节点详情。", reply_markup=build_submenu("nodes"))
+        await reply_text_with_auto_clear(
+            update.message,
+            context,
+            "编辑状态已丢失，请重新进入节点详情。",
+            reply_markup=build_submenu("nodes"),
+        )
         return ConversationHandler.END
 
     _, error_message, status_code = await controller_request(
@@ -2018,14 +2163,21 @@ async def node_edit_tuic_sni_input(
     if error_message:
         if status_code == 404:
             context.user_data.pop(NODE_EDIT_KEY, None)
-            await update.message.reply_text(f"节点不存在：{node_code}", reply_markup=build_submenu("nodes"))
+            await reply_text_with_auto_clear(
+                update.message,
+                context,
+                f"节点不存在：{node_code}",
+                reply_markup=build_submenu("nodes"),
+            )
             return ConversationHandler.END
         context.user_data.pop(NODE_EDIT_KEY, None)
-        await send_node_detail_message(update.message, node_code, notice=f"修改失败：{error_message}")
+        await send_node_detail_message(
+            update.message, context, node_code, notice=f"修改失败：{error_message}"
+        )
         return ConversationHandler.END
 
     context.user_data.pop(NODE_EDIT_KEY, None)
-    await send_node_detail_message(update.message, node_code, notice="TUIC证书域名已更新")
+    await send_node_detail_message(update.message, context, node_code, notice="TUIC证书域名已更新")
     return ConversationHandler.END
 
 
@@ -2039,7 +2191,12 @@ async def prompt_node_edit_confirmation(
 
     if not node_code or field not in ("host", "sni", "pool") or not isinstance(patch_payload, dict):
         context.user_data.pop(NODE_EDIT_KEY, None)
-        await message.reply_text("待确认修改数据无效，请重新进入节点详情操作。", reply_markup=build_submenu("nodes"))
+        await reply_text_with_auto_clear(
+            message,
+            context,
+            "待确认修改数据无效，请重新进入节点详情操作。",
+            reply_markup=build_submenu("nodes"),
+        )
         return ConversationHandler.END
 
     node, node_error, node_status_code = await controller_request(
@@ -2048,22 +2205,39 @@ async def prompt_node_edit_confirmation(
     if node_error:
         context.user_data.pop(NODE_EDIT_KEY, None)
         if node_status_code == 404:
-            await message.reply_text(f"节点不存在：{node_code}", reply_markup=build_submenu("nodes"))
+            await reply_text_with_auto_clear(
+                message,
+                context,
+                f"节点不存在：{node_code}",
+                reply_markup=build_submenu("nodes"),
+            )
         else:
-            await message.reply_text(f"获取节点详情失败：{node_error}", reply_markup=build_submenu("nodes"))
+            await reply_text_with_auto_clear(
+                message,
+                context,
+                f"获取节点详情失败：{node_error}",
+                reply_markup=build_submenu("nodes"),
+            )
         return ConversationHandler.END
 
     stats, stats_error, _ = await controller_request("GET", f"/nodes/{node_code}/stats")
     if stats_error:
         context.user_data.pop(NODE_EDIT_KEY, None)
-        await message.reply_text(f"获取节点统计失败：{stats_error}", reply_markup=build_submenu("nodes"))
+        await reply_text_with_auto_clear(
+            message,
+            context,
+            f"获取节点统计失败：{stats_error}",
+            reply_markup=build_submenu("nodes"),
+        )
         return ConversationHandler.END
 
     old_value, new_value = get_node_edit_old_new_values(field, node, pending_edit)
     scope_text = get_node_edit_scope_text(field)
     bound_users = int(stats.get("bound_users", 0)) if isinstance(stats, dict) else 0
 
-    await message.reply_text(
+    await reply_text_with_auto_clear(
+        message,
+        context,
         "请确认修改：\n\n"
         f"正在修改的协议范围：{scope_text}\n"
         f"影响范围：仅该节点 {node_code}\n"
@@ -2152,9 +2326,11 @@ async def cancel_node_edit_command(
     context.user_data.pop(NODE_EDIT_KEY, None)
     if update.message:
         if node_code:
-            await send_node_detail_message(update.message, node_code, notice="已取消")
+            await send_node_detail_message(update.message, context, node_code, notice="已取消")
         else:
-            await update.message.reply_text("已取消", reply_markup=build_submenu("nodes"))
+            await reply_text_with_auto_clear(
+                update.message, context, "已取消", reply_markup=build_submenu("nodes")
+            )
     return ConversationHandler.END
 
 
@@ -2193,7 +2369,12 @@ async def node_reality_paste_input(
     node_code = str(pending.get("node_code", ""))
     if not node_code:
         context.user_data.pop(NODE_REALITY_KEY, None)
-        await update.message.reply_text("配置状态已丢失，请重新进入节点详情。", reply_markup=build_submenu("nodes"))
+        await reply_text_with_auto_clear(
+            update.message,
+            context,
+            "配置状态已丢失，请重新进入节点详情。",
+            reply_markup=build_submenu("nodes"),
+        )
         return ConversationHandler.END
 
     public_key, short_id = extract_reality_public_key_short_id(update.message.text)
@@ -2212,15 +2393,30 @@ async def node_reality_paste_input(
     if node_error:
         context.user_data.pop(NODE_REALITY_KEY, None)
         if node_status_code == 404:
-            await update.message.reply_text(f"节点不存在：{node_code}", reply_markup=build_submenu("nodes"))
+            await reply_text_with_auto_clear(
+                update.message,
+                context,
+                f"节点不存在：{node_code}",
+                reply_markup=build_submenu("nodes"),
+            )
         else:
-            await update.message.reply_text(f"获取节点详情失败：{node_error}", reply_markup=build_submenu("nodes"))
+            await reply_text_with_auto_clear(
+                update.message,
+                context,
+                f"获取节点详情失败：{node_error}",
+                reply_markup=build_submenu("nodes"),
+            )
         return ConversationHandler.END
 
     stats, stats_error, _ = await controller_request("GET", f"/nodes/{node_code}/stats")
     if stats_error:
         context.user_data.pop(NODE_REALITY_KEY, None)
-        await update.message.reply_text(f"获取节点统计失败：{stats_error}", reply_markup=build_submenu("nodes"))
+        await reply_text_with_auto_clear(
+            update.message,
+            context,
+            f"获取节点统计失败：{stats_error}",
+            reply_markup=build_submenu("nodes"),
+        )
         return ConversationHandler.END
 
     old_public_key = str(node.get("reality_public_key") or "")
@@ -2233,7 +2429,9 @@ async def node_reality_paste_input(
         "short_id": short_id,
     }
 
-    await update.message.reply_text(
+    await reply_text_with_auto_clear(
+        update.message,
+        context,
         "请确认保存 REALITY 参数：\n\n"
         "正在修改的协议范围：仅 VLESS+REALITY\n"
         f"影响范围：仅该节点 {node_code}\n"
@@ -2318,9 +2516,11 @@ async def cancel_node_reality_command(
     context.user_data.pop(NODE_REALITY_KEY, None)
     if update.message:
         if node_code:
-            await send_node_detail_message(update.message, node_code, notice="已取消")
+            await send_node_detail_message(update.message, context, node_code, notice="已取消")
         else:
-            await update.message.reply_text("已取消", reply_markup=build_submenu("nodes"))
+            await reply_text_with_auto_clear(
+                update.message, context, "已取消", reply_markup=build_submenu("nodes")
+            )
     return ConversationHandler.END
 
 
@@ -2750,6 +2950,7 @@ def main() -> None:
     application = Application.builder().token(token).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("menu", menu))
+    application.add_handler(CommandHandler("whoami", whoami))
     create_user_conversation = ConversationHandler(
         entry_points=[
             CallbackQueryHandler(start_create_user_wizard, pattern=r"^action:user_create$")
@@ -2914,6 +3115,7 @@ def main() -> None:
     )
     application.add_handler(node_reality_conversation)
     application.add_handler(CallbackQueryHandler(handle_callback))
+    application.add_handler(CallbackQueryHandler(refresh_callback_menu_ttl), group=1)
     application.run_polling()
 
 
