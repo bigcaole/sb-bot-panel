@@ -79,6 +79,44 @@ is_ipv4() {
   [[ "$value" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]
 }
 
+normalize_input_url() {
+  local raw="$1"
+  local default_scheme="${2:-http}"
+  raw="${raw//$'\r'/}"
+  raw="${raw//$'\n'/}"
+  raw="$(echo "$raw" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+  if [[ -z "$raw" ]]; then
+    echo ""
+    return
+  fi
+  if [[ "$raw" =~ ^https?:// ]]; then
+    echo "${raw%/}"
+    return
+  fi
+  if [[ "$default_scheme" != "https" ]]; then
+    default_scheme="http"
+  fi
+  echo "${default_scheme}://${raw%/}"
+}
+
+sanitize_domain_input() {
+  local raw="$1"
+  raw="${raw//$'\r'/}"
+  raw="${raw//$'\n'/}"
+  raw="$(echo "$raw" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+  raw="${raw#http://}"
+  raw="${raw#https://}"
+  raw="${raw%%/*}"
+  raw="${raw%%:*}"
+  raw="${raw%.}"
+  echo "$raw"
+}
+
+is_valid_domain() {
+  local value="$1"
+  [[ "$value" =~ ^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$ ]]
+}
+
 ensure_project_dir() {
   read -r -p "项目目录（默认 /root/sb-bot-panel） [${PROJECT_DIR}]: " input_dir
   PROJECT_DIR="${input_dir:-$PROJECT_DIR}"
@@ -147,7 +185,7 @@ load_existing_env_defaults() {
   CONTROLLER_PUBLIC_URL="${old_public_url:-}"
   PANEL_BASE_URL="${old_panel_base:-}"
   ENABLE_HTTPS="${old_enable_https:-0}"
-  HTTPS_DOMAIN="${old_https_domain:-}"
+  HTTPS_DOMAIN="$(sanitize_domain_input "${old_https_domain:-}")"
   HTTPS_ACME_EMAIL="${old_https_email:-}"
   AUTH_TOKEN="${old_auth:-devtoken123}"
   BOT_TOKEN="${old_bot:-}"
@@ -192,9 +230,9 @@ prompt_env_config() {
   else
     default_public_url=""
   fi
-  read -r -p "CONTROLLER_PUBLIC_URL（可选；给节点/外部访问的完整 URL） [${CONTROLLER_PUBLIC_URL:-$default_public_url}]: " input_public_url
+  read -r -p "CONTROLLER_PUBLIC_URL（可选；给节点/外部访问，支持省略 http/https） [${CONTROLLER_PUBLIC_URL:-$default_public_url}]: " input_public_url
   CONTROLLER_PUBLIC_URL="${input_public_url:-${CONTROLLER_PUBLIC_URL:-$default_public_url}}"
-  CONTROLLER_PUBLIC_URL="${CONTROLLER_PUBLIC_URL%/}"
+  CONTROLLER_PUBLIC_URL="$(normalize_input_url "$CONTROLLER_PUBLIC_URL" "http")"
 
   local public_host enable_https_default
   public_host="$(extract_url_host "$CONTROLLER_PUBLIC_URL")"
@@ -212,9 +250,9 @@ prompt_env_config() {
     while [[ -z "$HTTPS_DOMAIN" ]] || is_ipv4 "$HTTPS_DOMAIN"; do
       read -r -p "HTTPS_DOMAIN（证书域名，例如 panel.example.com） [${HTTPS_DOMAIN}]: " input_https_domain
       HTTPS_DOMAIN="${input_https_domain:-$HTTPS_DOMAIN}"
-      HTTPS_DOMAIN="$(echo "$HTTPS_DOMAIN" | tr -d '[:space:]')"
-      if [[ -z "$HTTPS_DOMAIN" ]] || is_ipv4 "$HTTPS_DOMAIN"; then
-        warn "HTTPS_DOMAIN 必须是域名，不能是 IP。"
+      HTTPS_DOMAIN="$(sanitize_domain_input "$HTTPS_DOMAIN")"
+      if [[ -z "$HTTPS_DOMAIN" ]] || is_ipv4 "$HTTPS_DOMAIN" || ! is_valid_domain "$HTTPS_DOMAIN"; then
+        warn "HTTPS_DOMAIN 无效，请填写域名（例如 panel.example.com），不要填 IP/路径。"
       fi
     done
     read -r -p "HTTPS_ACME_EMAIL（证书账号邮箱，可选） [${HTTPS_ACME_EMAIL}]: " input_https_email
@@ -235,13 +273,24 @@ prompt_env_config() {
   if [[ -z "$default_panel_base" ]]; then
     default_panel_base="$default_controller_url"
   fi
-  read -r -p "PANEL_BASE_URL（bot订阅链接地址；建议域名） [${default_panel_base}]: " input_panel_base
+  read -r -p "PANEL_BASE_URL（bot订阅链接地址；支持省略 http/https） [${default_panel_base}]: " input_panel_base
   PANEL_BASE_URL="${input_panel_base:-$default_panel_base}"
-  PANEL_BASE_URL="${PANEL_BASE_URL%/}"
+  local panel_scheme
+  panel_scheme="http"
+  if [[ "$ENABLE_HTTPS" == "1" || "$PANEL_BASE_URL" == https://* ]]; then
+    panel_scheme="https"
+  fi
+  PANEL_BASE_URL="$(normalize_input_url "$PANEL_BASE_URL" "$panel_scheme")"
 
-  read -r -p "CONTROLLER_URL（给 bot 调用，建议本机回环地址） [${CONTROLLER_URL:-$default_controller_url}]: " input_url
+  read -r -p "CONTROLLER_URL（给 bot 调用，支持省略 http/https） [${CONTROLLER_URL:-$default_controller_url}]: " input_url
   CONTROLLER_URL="${input_url:-${CONTROLLER_URL:-$default_controller_url}}"
-  CONTROLLER_URL="${CONTROLLER_URL%/}"
+  local controller_host controller_scheme
+  controller_host="$(extract_url_host "$CONTROLLER_URL")"
+  controller_scheme="http"
+  if [[ "$ENABLE_HTTPS" == "1" && "$controller_host" != "127.0.0.1" && "$controller_host" != "localhost" ]]; then
+    controller_scheme="https"
+  fi
+  CONTROLLER_URL="$(normalize_input_url "$CONTROLLER_URL" "$controller_scheme")"
 
   read -r -p "AUTH_TOKEN（可选；保护 /admin/*；留空=关闭鉴权） [${AUTH_TOKEN}]: " input_auth
   AUTH_TOKEN="${input_auth:-$AUTH_TOKEN}"
@@ -469,6 +518,35 @@ EOF
   fi
 }
 
+restart_caddy_with_diagnostics() {
+  if [[ "$ENABLE_HTTPS" != "1" ]]; then
+    return
+  fi
+  if ! command -v caddy >/dev/null 2>&1; then
+    err "未检测到 caddy 命令。"
+    return 1
+  fi
+
+  msg "校验 Caddy 配置..."
+  if ! caddy validate --config /etc/caddy/Caddyfile >/tmp/sb-caddy-validate.log 2>&1; then
+    err "Caddyfile 校验失败："
+    cat /tmp/sb-caddy-validate.log || true
+    return 1
+  fi
+
+  systemctl enable caddy >/dev/null || true
+  if ! systemctl restart caddy; then
+    err "caddy 启动失败，开始输出诊断信息。"
+    echo "----- 端口占用(80/443) -----"
+    ss -ltnup 2>/dev/null | grep -E ':(80|443)\s' || echo "未发现明显占用"
+    echo "----- caddy status -----"
+    systemctl status caddy --no-pager || true
+    echo "----- caddy 日志 -----"
+    journalctl -u caddy -n 120 --no-pager || true
+    return 1
+  fi
+}
+
 restart_services() {
   systemctl daemon-reload
   systemctl enable sb-controller >/dev/null
@@ -476,8 +554,7 @@ restart_services() {
   systemctl restart sb-controller
   systemctl restart sb-bot
   if [[ "$ENABLE_HTTPS" == "1" ]]; then
-    systemctl enable caddy >/dev/null
-    systemctl restart caddy
+    restart_caddy_with_diagnostics
   fi
 }
 

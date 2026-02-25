@@ -31,7 +31,7 @@ git clone <你的仓库地址> sb-bot-panel && cd sb-bot-panel && sudo bash scri
 
 安装过程为中文交互，会询问并写入 `/etc/sb-agent/config.json`：
 
-1. `controller_url`（例如 `http://面板IP:8080`）
+1. `controller_url`（支持省略协议；例如可直接填 `panel.example.com:8080`）
 2. `node_code`（例如 `JP1`）
 3. `auth_token`
 4. `tuic_domain`（留空则不启用 TUIC）
@@ -171,6 +171,7 @@ sudo bash scripts/admin/install_admin.sh --configure-only
 - `2) 配置向导（仅写 .env 并重启）`
 
 说明：执行安装/配置向导时，会自动写入完整 `.env` 字段（包括 `BOT_MENU_TTL`、`BOT_NODE_MONITOR_INTERVAL`、`BOT_NODE_OFFLINE_THRESHOLD`），无需手工补字段。
+并且 URL 字段支持省略协议（`http://` / `https://`），脚本会自动补全。
 
 ### 管理服务器 HTTPS 证书（申请+自动续期）
 

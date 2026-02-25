@@ -92,6 +92,52 @@ detect_public_ip() {
     || true
 }
 
+extract_url_host() {
+  local raw="$1"
+  raw="${raw#*://}"
+  raw="${raw%%/*}"
+  raw="${raw%%:*}"
+  echo "$raw"
+}
+
+normalize_input_url() {
+  local raw="$1"
+  local default_scheme="${2:-http}"
+  raw="${raw//$'\r'/}"
+  raw="${raw//$'\n'/}"
+  raw="$(echo "$raw" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+  if [[ -z "$raw" ]]; then
+    echo ""
+    return
+  fi
+  if [[ "$raw" =~ ^https?:// ]]; then
+    echo "${raw%/}"
+    return
+  fi
+  if [[ "$default_scheme" != "https" ]]; then
+    default_scheme="http"
+  fi
+  echo "${default_scheme}://${raw%/}"
+}
+
+sanitize_domain_input() {
+  local raw="$1"
+  raw="${raw//$'\r'/}"
+  raw="${raw//$'\n'/}"
+  raw="$(echo "$raw" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+  raw="${raw#http://}"
+  raw="${raw#https://}"
+  raw="${raw%%/*}"
+  raw="${raw%%:*}"
+  raw="${raw%.}"
+  echo "$raw"
+}
+
+is_valid_domain() {
+  local value="$1"
+  [[ "$value" =~ ^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$ ]]
+}
+
 install_dependencies() {
   msg "安装基础依赖..."
   export DEBIAN_FRONTEND=noninteractive
@@ -200,6 +246,32 @@ EOF
   fi
 }
 
+restart_caddy_with_diagnostics() {
+  if [[ "$ENABLE_HTTPS" != "1" ]]; then
+    return
+  fi
+  if ! command -v caddy >/dev/null 2>&1; then
+    err "未检测到 caddy 命令。"
+    return 1
+  fi
+  if ! caddy validate --config /etc/caddy/Caddyfile >/tmp/sb-caddy-validate.log 2>&1; then
+    err "Caddyfile 校验失败："
+    cat /tmp/sb-caddy-validate.log || true
+    return 1
+  fi
+  systemctl enable caddy >/dev/null || true
+  if ! systemctl restart caddy; then
+    err "caddy 启动失败，开始输出诊断信息。"
+    echo "----- 端口占用(80/443) -----"
+    ss -ltnup 2>/dev/null | grep -E ':(80|443)\s' || echo "未发现明显占用"
+    echo "----- caddy status -----"
+    systemctl status caddy --no-pager || true
+    echo "----- caddy 日志 -----"
+    journalctl -u caddy -n 120 --no-pager || true
+    return 1
+  fi
+}
+
 main() {
   require_root
 
@@ -268,6 +340,7 @@ main() {
   ENABLE_HTTPS="$(get_env_value ENABLE_HTTPS)"
   ENABLE_HTTPS="${ENABLE_HTTPS:-0}"
   HTTPS_DOMAIN="$(get_env_value HTTPS_DOMAIN)"
+  HTTPS_DOMAIN="$(sanitize_domain_input "$HTTPS_DOMAIN")"
   HTTPS_ACME_EMAIL="$(get_env_value HTTPS_ACME_EMAIL)"
   AUTH_TOKEN="$(get_env_value AUTH_TOKEN)"
   AUTH_TOKEN="${AUTH_TOKEN:-devtoken123}"
@@ -290,9 +363,15 @@ main() {
   default_controller_url="http://127.0.0.1:${CONTROLLER_PORT}"
   CONTROLLER_URL="$(get_env_value CONTROLLER_URL)"
   CONTROLLER_URL="${CONTROLLER_URL:-$default_controller_url}"
-  read -r -p "CONTROLLER_URL [${CONTROLLER_URL}]（建议本机回环地址）: " input_url
+  read -r -p "CONTROLLER_URL [${CONTROLLER_URL}]（支持省略 http/https）: " input_url
   CONTROLLER_URL="${input_url:-$CONTROLLER_URL}"
-  CONTROLLER_URL="${CONTROLLER_URL%/}"
+  local controller_host controller_scheme
+  controller_host="$(extract_url_host "$CONTROLLER_URL")"
+  controller_scheme="http"
+  if [[ "$ENABLE_HTTPS" == "1" && "$controller_host" != "127.0.0.1" && "$controller_host" != "localhost" ]]; then
+    controller_scheme="https"
+  fi
+  CONTROLLER_URL="$(normalize_input_url "$CONTROLLER_URL" "$controller_scheme")"
 
   read -r -p "BOT_TOKEN [保持现值请回车]: " input_bot
   BOT_TOKEN="${input_bot:-$BOT_TOKEN}"
@@ -313,11 +392,40 @@ main() {
   if [[ "$ENABLE_HTTPS" == "1" ]]; then
     read -r -p "HTTPS_DOMAIN（例如 panel.example.com） [${HTTPS_DOMAIN}]: " input_https_domain
     HTTPS_DOMAIN="${input_https_domain:-$HTTPS_DOMAIN}"
+    HTTPS_DOMAIN="$(sanitize_domain_input "$HTTPS_DOMAIN")"
+    while [[ -z "$HTTPS_DOMAIN" ]] || ! is_valid_domain "$HTTPS_DOMAIN"; do
+      warn "HTTPS_DOMAIN 无效，请填写域名（例如 panel.example.com）。"
+      read -r -p "请重新输入 HTTPS_DOMAIN: " HTTPS_DOMAIN
+      HTTPS_DOMAIN="$(sanitize_domain_input "$HTTPS_DOMAIN")"
+    done
     read -r -p "HTTPS_ACME_EMAIL（可选） [${HTTPS_ACME_EMAIL}]: " input_https_email
     HTTPS_ACME_EMAIL="${input_https_email:-$HTTPS_ACME_EMAIL}"
   else
     HTTPS_DOMAIN=""
     HTTPS_ACME_EMAIL=""
+  fi
+
+  if [[ -n "$CONTROLLER_PUBLIC_URL" ]]; then
+    local public_scheme
+    public_scheme="http"
+    if [[ "$ENABLE_HTTPS" == "1" || "$CONTROLLER_PUBLIC_URL" == https://* ]]; then
+      public_scheme="https"
+    fi
+    CONTROLLER_PUBLIC_URL="$(normalize_input_url "$CONTROLLER_PUBLIC_URL" "$public_scheme")"
+  fi
+  if [[ -n "$PANEL_BASE_URL" ]]; then
+    local panel_scheme
+    panel_scheme="http"
+    if [[ "$ENABLE_HTTPS" == "1" || "$PANEL_BASE_URL" == https://* ]]; then
+      panel_scheme="https"
+    fi
+    PANEL_BASE_URL="$(normalize_input_url "$PANEL_BASE_URL" "$panel_scheme")"
+  fi
+  if [[ "$ENABLE_HTTPS" == "1" && -n "$HTTPS_DOMAIN" ]]; then
+    CONTROLLER_PUBLIC_URL="https://${HTTPS_DOMAIN}"
+    if [[ -z "$PANEL_BASE_URL" ]]; then
+      PANEL_BASE_URL="$CONTROLLER_PUBLIC_URL"
+    fi
   fi
 
   mkdir -p "$PROJECT_DIR"
@@ -335,8 +443,7 @@ main() {
   systemctl restart sb-controller
   systemctl restart sb-bot
   if [[ "$ENABLE_HTTPS" == "1" ]]; then
-    systemctl enable caddy >/dev/null
-    systemctl restart caddy
+    restart_caddy_with_diagnostics
   fi
 
   echo ""

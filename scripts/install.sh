@@ -73,6 +73,34 @@ get_public_ipv4() {
     || true
 }
 
+normalize_input_url() {
+  local raw="$1"
+  local default_scheme="${2:-http}"
+  raw="${raw//$'\r'/}"
+  raw="${raw//$'\n'/}"
+  raw="$(echo "$raw" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+  if [[ -z "$raw" ]]; then
+    echo ""
+    return
+  fi
+  if [[ "$raw" =~ ^https?:// ]]; then
+    echo "${raw%/}"
+    return
+  fi
+  if [[ "$default_scheme" != "https" ]]; then
+    default_scheme="http"
+  fi
+  echo "${default_scheme}://${raw%/}"
+}
+
+extract_url_host() {
+  local raw="$1"
+  raw="${raw#*://}"
+  raw="${raw%%/*}"
+  raw="${raw%%:*}"
+  echo "$raw"
+}
+
 resolve_domain_ipv4() {
   local domain="$1"
   local ip=""
@@ -196,9 +224,15 @@ prompt_config() {
   old_tuic_port="$(read_old_config_value "tuic_listen_port")"
   old_poll="$(read_old_config_value "poll_interval")"
 
-  read -r -p "1) 请输入 controller_url（例如 http://你的面板IP:8080） [${old_controller:-http://127.0.0.1:8080}]: " CONTROLLER_URL
+  read -r -p "1) 请输入 controller_url（支持省略 http/https，例如 panel.cwzs.de:8080） [${old_controller:-http://127.0.0.1:8080}]: " CONTROLLER_URL
   CONTROLLER_URL="${CONTROLLER_URL:-${old_controller:-http://127.0.0.1:8080}}"
-  CONTROLLER_URL="${CONTROLLER_URL%/}"
+  local controller_scheme controller_host
+  controller_host="$(extract_url_host "$CONTROLLER_URL")"
+  controller_scheme="https"
+  if [[ "$controller_host" == "127.0.0.1" || "$controller_host" == "localhost" || "$CONTROLLER_URL" == *":8080"* || "$CONTROLLER_URL" == *":80"* ]]; then
+    controller_scheme="http"
+  fi
+  CONTROLLER_URL="$(normalize_input_url "$CONTROLLER_URL" "$controller_scheme")"
 
   while [[ -z "$NODE_CODE" ]]; do
     read -r -p "2) 请输入 node_code（例如 JP1） [${old_node:-JP1}]: " NODE_CODE
