@@ -155,6 +155,7 @@ git clone <你的仓库地址> sb-bot-panel && cd sb-bot-panel && sudo bash scri
 - 依赖安装（apt）
 - venv 创建与 `pip install -r requirements.txt`
 - 写入 `.env`
+- 可选启用 Caddy（自动申请 HTTPS 证书并自动续期）
 - 写入并启用 systemd：
   - `sb-controller.service`
   - `sb-bot.service`
@@ -170,6 +171,20 @@ sudo bash scripts/admin/install_admin.sh --configure-only
 - `2) 配置向导（仅写 .env 并重启）`
 
 说明：执行安装/配置向导时，会自动写入完整 `.env` 字段（包括 `BOT_MENU_TTL`、`BOT_NODE_MONITOR_INTERVAL`、`BOT_NODE_OFFLINE_THRESHOLD`），无需手工补字段。
+
+### 管理服务器 HTTPS 证书（申请+自动续期）
+
+- 建议在安装向导里启用 `ENABLE_HTTPS=1`，并填写：
+  - `HTTPS_DOMAIN`（例如 `panel.example.com`）
+  - `HTTPS_ACME_EMAIL`（可选，建议填写）
+- 启用后脚本会自动：
+  - 安装 `caddy`
+  - 写入 `/etc/caddy/Caddyfile`
+  - 反向代理到 `127.0.0.1:${CONTROLLER_PORT}`
+  - 自动申请并自动续期 Let's Encrypt 证书
+- 管理菜单新增：
+  - `9) HTTPS 证书状态（Caddy）`
+  - `10) HTTPS 证书刷新（重载 Caddy）`
 
 ## 管理服务器菜单（中文数字）
 
@@ -187,10 +202,12 @@ sudo bash scripts/admin/menu_admin.sh
 6. 停止 bot
 7. 状态查看（controller/bot）
 8. 查看日志（controller/bot）
-9. 迁移：导出迁移包
-10. 迁移：导入迁移包
-11. 卸载
-12. 退出
+9. HTTPS 证书状态（Caddy）
+10. HTTPS 证书刷新（重载 Caddy）
+11. 迁移：导出迁移包
+12. 迁移：导入迁移包
+13. 卸载
+14. 退出
 
 ## 迁移导出/导入（管理服务器）
 
@@ -198,7 +215,7 @@ sudo bash scripts/admin/menu_admin.sh
 
 ### 旧机导出
 
-- 进入菜单后执行：`9) 迁移：导出迁移包`
+- 进入菜单后执行：`11) 迁移：导出迁移包`
 - 脚本会停止 `sb-controller` 与 `sb-bot`，导出完成后可选是否自动拉起
 - 生成文件名示例：`sb-migrate-YYYYmmdd-HHMMSS.tar.gz`
 - 导出内容：
@@ -216,7 +233,7 @@ scp root@旧IP:/var/backups/sb-migrate/sb-migrate-xxxx.tar.gz root@新IP:/root/
 ### 新机导入
 
 - 在新机先准备项目目录（建议先 `git clone`）
-- 进入菜单执行：`10) 迁移：导入迁移包`
+- 进入菜单执行：`12) 迁移：导入迁移包`
 - 导入脚本会：
   - 备份旧项目目录到 `/var/backups/sb-migrate/restore-backup-*.tar.gz`
   - 恢复 `data/.env/scripts`
@@ -231,6 +248,9 @@ scp root@旧IP:/var/backups/sb-migrate/sb-migrate-xxxx.tar.gz root@新IP:/root/
 - `CONTROLLER_URL=http://127.0.0.1:8080`
 - `CONTROLLER_PUBLIC_URL=http://your-public-ip:8080`（可选，对外地址）
 - `PANEL_BASE_URL=https://panel.example.com`（建议填域名，bot 订阅链接将使用该地址）
+- `ENABLE_HTTPS=1`（1=启用 Caddy 自动证书，0=关闭）
+- `HTTPS_DOMAIN=panel.example.com`（启用 HTTPS 时填写域名）
+- `HTTPS_ACME_EMAIL=admin@example.com`（可选，证书账号邮箱）
 - `CONTROLLER_PORT=8080`
 - `AUTH_TOKEN=devtoken123`（可空；空值表示关闭 `/admin/*` 鉴权）
 - `BOT_TOKEN=xxxxxxxx`（必填）

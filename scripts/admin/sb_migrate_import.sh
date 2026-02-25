@@ -11,6 +11,9 @@ CONTROLLER_PORT="8080"
 CONTROLLER_URL=""
 CONTROLLER_PUBLIC_URL=""
 PANEL_BASE_URL=""
+ENABLE_HTTPS="0"
+HTTPS_DOMAIN=""
+HTTPS_ACME_EMAIL=""
 AUTH_TOKEN=""
 BOT_TOKEN=""
 ADMIN_CHAT_IDS=""
@@ -46,6 +49,15 @@ CONTROLLER_PUBLIC_URL=${CONTROLLER_PUBLIC_URL}
 
 # Bot 订阅链接基础地址（建议域名）
 PANEL_BASE_URL=${PANEL_BASE_URL}
+
+# 启用 Caddy HTTPS（1=启用，0=关闭）
+ENABLE_HTTPS=${ENABLE_HTTPS}
+
+# Caddy 证书域名（启用 HTTPS 时使用）
+HTTPS_DOMAIN=${HTTPS_DOMAIN}
+
+# Caddy ACME 账号邮箱（可选）
+HTTPS_ACME_EMAIL=${HTTPS_ACME_EMAIL}
 
 # controller 监听端口（供 systemd 使用）
 CONTROLLER_PORT=${CONTROLLER_PORT}
@@ -145,6 +157,49 @@ WantedBy=multi-user.target
 EOF
 }
 
+install_caddy_if_needed() {
+  if [[ "$ENABLE_HTTPS" != "1" ]]; then
+    return
+  fi
+  if command -v caddy >/dev/null 2>&1; then
+    return
+  fi
+  msg "检测到 ENABLE_HTTPS=1，安装 caddy..."
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update -y
+  apt-get install -y caddy
+}
+
+write_caddy_config_if_needed() {
+  if [[ "$ENABLE_HTTPS" != "1" ]]; then
+    return
+  fi
+  if [[ -z "$HTTPS_DOMAIN" ]]; then
+    warn "ENABLE_HTTPS=1 但 HTTPS_DOMAIN 为空，跳过 caddy 配置。"
+    return
+  fi
+  mkdir -p /etc/caddy
+  if [[ -n "$HTTPS_ACME_EMAIL" ]]; then
+    cat >/etc/caddy/Caddyfile <<EOF
+{
+    email ${HTTPS_ACME_EMAIL}
+}
+
+${HTTPS_DOMAIN} {
+    encode zstd gzip
+    reverse_proxy 127.0.0.1:${CONTROLLER_PORT}
+}
+EOF
+  else
+    cat >/etc/caddy/Caddyfile <<EOF
+${HTTPS_DOMAIN} {
+    encode zstd gzip
+    reverse_proxy 127.0.0.1:${CONTROLLER_PORT}
+}
+EOF
+  fi
+}
+
 main() {
   require_root
 
@@ -210,6 +265,10 @@ main() {
   CONTROLLER_PORT="${CONTROLLER_PORT:-8080}"
   CONTROLLER_PUBLIC_URL="$(get_env_value CONTROLLER_PUBLIC_URL)"
   PANEL_BASE_URL="$(get_env_value PANEL_BASE_URL)"
+  ENABLE_HTTPS="$(get_env_value ENABLE_HTTPS)"
+  ENABLE_HTTPS="${ENABLE_HTTPS:-0}"
+  HTTPS_DOMAIN="$(get_env_value HTTPS_DOMAIN)"
+  HTTPS_ACME_EMAIL="$(get_env_value HTTPS_ACME_EMAIL)"
   AUTH_TOKEN="$(get_env_value AUTH_TOKEN)"
   AUTH_TOKEN="${AUTH_TOKEN:-devtoken123}"
   BOT_TOKEN="$(get_env_value BOT_TOKEN)"
@@ -245,18 +304,40 @@ main() {
   read -r -p "ADMIN_CHAT_IDS [${ADMIN_CHAT_IDS}]: " input_admin
   ADMIN_CHAT_IDS="${input_admin:-$ADMIN_CHAT_IDS}"
 
+  read -r -p "ENABLE_HTTPS（1=启用 caddy 自动证书，0=关闭） [${ENABLE_HTTPS}]: " input_https_switch
+  ENABLE_HTTPS="${input_https_switch:-$ENABLE_HTTPS}"
+  if [[ "$ENABLE_HTTPS" != "1" && "$ENABLE_HTTPS" != "0" ]]; then
+    warn "ENABLE_HTTPS 无效，回退为 0"
+    ENABLE_HTTPS="0"
+  fi
+  if [[ "$ENABLE_HTTPS" == "1" ]]; then
+    read -r -p "HTTPS_DOMAIN（例如 panel.example.com） [${HTTPS_DOMAIN}]: " input_https_domain
+    HTTPS_DOMAIN="${input_https_domain:-$HTTPS_DOMAIN}"
+    read -r -p "HTTPS_ACME_EMAIL（可选） [${HTTPS_ACME_EMAIL}]: " input_https_email
+    HTTPS_ACME_EMAIL="${input_https_email:-$HTTPS_ACME_EMAIL}"
+  else
+    HTTPS_DOMAIN=""
+    HTTPS_ACME_EMAIL=""
+  fi
+
   mkdir -p "$PROJECT_DIR"
   write_env_file
 
   install_dependencies
+  install_caddy_if_needed
   setup_venv
   write_services
+  write_caddy_config_if_needed
 
   systemctl daemon-reload
   systemctl enable sb-controller >/dev/null
   systemctl enable sb-bot >/dev/null
   systemctl restart sb-controller
   systemctl restart sb-bot
+  if [[ "$ENABLE_HTTPS" == "1" ]]; then
+    systemctl enable caddy >/dev/null
+    systemctl restart caddy
+  fi
 
   echo ""
   msg "自检开始..."

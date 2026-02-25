@@ -25,6 +25,9 @@ CONTROLLER_PORT="8080"
 CONTROLLER_URL=""
 CONTROLLER_PUBLIC_URL=""
 PANEL_BASE_URL=""
+ENABLE_HTTPS="0"
+HTTPS_DOMAIN=""
+HTTPS_ACME_EMAIL=""
 AUTH_TOKEN=""
 BOT_TOKEN=""
 ADMIN_CHAT_IDS=""
@@ -61,6 +64,19 @@ get_public_ipv4() {
   curl -4 -fsSL ifconfig.me 2>/dev/null \
     || curl -4 -fsSL https://api.ipify.org 2>/dev/null \
     || true
+}
+
+extract_url_host() {
+  local raw="$1"
+  raw="${raw#*://}"
+  raw="${raw%%/*}"
+  raw="${raw%%:*}"
+  echo "$raw"
+}
+
+is_ipv4() {
+  local value="$1"
+  [[ "$value" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]
 }
 
 ensure_project_dir() {
@@ -110,11 +126,14 @@ get_env_value() {
 }
 
 load_existing_env_defaults() {
-  local old_port old_url old_public_url old_panel_base old_auth old_bot old_admin old_migrate old_menu_ttl old_monitor_interval old_offline_threshold
+  local old_port old_url old_public_url old_panel_base old_enable_https old_https_domain old_https_email old_auth old_bot old_admin old_migrate old_menu_ttl old_monitor_interval old_offline_threshold
   old_port="$(get_env_value "CONTROLLER_PORT")"
   old_url="$(get_env_value "CONTROLLER_URL")"
   old_public_url="$(get_env_value "CONTROLLER_PUBLIC_URL")"
   old_panel_base="$(get_env_value "PANEL_BASE_URL")"
+  old_enable_https="$(get_env_value "ENABLE_HTTPS")"
+  old_https_domain="$(get_env_value "HTTPS_DOMAIN")"
+  old_https_email="$(get_env_value "HTTPS_ACME_EMAIL")"
   old_auth="$(get_env_value "AUTH_TOKEN")"
   old_bot="$(get_env_value "BOT_TOKEN")"
   old_admin="$(get_env_value "ADMIN_CHAT_IDS")"
@@ -127,6 +146,9 @@ load_existing_env_defaults() {
   CONTROLLER_URL="${old_url:-http://127.0.0.1:${CONTROLLER_PORT}}"
   CONTROLLER_PUBLIC_URL="${old_public_url:-}"
   PANEL_BASE_URL="${old_panel_base:-}"
+  ENABLE_HTTPS="${old_enable_https:-0}"
+  HTTPS_DOMAIN="${old_https_domain:-}"
+  HTTPS_ACME_EMAIL="${old_https_email:-}"
   AUTH_TOKEN="${old_auth:-devtoken123}"
   BOT_TOKEN="${old_bot:-}"
   ADMIN_CHAT_IDS="${old_admin:-}"
@@ -144,6 +166,8 @@ prompt_env_config() {
   echo "  - CONTROLLER_PORT：controller 对外监听端口（节点 agent 需要访问）"
   echo "  - CONTROLLER_PUBLIC_URL：可选，对外访问 URL（给节点/外部使用）"
   echo "  - PANEL_BASE_URL：bot 生成订阅链接使用的基础地址（建议使用域名）"
+  echo "  - ENABLE_HTTPS / HTTPS_DOMAIN：启用 Caddy 自动证书（申请+续期）"
+  echo "  - HTTPS_ACME_EMAIL：证书账号邮箱（可选，建议填写）"
   echo "  - CONTROLLER_URL：bot 调用 controller 的地址（通常 127.0.0.1）"
   echo "  - AUTH_TOKEN：可选；用于保护 /admin/*，bot/agent 也可携带"
   echo "  - BOT_TOKEN：必填；Telegram 机器人 token"
@@ -172,9 +196,42 @@ prompt_env_config() {
   CONTROLLER_PUBLIC_URL="${input_public_url:-${CONTROLLER_PUBLIC_URL:-$default_public_url}}"
   CONTROLLER_PUBLIC_URL="${CONTROLLER_PUBLIC_URL%/}"
 
+  local public_host enable_https_default
+  public_host="$(extract_url_host "$CONTROLLER_PUBLIC_URL")"
+  if [[ -z "$HTTPS_DOMAIN" && -n "$public_host" ]] && ! is_ipv4 "$public_host"; then
+    HTTPS_DOMAIN="$public_host"
+  fi
+  if [[ "$ENABLE_HTTPS" == "1" || "$CONTROLLER_PUBLIC_URL" == https://* ]]; then
+    enable_https_default="Y"
+  else
+    enable_https_default="N"
+  fi
+
+  if ask_yes_no "是否启用 HTTPS 反向代理（Caddy 自动申请与续期证书）？" "$enable_https_default"; then
+    ENABLE_HTTPS="1"
+    while [[ -z "$HTTPS_DOMAIN" ]] || is_ipv4 "$HTTPS_DOMAIN"; do
+      read -r -p "HTTPS_DOMAIN（证书域名，例如 panel.example.com） [${HTTPS_DOMAIN}]: " input_https_domain
+      HTTPS_DOMAIN="${input_https_domain:-$HTTPS_DOMAIN}"
+      HTTPS_DOMAIN="$(echo "$HTTPS_DOMAIN" | tr -d '[:space:]')"
+      if [[ -z "$HTTPS_DOMAIN" ]] || is_ipv4 "$HTTPS_DOMAIN"; then
+        warn "HTTPS_DOMAIN 必须是域名，不能是 IP。"
+      fi
+    done
+    read -r -p "HTTPS_ACME_EMAIL（证书账号邮箱，可选） [${HTTPS_ACME_EMAIL}]: " input_https_email
+    HTTPS_ACME_EMAIL="${input_https_email:-$HTTPS_ACME_EMAIL}"
+    CONTROLLER_PUBLIC_URL="https://${HTTPS_DOMAIN}"
+  else
+    ENABLE_HTTPS="0"
+    HTTPS_DOMAIN=""
+    HTTPS_ACME_EMAIL=""
+  fi
+
   local default_controller_url="http://127.0.0.1:${CONTROLLER_PORT}"
   local default_panel_base
   default_panel_base="${PANEL_BASE_URL:-$CONTROLLER_PUBLIC_URL}"
+  if [[ "$ENABLE_HTTPS" == "1" && -n "$HTTPS_DOMAIN" ]]; then
+    default_panel_base="https://${HTTPS_DOMAIN}"
+  fi
   if [[ -z "$default_panel_base" ]]; then
     default_panel_base="$default_controller_url"
   fi
@@ -229,7 +286,10 @@ prompt_env_config() {
 
   echo ""
   msg "UFW/端口放行说明："
-  echo "  - 需要放行 ${CONTROLLER_PORT}/tcp（节点 agent 访问 controller）"
+  echo "  - 需要放行 ${CONTROLLER_PORT}/tcp（节点 agent 直连 controller 时使用）"
+  if [[ "$ENABLE_HTTPS" == "1" ]]; then
+    echo "  - 需要放行 80/tcp 与 443/tcp（Caddy 证书申请/HTTPS）"
+  fi
   echo "  - 如仅内网使用，建议限制来源 IP，而不是全网开放"
 }
 
@@ -245,6 +305,15 @@ CONTROLLER_PUBLIC_URL=${CONTROLLER_PUBLIC_URL}
 
 # Bot 订阅链接基础地址（建议域名）
 PANEL_BASE_URL=${PANEL_BASE_URL}
+
+# 启用 Caddy HTTPS（1=启用，0=关闭）
+ENABLE_HTTPS=${ENABLE_HTTPS}
+
+# Caddy 证书域名（启用 HTTPS 时必填）
+HTTPS_DOMAIN=${HTTPS_DOMAIN}
+
+# Caddy ACME 账号邮箱（可选）
+HTTPS_ACME_EMAIL=${HTTPS_ACME_EMAIL}
 
 # controller 监听端口（供 systemd 使用）
 CONTROLLER_PORT=${CONTROLLER_PORT}
@@ -289,6 +358,47 @@ setup_venv_and_requirements() {
   "$VENV_DIR/bin/pip" install -r "$PROJECT_DIR/requirements.txt"
 }
 
+install_caddy_if_needed() {
+  if [[ "$ENABLE_HTTPS" != "1" ]]; then
+    return
+  fi
+  if command -v caddy >/dev/null 2>&1; then
+    return
+  fi
+  msg "启用 HTTPS 模式，安装 Caddy..."
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update -y
+  apt-get install -y caddy
+}
+
+configure_ufw_rules() {
+  if ! command -v ufw >/dev/null 2>&1; then
+    warn "未检测到 ufw，跳过防火墙配置。"
+    return
+  fi
+
+  msg "配置 UFW 防火墙规则..."
+  ufw allow 22/tcp >/dev/null || true
+  ufw allow "${CONTROLLER_PORT}/tcp" >/dev/null || true
+  if [[ "$ENABLE_HTTPS" == "1" ]]; then
+    ufw allow 80/tcp >/dev/null || true
+    ufw allow 443/tcp >/dev/null || true
+  fi
+
+  local status_line
+  status_line="$(ufw status 2>/dev/null | head -n1 || true)"
+  if [[ "$status_line" == *"inactive"* ]]; then
+    if ask_yes_no "检测到 UFW 未启用，是否现在启用？" "Y"; then
+      ufw --force enable >/dev/null
+      msg "UFW 已启用。"
+    else
+      warn "你选择不启用 UFW，请自行确保端口放行。"
+    fi
+  else
+    msg "UFW 已启用，规则已更新。"
+  fi
+}
+
 write_systemd_services() {
   msg "写入 systemd 服务文件..."
   cat >/etc/systemd/system/sb-controller.service <<EOF
@@ -328,12 +438,47 @@ WantedBy=multi-user.target
 EOF
 }
 
+write_caddy_config_if_needed() {
+  if [[ "$ENABLE_HTTPS" != "1" ]]; then
+    return
+  fi
+  if [[ -z "$HTTPS_DOMAIN" ]]; then
+    warn "ENABLE_HTTPS=1 但 HTTPS_DOMAIN 为空，跳过 Caddy 配置。"
+    return
+  fi
+  msg "写入 Caddy 反向代理配置（自动申请/续期证书）..."
+  mkdir -p /etc/caddy
+  if [[ -n "$HTTPS_ACME_EMAIL" ]]; then
+    cat >/etc/caddy/Caddyfile <<EOF
+{
+    email ${HTTPS_ACME_EMAIL}
+}
+
+${HTTPS_DOMAIN} {
+    encode zstd gzip
+    reverse_proxy 127.0.0.1:${CONTROLLER_PORT}
+}
+EOF
+  else
+    cat >/etc/caddy/Caddyfile <<EOF
+${HTTPS_DOMAIN} {
+    encode zstd gzip
+    reverse_proxy 127.0.0.1:${CONTROLLER_PORT}
+}
+EOF
+  fi
+}
+
 restart_services() {
   systemctl daemon-reload
   systemctl enable sb-controller >/dev/null
   systemctl enable sb-bot >/dev/null
   systemctl restart sb-controller
   systemctl restart sb-bot
+  if [[ "$ENABLE_HTTPS" == "1" ]]; then
+    systemctl enable caddy >/dev/null
+    systemctl restart caddy
+  fi
 }
 
 show_summary() {
@@ -342,6 +487,11 @@ show_summary() {
   echo "项目目录: ${PROJECT_DIR}"
   echo "venv 目录: ${VENV_DIR}"
   echo "Controller: 0.0.0.0:${CONTROLLER_PORT}"
+  if [[ "$ENABLE_HTTPS" == "1" ]]; then
+    echo "HTTPS 域名: ${HTTPS_DOMAIN}"
+  else
+    echo "HTTPS 域名: 未启用（当前为 HTTP）"
+  fi
   echo "PANEL_BASE_URL: ${PANEL_BASE_URL}"
   echo "MIGRATE_DIR: ${MIGRATE_DIR}"
   echo "BOT_MENU_TTL: ${BOT_MENU_TTL}"
@@ -351,6 +501,10 @@ show_summary() {
   echo "快捷查看："
   echo "  systemctl status sb-controller"
   echo "  systemctl status sb-bot"
+  if [[ "$ENABLE_HTTPS" == "1" ]]; then
+    echo "  systemctl status caddy"
+    echo "  journalctl -u caddy -n 200 --no-pager"
+  fi
   echo "  journalctl -u sb-controller -n 200 --no-pager"
   echo "  journalctl -u sb-bot -n 200 --no-pager"
 }
@@ -368,7 +522,10 @@ main() {
 
   prompt_env_config
   write_env_file
+  install_caddy_if_needed
+  configure_ufw_rules
   write_systemd_services
+  write_caddy_config_if_needed
   restart_services
   show_summary
 }

@@ -34,6 +34,9 @@ show_config_guide() {
   echo "配置项用途说明："
   echo "  - CONTROLLER_PORT（controller 对外监听端口；节点 agent 需要访问）"
   echo "  - CONTROLLER_PUBLIC_URL（可选，给节点/外部访问的完整 URL）"
+  echo "  - ENABLE_HTTPS（是否启用 Caddy 自动申请/续期证书）"
+  echo "  - HTTPS_DOMAIN（管理端证书域名，如 panel.example.com）"
+  echo "  - HTTPS_ACME_EMAIL（可选，证书账号邮箱）"
   echo "  - AUTH_TOKEN（可选；用于保护 /admin/*；也给 bot/agent 调用时使用）"
   echo "  - BOT_TOKEN（必填；Telegram 机器人 token）"
   echo "  - ADMIN_CHAT_IDS（可选；限制谁能使用 bot）"
@@ -59,10 +62,12 @@ show_menu() {
 6. 停止 bot
 7. 状态查看（controller/bot）
 8. 查看日志（controller/bot）
-9. 迁移：导出迁移包
-10. 迁移：导入迁移包
-11. 卸载
-12. 退出
+9. HTTPS 证书状态（Caddy）
+10. HTTPS 证书刷新（重载 Caddy）
+11. 迁移：导出迁移包
+12. 迁移：导入迁移包
+13. 卸载
+14. 退出
 ========================================
 EOF
 }
@@ -120,6 +125,40 @@ show_logs() {
   fi
 }
 
+show_https_status() {
+  if ! systemctl list-unit-files | grep -q '^caddy.service'; then
+    warn "系统未安装 caddy.service。"
+    return
+  fi
+  echo "----- caddy 状态 -----"
+  systemctl status caddy --no-pager || true
+  echo ""
+  echo "----- Caddyfile -----"
+  if [[ -f /etc/caddy/Caddyfile ]]; then
+    cat /etc/caddy/Caddyfile
+  else
+    warn "未找到 /etc/caddy/Caddyfile"
+  fi
+  echo ""
+  echo "----- 最近 120 行 caddy 日志 -----"
+  journalctl -u caddy -n 120 --no-pager || true
+}
+
+reload_https_cert() {
+  if ! systemctl list-unit-files | grep -q '^caddy.service'; then
+    warn "系统未安装 caddy.service。"
+    return
+  fi
+  msg "执行 caddy reload（触发配置重载并由 caddy 自动处理证书续期）。"
+  if caddy validate --config /etc/caddy/Caddyfile >/dev/null 2>&1; then
+    systemctl reload caddy || systemctl restart caddy || true
+  else
+    warn "Caddyfile 校验失败，改为直接重启 caddy。"
+    systemctl restart caddy || true
+  fi
+  systemctl status caddy --no-pager || true
+}
+
 do_uninstall() {
   read -r -p "确认卸载服务？[y/N]: " answer
   answer="${answer:-N}"
@@ -150,7 +189,7 @@ main() {
 
   while true; do
     show_menu
-    read -r -p "请输入选项 [1-12]: " action
+    read -r -p "请输入选项 [1-14]: " action
     case "$action" in
       1)
         install_or_update
@@ -189,6 +228,14 @@ main() {
         pause
         ;;
       9)
+        show_https_status
+        pause
+        ;;
+      10)
+        reload_https_cert
+        pause
+        ;;
+      11)
         if [[ -f "$EXPORT_SCRIPT" ]]; then
           bash "$EXPORT_SCRIPT"
         else
@@ -196,7 +243,7 @@ main() {
         fi
         pause
         ;;
-      10)
+      12)
         if [[ -f "$IMPORT_SCRIPT" ]]; then
           read -r -p "请输入迁移包路径: " pkg_path
           bash "$IMPORT_SCRIPT" "$pkg_path"
@@ -205,16 +252,16 @@ main() {
         fi
         pause
         ;;
-      11)
+      13)
         do_uninstall
         pause
         ;;
-      12)
+      14)
         msg "已退出。"
         exit 0
         ;;
       *)
-        warn "无效选项，请输入 1-12。"
+        warn "无效选项，请输入 1-14。"
         pause
         ;;
     esac
