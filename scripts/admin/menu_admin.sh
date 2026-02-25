@@ -55,7 +55,7 @@ show_menu() {
  sb-bot-panel 管理服务器菜单
 ========================================
 1. 安装/更新（git pull + 依赖 + venv + 重启）
-2. 配置向导（仅写 .env 并重启）
+2. 配置向导（修改端口/域名/token 等参数）
 3. 启动 controller
 4. 停止 controller
 5. 启动 bot
@@ -90,7 +90,7 @@ install_or_update() {
   fi
 
   if [[ -f "$INSTALL_SCRIPT" ]]; then
-    bash "$INSTALL_SCRIPT"
+    bash "$INSTALL_SCRIPT" --reuse-config
   else
     err "未找到安装脚本: $INSTALL_SCRIPT"
   fi
@@ -98,7 +98,7 @@ install_or_update() {
 
 configure_only() {
   if [[ -f "$INSTALL_SCRIPT" ]]; then
-    msg "即将进入配置向导（仅写 .env 并重启服务）。"
+    msg "即将进入配置向导（修改参数并重启服务）。"
     show_config_guide
     bash "$INSTALL_SCRIPT" --configure-only
   else

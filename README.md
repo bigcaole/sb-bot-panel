@@ -160,6 +160,8 @@ git clone <你的仓库地址> sb-bot-panel && cd sb-bot-panel && sudo bash scri
   - `sb-controller.service`
   - `sb-bot.service`
 
+说明：菜单 `1) 安装/更新` 默认复用现有 `.env` 配置，不会每次重复询问端口/域名/token/chat_id。需要改参数时使用菜单 `2) 配置向导`。
+
 ### 仅重新配置（改 token/chat id）
 
 ```bash
@@ -168,7 +170,7 @@ sudo bash scripts/admin/install_admin.sh --configure-only
 
 或通过菜单：
 
-- `2) 配置向导（仅写 .env 并重启）`
+- `2) 配置向导（修改参数并重启）`
 
 说明：执行安装/配置向导时，会自动写入完整 `.env` 字段（包括 `BOT_MENU_TTL`、`BOT_NODE_MONITOR_INTERVAL`、`BOT_NODE_OFFLINE_THRESHOLD`），无需手工补字段。
 并且 URL 字段支持省略协议（`http://` / `https://`），脚本会自动补全。
@@ -193,10 +195,18 @@ sudo bash scripts/admin/install_admin.sh --configure-only
 sudo bash scripts/admin/menu_admin.sh
 ```
 
+安装后可直接用快捷命令打开菜单：
+
+```bash
+sb-admin
+```
+
+如果系统里没有现成的 `s-ui` 命令冲突，脚本也会自动创建 `s-ui` 作为同一菜单入口。
+
 菜单项：
 
 1. 安装/更新（git pull + 依赖 + venv + 重启）
-2. 配置向导（仅写 `.env` 并重启）
+2. 配置向导（修改参数并重启）
 3. 启动 controller
 4. 停止 controller
 5. 启动 bot

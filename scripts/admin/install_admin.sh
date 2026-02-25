@@ -2,14 +2,18 @@
 set -euo pipefail
 
 MODE="${1:-install}"
-if [[ "$MODE" != "install" && "$MODE" != "--configure-only" ]]; then
+if [[ "$MODE" != "install" && "$MODE" != "--configure-only" && "$MODE" != "--reuse-config" ]]; then
   echo "用法:"
   echo "  sudo bash scripts/admin/install_admin.sh"
   echo "  sudo bash scripts/admin/install_admin.sh --configure-only"
+  echo "  sudo bash scripts/admin/install_admin.sh --reuse-config"
   exit 1
 fi
 if [[ "$MODE" == "--configure-only" ]]; then
   MODE="configure-only"
+fi
+if [[ "$MODE" == "--reuse-config" ]]; then
+  MODE="reuse-config"
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -161,6 +165,28 @@ install_base_packages() {
     ufw
 }
 
+install_admin_menu_commands() {
+  msg "安装菜单快捷命令..."
+  cat >/usr/local/bin/sb-admin <<EOF
+#!/usr/bin/env bash
+exec bash "${PROJECT_DIR}/scripts/admin/menu_admin.sh" "\$@"
+EOF
+  chmod 0755 /usr/local/bin/sb-admin
+
+  local s_ui_path
+  s_ui_path="$(command -v s-ui || true)"
+  if [[ -z "$s_ui_path" || "$s_ui_path" == "/usr/local/bin/s-ui" ]]; then
+    cat >/usr/local/bin/s-ui <<EOF
+#!/usr/bin/env bash
+# sb-bot-panel-admin-shortcut
+exec bash "${PROJECT_DIR}/scripts/admin/menu_admin.sh" "\$@"
+EOF
+    chmod 0755 /usr/local/bin/s-ui
+  else
+    warn "检测到已有 s-ui 命令(${s_ui_path})，为避免冲突，跳过覆盖。可使用 sb-admin 打开菜单。"
+  fi
+}
+
 get_env_value() {
   local key="$1"
   if [[ ! -f "$ENV_FILE" ]]; then
@@ -200,6 +226,38 @@ load_existing_env_defaults() {
   BOT_MENU_TTL="${old_menu_ttl:-60}"
   BOT_NODE_MONITOR_INTERVAL="${old_monitor_interval:-60}"
   BOT_NODE_OFFLINE_THRESHOLD="${old_offline_threshold:-120}"
+}
+
+normalize_loaded_values() {
+  if ! [[ "$ENABLE_HTTPS" =~ ^[01]$ ]]; then
+    ENABLE_HTTPS="0"
+  fi
+  CONTROLLER_URL="$(normalize_input_url "$CONTROLLER_URL" "http")"
+  if [[ -n "$CONTROLLER_PUBLIC_URL" ]]; then
+    local public_scheme
+    public_scheme="http"
+    if [[ "$ENABLE_HTTPS" == "1" || "$CONTROLLER_PUBLIC_URL" == https://* ]]; then
+      public_scheme="https"
+    fi
+    CONTROLLER_PUBLIC_URL="$(normalize_input_url "$CONTROLLER_PUBLIC_URL" "$public_scheme")"
+  fi
+  if [[ -n "$PANEL_BASE_URL" ]]; then
+    local panel_scheme
+    panel_scheme="http"
+    if [[ "$ENABLE_HTTPS" == "1" || "$PANEL_BASE_URL" == https://* ]]; then
+      panel_scheme="https"
+    fi
+    PANEL_BASE_URL="$(normalize_input_url "$PANEL_BASE_URL" "$panel_scheme")"
+  fi
+  if [[ "$ENABLE_HTTPS" == "1" ]]; then
+    HTTPS_DOMAIN="$(sanitize_domain_input "$HTTPS_DOMAIN")"
+    if [[ -n "$HTTPS_DOMAIN" ]]; then
+      CONTROLLER_PUBLIC_URL="https://${HTTPS_DOMAIN}"
+      if [[ -z "$PANEL_BASE_URL" ]]; then
+        PANEL_BASE_URL="$CONTROLLER_PUBLIC_URL"
+      fi
+    fi
+  fi
 }
 
 prompt_env_config() {
@@ -588,6 +646,12 @@ run_self_checks() {
     check_fail "环境文件不存在：$ENV_FILE"
   fi
 
+  if command -v sb-admin >/dev/null 2>&1; then
+    check_ok "菜单快捷命令可用：sb-admin"
+  else
+    check_warn "菜单快捷命令不可用：sb-admin"
+  fi
+
   check_env_key "CONTROLLER_PORT"
   check_env_key "CONTROLLER_URL"
   check_env_key "PANEL_BASE_URL"
@@ -701,6 +765,7 @@ show_summary() {
   echo "快捷查看："
   echo "  systemctl status sb-controller"
   echo "  systemctl status sb-bot"
+  echo "  sb-admin"
   if [[ "$ENABLE_HTTPS" == "1" ]]; then
     echo "  systemctl status caddy"
     echo "  journalctl -u caddy -n 200 --no-pager"
@@ -710,21 +775,40 @@ show_summary() {
 }
 
 main() {
+  local should_prompt
+  should_prompt="1"
+
   require_root
   ensure_project_dir
 
   if [[ "$MODE" == "install" ]]; then
     install_base_packages
     setup_venv_and_requirements
+  elif [[ "$MODE" == "reuse-config" ]]; then
+    msg "更新模式：优先复用现有配置（不重复提问）。"
+    install_base_packages
+    setup_venv_and_requirements
+    load_existing_env_defaults
+    normalize_loaded_values
+    if [[ -f "$ENV_FILE" && -n "$BOT_TOKEN" ]]; then
+      should_prompt="0"
+      msg "检测到现有 .env，已复用原配置。要修改参数请使用 --configure-only 或菜单项 2。"
+    else
+      warn "未检测到可用 .env（或 BOT_TOKEN 为空），将进入交互配置。"
+    fi
   else
     msg "仅配置模式：跳过 apt 与依赖安装。"
   fi
 
-  prompt_env_config
+  if [[ "$should_prompt" == "1" ]]; then
+    prompt_env_config
+  fi
+  normalize_loaded_values
   write_env_file
   install_caddy_if_needed
   configure_ufw_rules
   write_systemd_services
+  install_admin_menu_commands
   write_caddy_config_if_needed
   restart_services
   show_summary
