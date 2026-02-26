@@ -1,5 +1,3 @@
-import hmac
-import ipaddress
 import json
 import os
 import sqlite3
@@ -9,11 +7,11 @@ import uuid
 from pathlib import Path
 import shutil
 import tempfile
-from threading import Lock
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Union
 
 from fastapi import APIRouter, FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
+from controller.audit import get_request_actor, get_source_ip_for_audit, write_audit_log
 from controller.db import BASE_DIR, get_connection, init_db
 from controller.node_tasks import (
     ALLOWED_NODE_TASK_TYPES,
@@ -37,9 +35,21 @@ from controller.subscription import (
     build_subscription_links_text,
     verify_sub_access,
 )
-
-
-AUTH_TOKEN = os.getenv("AUTH_TOKEN", "").strip()
+from controller.security import (
+    API_RATE_LIMIT_ENABLED,
+    API_RATE_LIMIT_MAX_REQUESTS,
+    API_RATE_LIMIT_WINDOW_SECONDS,
+    AUTH_TOKEN,
+    TRUSTED_PROXY_IPS,
+    TRUST_X_FORWARDED_FOR,
+    check_and_consume_rate_limit,
+    get_rate_limit_identity,
+    is_auth_exempt_path,
+    is_rate_limit_target_path,
+    validate_agent_ip,
+    verify_admin_authorization,
+    verify_node_agent_ip,
+)
 
 
 def _get_int_env(name: str, default: int) -> int:
@@ -50,18 +60,6 @@ def _get_int_env(name: str, default: int) -> int:
         return default
 
 
-TRUST_X_FORWARDED_FOR = os.getenv("TRUST_X_FORWARDED_FOR", "0").strip() in (
-    "1",
-    "true",
-    "TRUE",
-    "yes",
-    "YES",
-)
-TRUSTED_PROXY_IPS = set(
-    item.strip()
-    for item in os.getenv("TRUSTED_PROXY_IPS", "127.0.0.1,::1").split(",")
-    if item.strip()
-)
 NODE_TASK_RUNNING_TIMEOUT_SECONDS = int(
     _get_int_env("NODE_TASK_RUNNING_TIMEOUT", 120)
 )
@@ -83,22 +81,6 @@ if SUB_LINK_DEFAULT_TTL_SECONDS < 60:
     SUB_LINK_DEFAULT_TTL_SECONDS = 60
 if SUB_LINK_DEFAULT_TTL_SECONDS > 30 * 86400:
     SUB_LINK_DEFAULT_TTL_SECONDS = 30 * 86400
-API_RATE_LIMIT_ENABLED = os.getenv("API_RATE_LIMIT_ENABLED", "0").strip() in (
-    "1",
-    "true",
-    "TRUE",
-    "yes",
-    "YES",
-)
-API_RATE_LIMIT_WINDOW_SECONDS = int(_get_int_env("API_RATE_LIMIT_WINDOW_SECONDS", 60))
-if API_RATE_LIMIT_WINDOW_SECONDS < 1:
-    API_RATE_LIMIT_WINDOW_SECONDS = 1
-API_RATE_LIMIT_MAX_REQUESTS = int(_get_int_env("API_RATE_LIMIT_MAX_REQUESTS", 120))
-if API_RATE_LIMIT_MAX_REQUESTS < 1:
-    API_RATE_LIMIT_MAX_REQUESTS = 1
-_RATE_LIMIT_LOCK = Lock()
-_RATE_LIMIT_STATE: Dict[str, Tuple[int, int]] = {}
-_RATE_LIMIT_LAST_CLEANUP_AT = 0
 
 app = FastAPI()
 misc_router = APIRouter(tags=["misc"])
@@ -106,86 +88,6 @@ admin_router = APIRouter(tags=["admin"])
 users_router = APIRouter(tags=["users"])
 nodes_router = APIRouter(tags=["nodes"])
 sub_router = APIRouter(tags=["sub"])
-
-
-def verify_admin_authorization(authorization: Optional[str]) -> Optional[JSONResponse]:
-    if not AUTH_TOKEN:
-        return None
-    expected = "Bearer {0}".format(AUTH_TOKEN)
-    if not hmac.compare_digest(str(authorization or ""), expected):
-        return JSONResponse(status_code=401, content={"ok": False, "error": "unauthorized"})
-    return None
-
-
-def is_auth_exempt_path(path: str) -> bool:
-    normalized = str(path or "").strip() or "/"
-    if normalized in ("/health", "/openapi.json", "/docs", "/redoc"):
-        return True
-    if normalized.startswith("/docs/") or normalized.startswith("/redoc/"):
-        return True
-    # 订阅链接需给客户端直接拉取，保持匿名可访问。
-    if normalized.startswith("/sub/"):
-        return True
-    return False
-
-
-def get_rate_limit_identity(request: Request) -> str:
-    request_ip = ""
-    if request.client and request.client.host:
-        request_ip = str(request.client.host).strip()
-    if not request_ip:
-        request_ip = "unknown"
-    path = str(request.url.path or "/")
-    return "{0}:{1}".format(request_ip, path)
-
-
-def is_rate_limit_target_path(path: str) -> bool:
-    normalized = str(path or "").strip() or "/"
-    if normalized.startswith("/admin/"):
-        return True
-    if normalized == "/users/create":
-        return True
-    if normalized.startswith("/users/") and (
-        normalized.endswith("/set_speed")
-        or normalized.endswith("/set_status")
-        or normalized.endswith("/assign_node")
-        or normalized.endswith("/unassign_node")
-    ):
-        return True
-    if normalized.startswith("/nodes/") and (
-        normalized.endswith("/create")
-        or normalized.endswith("/tasks/create")
-    ):
-        return True
-    if normalized.startswith("/nodes/") and normalized.count("/") == 2:
-        return True
-    return False
-
-
-def check_and_consume_rate_limit(identity: str, now_ts: int) -> Tuple[bool, int]:
-    global _RATE_LIMIT_LAST_CLEANUP_AT
-    with _RATE_LIMIT_LOCK:
-        window_start, count = _RATE_LIMIT_STATE.get(identity, (0, 0))
-        if window_start <= 0 or now_ts - window_start >= API_RATE_LIMIT_WINDOW_SECONDS:
-            window_start, count = now_ts, 0
-        count += 1
-        _RATE_LIMIT_STATE[identity] = (window_start, count)
-
-        if now_ts - _RATE_LIMIT_LAST_CLEANUP_AT >= max(60, API_RATE_LIMIT_WINDOW_SECONDS):
-            expired_keys = []
-            for key, item in _RATE_LIMIT_STATE.items():
-                if now_ts - int(item[0]) >= API_RATE_LIMIT_WINDOW_SECONDS:
-                    expired_keys.append(key)
-            for key in expired_keys:
-                _RATE_LIMIT_STATE.pop(key, None)
-            _RATE_LIMIT_LAST_CLEANUP_AT = now_ts
-
-    if count > API_RATE_LIMIT_MAX_REQUESTS:
-        retry_after = API_RATE_LIMIT_WINDOW_SECONDS - (now_ts - window_start)
-        if retry_after < 1:
-            retry_after = 1
-        return True, retry_after
-    return False, 0
 
 
 @app.middleware("http")
@@ -196,8 +98,8 @@ async def auth_middleware(request: Request, call_next):
         return await call_next(request)
 
     authorization = request.headers.get("Authorization")
-    expected = "Bearer {0}".format(AUTH_TOKEN)
-    if not hmac.compare_digest(str(authorization or ""), expected):
+    auth_error = verify_admin_authorization(authorization)
+    if auth_error is not None:
         try:
             with get_connection() as conn:
                 write_audit_log(
@@ -233,133 +135,6 @@ async def rate_limit_middleware(request: Request, call_next):
             headers={"Retry-After": str(retry_after)},
         )
     return await call_next(request)
-
-def validate_agent_ip(agent_ip: Optional[str]) -> Optional[str]:
-    if agent_ip is None:
-        return None
-    value = str(agent_ip).strip()
-    if value == "":
-        return ""
-    try:
-        ipaddress.ip_address(value)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail="agent_ip must be a valid IPv4/IPv6 address") from exc
-    return value
-
-
-def get_request_ip(request: Request) -> str:
-    # 默认仅信任直连源 IP。仅在开启 TRUST_X_FORWARDED_FOR 且请求来自可信代理时才解析 XFF。
-    direct_ip = ""
-    if request.client and request.client.host:
-        direct_ip = str(request.client.host).strip()
-    direct_ip_normalized = direct_ip
-    try:
-        if direct_ip:
-            direct_ip_normalized = str(ipaddress.ip_address(direct_ip))
-    except ValueError:
-        direct_ip_normalized = direct_ip
-
-    if (
-        TRUST_X_FORWARDED_FOR
-        and direct_ip
-        and (
-            direct_ip in TRUSTED_PROXY_IPS
-            or direct_ip_normalized in TRUSTED_PROXY_IPS
-        )
-    ):
-        xff = request.headers.get("x-forwarded-for", "").strip()
-        if xff:
-            first = xff.split(",")[0].strip()
-            if first:
-                return first
-    if direct_ip:
-        return direct_ip
-    return ""
-
-
-def verify_node_agent_ip(request: Request, node_code: str, expected_agent_ip: Optional[str]) -> None:
-    expected = str(expected_agent_ip or "").strip()
-    if not expected:
-        return
-    try:
-        expected_normalized = str(ipaddress.ip_address(expected))
-    except ValueError:
-        raise HTTPException(status_code=500, detail="node agent_ip config invalid")
-
-    request_ip_raw = get_request_ip(request)
-    if not request_ip_raw:
-        raise HTTPException(status_code=403, detail="node source ip unavailable")
-    try:
-        request_normalized = str(ipaddress.ip_address(request_ip_raw))
-    except ValueError:
-        raise HTTPException(status_code=403, detail="node source ip invalid")
-
-    if request_normalized != expected_normalized:
-        raise HTTPException(
-            status_code=403,
-            detail="node source ip not allowed for {0}".format(node_code),
-        )
-
-
-def get_request_actor(request: Optional[Request]) -> str:
-    if request is None:
-        return ""
-    actor = str(request.headers.get("X-Actor", "") or "").strip()
-    if not actor:
-        return ""
-    if len(actor) > 120:
-        actor = actor[:120]
-    return actor
-
-
-def get_source_ip_for_audit(request: Optional[Request]) -> str:
-    if request is None:
-        return ""
-    return get_request_ip(request)
-
-
-def normalize_audit_detail(detail: Any, max_length: int = 1200) -> str:
-    if isinstance(detail, str):
-        text = detail.strip()
-    else:
-        try:
-            text = json.dumps(detail, ensure_ascii=False, separators=(",", ":"))
-        except (TypeError, ValueError):
-            text = str(detail)
-    if len(text) > max_length:
-        text = text[:max_length] + "...(truncated)"
-    return text
-
-
-def write_audit_log(
-    conn: sqlite3.Connection,
-    action: str,
-    resource_type: str = "",
-    resource_id: str = "",
-    detail: Any = "",
-    actor: str = "",
-    source_ip: str = "",
-    created_at: int = 0,
-) -> None:
-    action_text = str(action or "").strip()
-    if not action_text:
-        return
-    ts = int(created_at or time.time())
-    conn.execute(
-        """
-        INSERT INTO audit_logs(actor, action, resource_type, resource_id, detail, source_ip, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            str(actor or "").strip(),
-            action_text,
-            str(resource_type or "").strip(),
-            str(resource_id or "").strip(),
-            normalize_audit_detail(detail),
-            str(source_ip or "").strip(),
-            ts,
-        ),
-    )
 
 @app.on_event("startup")
 def on_startup() -> None:
