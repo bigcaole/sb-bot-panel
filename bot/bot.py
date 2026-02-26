@@ -243,6 +243,19 @@ def truncate_output(text: str, limit: int = 3200) -> str:
     return raw[:limit] + "\n...（输出已截断）"
 
 
+def format_recent_log_output(raw_text: str, line_limit: int = 50, char_limit: int = 3200) -> str:
+    raw = str(raw_text or "").replace("\r\n", "\n").strip()
+    if not raw:
+        return "(空)"
+    lines = raw.splitlines()
+    if len(lines) > line_limit:
+        lines = lines[-line_limit:]
+    text = "\n".join(lines).strip()
+    if len(text) <= char_limit:
+        return text
+    return "…（仅显示最近日志片段）\n" + text[-char_limit:]
+
+
 async def run_local_shell(command: str, timeout: int = 30) -> tuple:
     proc = await asyncio.create_subprocess_shell(
         command,
@@ -4180,7 +4193,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await query.edit_message_text("不支持的日志目标。", reply_markup=build_back_keyboard("menu:maintain"))
             return
         code, stdout, stderr = await run_local_shell(
-            "journalctl -u {0} -n 120 --no-pager".format(shlex.quote(unit)),
+            "journalctl -u {0} -n 200 --no-pager".format(shlex.quote(unit)),
             timeout=25,
         )
         if code != 0:
@@ -4189,8 +4202,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 reply_markup=build_back_keyboard("action:maintain_logs"),
             )
             return
+        recent_logs = format_recent_log_output(stdout, line_limit=50, char_limit=3200)
         await query.edit_message_text(
-            "{0} 最近日志：\n\n{1}".format(unit, truncate_output(stdout)),
+            "{0} 最近日志（最近50行）：\n\n{1}".format(unit, recent_logs),
             reply_markup=build_back_keyboard("action:maintain_logs"),
         )
         return
@@ -4225,13 +4239,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         validate_text = "通过" if validate_code == 0 else "失败"
         details = validate_out if validate_code == 0 else (validate_err or validate_out)
         journal_text = journal_out if journal_code == 0 else (journal_err or "")
+        journal_recent = format_recent_log_output(journal_text, line_limit=50, char_limit=1800)
         await query.edit_message_text(
             "HTTPS 证书状态（Caddy）：\n"
             f"服务状态：{status_text}\n"
             f"配置校验：{validate_text}\n"
             f"校验输出：{truncate_output(details, 900)}\n\n"
             "最近日志：\n"
-            f"{truncate_output(journal_text, 1800)}",
+            f"{journal_recent}",
             reply_markup=build_back_keyboard("menu:maintain"),
         )
         return
