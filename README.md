@@ -218,6 +218,7 @@ sudo bash scripts/admin/menu_admin.sh
 
 - 安装/更新（后台执行 `install_admin.sh --reuse-config`，仅作用于当前管理服务器）
 - 配置向导（远程修改 `.env` 后后台重载）
+- 一键验收自检（语法检查 + unittest + API 冒烟）
 - 启动/停止 controller
 - 状态查看（controller/bot/caddy）
 - 查看日志（controller/bot/caddy）
@@ -278,6 +279,7 @@ bash /root/sb-bot-panel/scripts/admin/smoke_test.sh --require-api
 
 - 默认会读取 `.env` 中的 `CONTROLLER_PORT` / `AUTH_TOKEN`
 - 检查项：Python 语法、`tests/` 单元测试、controller API 鉴权冒烟
+- 退出码：`0=通过`，`10=代码检查失败`，`20=API检查失败`，`30=代码+API均失败`
 
 ## 迁移导出/导入（管理服务器）
 

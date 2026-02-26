@@ -150,6 +150,7 @@ ADMIN_PROJECT_DIR = os.getenv("SB_PANEL_DIR", "/root/sb-bot-panel").strip() or "
 ADMIN_ENV_FILE = os.path.join(ADMIN_PROJECT_DIR, ".env")
 ADMIN_UPDATE_SCRIPT = os.path.join(ADMIN_PROJECT_DIR, "scripts/admin/install_admin.sh")
 ADMIN_IMPORT_SCRIPT = os.path.join(ADMIN_PROJECT_DIR, "scripts/admin/sb_migrate_import.sh")
+ADMIN_SMOKE_SCRIPT = os.path.join(ADMIN_PROJECT_DIR, "scripts/admin/smoke_test.sh")
 
 
 SUBMENUS = {
@@ -211,6 +212,7 @@ SUBMENUS = {
             ("HTTPS证书状态", "action:maintain_https_status"),
             ("HTTPS证书刷新", "action:maintain_https_reload"),
             ("立即备份", "action:maintain_backup"),
+            ("一键验收自检", "action:maintain_smoke"),
             ("生成迁移包", "action:maintain_migrate_export"),
             ("迁移导入", "action:maintain_migrate_import"),
             ("访问安全", "action:maintain_acl_status"),
@@ -2283,6 +2285,29 @@ async def run_admin_migrate_export_action(query, back_menu_callback: str) -> Non
         f"时间：{created_text}\n\n"
         "可用以下命令拉取迁移包：\n"
         f"scp root@你的服务器IP:{export_path} ./",
+        reply_markup=build_back_keyboard(back_menu_callback),
+    )
+
+
+async def run_admin_smoke_action(query, back_menu_callback: str) -> None:
+    smoke_cmd = "bash {0} --require-api".format(shlex.quote(ADMIN_SMOKE_SCRIPT))
+    code, stdout, stderr = await run_local_shell(smoke_cmd, timeout=300)
+    raw_output = stdout if stdout.strip() else stderr
+    recent = format_recent_log_output(raw_output, line_limit=80, char_limit=2600)
+    if code == 0:
+        await query.edit_message_text(
+            "一键验收自检完成：通过\n\n"
+            "输出摘要：\n"
+            f"{recent}",
+            reply_markup=build_back_keyboard(back_menu_callback),
+        )
+        return
+    await query.edit_message_text(
+        "一键验收自检失败\n\n"
+        f"退出码：{code}\n"
+        "输出摘要：\n"
+        f"{recent}\n\n"
+        "提示：退出码 10=代码检查失败，20=API检查失败，30=代码+API均失败。",
         reply_markup=build_back_keyboard(back_menu_callback),
     )
 
@@ -4417,11 +4442,34 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         display_name = str(user_data.get("display_name") or "").strip()
         status_text = str(user_data.get("status", "-"))
         user_label = f"{display_name}（{user_code}）" if display_name else user_code
+        user_nodes, nodes_error, nodes_status = await controller_request(
+            "GET", f"/users/{user_code}/nodes"
+        )
+        if nodes_error:
+            localized = localize_controller_error(nodes_error)
+            if nodes_status == 404 and localized == "用户不存在":
+                await query.edit_message_text("用户不存在", reply_markup=build_submenu("user"))
+                return
+            await query.edit_message_text(
+                f"获取用户绑定节点失败：{localized}",
+                reply_markup=build_submenu("user"),
+            )
+            return
+        bound_nodes = user_nodes if isinstance(user_nodes, list) else []
+        bound_count = len(bound_nodes)
+        node_lines = []
+        for item in bound_nodes[:8]:
+            node_code = str(item.get("node_code", ""))
+            region = str(item.get("region", "-"))
+            node_lines.append(f"- {node_code}（{region}）")
+        bound_text = "\n".join(node_lines) if node_lines else "（无）"
         await query.edit_message_text(
             "请确认删除用户：\n\n"
             f"用户：{user_label}\n"
-            f"状态：{status_text}\n\n"
-            "注意：若该用户仍有节点绑定，将无法删除。",
+            f"状态：{status_text}\n"
+            f"已绑定节点数：{bound_count}\n"
+            f"绑定节点：\n{bound_text}\n\n"
+            "注意：若该用户仍有节点绑定，删除会失败。建议先在“节点分配”中解绑。",
             reply_markup=build_user_delete_confirm_keyboard(user_code),
         )
         return
@@ -4432,6 +4480,31 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await query.edit_message_text("请求无效，请重试。", reply_markup=build_submenu("user"))
             return
         user_code = parts[2]
+        user_nodes, nodes_error, nodes_status = await controller_request(
+            "GET", f"/users/{user_code}/nodes"
+        )
+        if nodes_error:
+            localized = localize_controller_error(nodes_error)
+            if nodes_status == 404 and localized == "用户不存在":
+                await query.edit_message_text("用户不存在", reply_markup=build_submenu("user"))
+                return
+            await query.edit_message_text(
+                f"删除前检查失败：{localized}",
+                reply_markup=build_submenu("user"),
+            )
+            return
+        bound_nodes = user_nodes if isinstance(user_nodes, list) else []
+        if bound_nodes:
+            preview = ", ".join(str(item.get("node_code", "")) for item in bound_nodes[:8])
+            await query.edit_message_text(
+                "删除已拦截：该用户仍有绑定节点。\n\n"
+                f"用户：{user_code}\n"
+                f"绑定数量：{len(bound_nodes)}\n"
+                f"节点：{preview}\n\n"
+                "请先在“用户管理 -> 节点分配”中解绑后再删除。",
+                reply_markup=build_submenu("user"),
+            )
+            return
         result, error_message, status_code = await controller_request("DELETE", f"/users/{user_code}")
         if error_message:
             localized = localize_controller_error(error_message)
@@ -4478,11 +4551,27 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         target_status = "disabled" if current_status == "active" else "active"
         target_text = "禁用" if target_status == "disabled" else "启用"
         user_label = f"{display_name}（{user_code}）" if display_name else user_code
+        user_nodes, nodes_error, nodes_status = await controller_request(
+            "GET", f"/users/{user_code}/nodes"
+        )
+        if nodes_error:
+            localized = localize_controller_error(nodes_error)
+            if nodes_status == 404 and localized == "用户不存在":
+                await query.edit_message_text("用户不存在", reply_markup=build_submenu("user"))
+                return
+            await query.edit_message_text(
+                f"获取用户绑定节点失败：{localized}",
+                reply_markup=build_submenu("user"),
+            )
+            return
+        bound_count = len(user_nodes if isinstance(user_nodes, list) else [])
         await query.edit_message_text(
             "请确认用户状态变更：\n\n"
             f"用户：{user_label}\n"
             f"当前状态：{current_status}\n"
-            f"目标状态：{target_status}（{target_text}）",
+            f"目标状态：{target_status}（{target_text}）\n"
+            f"影响范围：该用户已绑定的 {bound_count} 个节点\n\n"
+            "提示：状态变更会影响该用户的订阅可用性。",
             reply_markup=build_user_toggle_confirm_keyboard(user_code, target_status),
         )
         return
@@ -4577,6 +4666,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     if callback_data == "action:maintain_backup":
         await run_admin_backup_action(query, "menu:maintain")
+        return
+
+    if callback_data == "action:maintain_smoke":
+        await run_admin_smoke_action(query, "menu:maintain")
         return
 
     if callback_data == "action:maintain_update":

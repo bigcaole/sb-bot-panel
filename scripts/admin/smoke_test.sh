@@ -8,10 +8,26 @@ PYTHON_BIN=""
 
 API_MODE="auto" # auto | require | skip
 API_BASE_URL=""
+FAIL_ITEMS=()
+WARN_ITEMS=()
+FAIL_PY=0
+FAIL_API=0
 
 msg() { echo -e "\033[1;32m[信息]\033[0m $*"; }
 warn() { echo -e "\033[1;33m[警告]\033[0m $*"; }
 err() { echo -e "\033[1;31m[错误]\033[0m $*" >&2; }
+
+record_warn() {
+  local item="$1"
+  WARN_ITEMS+=("$item")
+  warn "$item"
+}
+
+record_fail() {
+  local item="$1"
+  FAIL_ITEMS+=("$item")
+  err "$item"
+}
 
 usage() {
   cat <<'EOF'
@@ -83,16 +99,22 @@ select_python_bin() {
 
 run_py_checks() {
   msg "1/3 运行 Python 语法检查..."
-  PYTHONPYCACHEPREFIX=/tmp/pycache_sb_panel "$PYTHON_BIN" -m py_compile \
-    "${PROJECT_DIR}"/controller/*.py \
-    "${PROJECT_DIR}"/bot/bot.py \
-    "${PROJECT_DIR}"/tests/*.py
+  if ! PYTHONPYCACHEPREFIX=/tmp/pycache_sb_panel "$PYTHON_BIN" -m py_compile \
+      "${PROJECT_DIR}"/controller/*.py \
+      "${PROJECT_DIR}"/bot/bot.py \
+      "${PROJECT_DIR}"/tests/*.py; then
+    FAIL_PY=1
+    record_fail "Python 语法检查失败"
+  fi
 
   msg "2/3 运行 unittest..."
-  PYTHONPYCACHEPREFIX=/tmp/pycache_sb_panel "$PYTHON_BIN" -m unittest discover \
-    -s "${PROJECT_DIR}/tests" \
-    -p 'test_*.py' \
-    -v
+  if ! PYTHONPYCACHEPREFIX=/tmp/pycache_sb_panel "$PYTHON_BIN" -m unittest discover \
+      -s "${PROJECT_DIR}/tests" \
+      -p 'test_*.py' \
+      -v; then
+    FAIL_PY=1
+    record_fail "unittest 失败"
+  fi
 }
 
 http_code() {
@@ -117,38 +139,80 @@ run_api_checks() {
   code="$(http_code "${api_url}/health")"
   if [[ "$code" != "200" ]]; then
     if [[ "$API_MODE" == "require" ]]; then
-      err "/health 不可用，HTTP=${code}"
-      exit 1
+      FAIL_API=1
+      record_fail "/health 不可用（require 模式），HTTP=${code}"
+      return
     fi
-    warn "/health 不可用，已跳过 API 检查（auto 模式）。"
+    record_warn "/health 不可用，已跳过 API 检查（auto 模式），HTTP=${code}"
     return
   fi
 
   if [[ -n "$auth_token" ]]; then
     code="$(http_code "${api_url}/nodes")"
     if [[ "$code" != "401" ]]; then
-      err "鉴权校验异常：未带 token 访问 /nodes 期望 401，实际 ${code}"
-      exit 1
+      FAIL_API=1
+      record_fail "鉴权校验异常：未带 token 访问 /nodes 期望 401，实际 ${code}"
     fi
     code="$(http_code "${api_url}/nodes" -H "Authorization: Bearer ${auth_token}")"
     if [[ "$code" != "200" ]]; then
-      err "鉴权校验异常：带 token 访问 /nodes 期望 200，实际 ${code}"
-      exit 1
+      FAIL_API=1
+      record_fail "鉴权校验异常：带 token 访问 /nodes 期望 200，实际 ${code}"
     fi
     code="$(http_code "${api_url}/admin/security/status" -H "Authorization: Bearer ${auth_token}")"
     if [[ "$code" != "200" ]]; then
-      err "管理接口校验异常：带 token 访问 /admin/security/status 期望 200，实际 ${code}"
-      exit 1
+      FAIL_API=1
+      record_fail "管理接口校验异常：带 token 访问 /admin/security/status 期望 200，实际 ${code}"
     fi
   else
     code="$(http_code "${api_url}/nodes")"
     if [[ "$code" != "200" ]]; then
-      err "AUTH_TOKEN 为空时 /nodes 应可访问，期望 200，实际 ${code}"
-      exit 1
+      FAIL_API=1
+      record_fail "AUTH_TOKEN 为空时 /nodes 应可访问，期望 200，实际 ${code}"
     fi
   fi
 
-  msg "API 冒烟检查通过。"
+  if (( FAIL_API == 0 )); then
+    msg "API 冒烟检查通过。"
+  fi
+}
+
+print_summary_and_exit() {
+  local exit_code=0
+  if (( FAIL_PY == 1 )); then
+    exit_code=$((exit_code + 10))
+  fi
+  if (( FAIL_API == 1 )); then
+    exit_code=$((exit_code + 20))
+  fi
+
+  echo ""
+  echo "========== 验收汇总 =========="
+  if (( ${#WARN_ITEMS[@]} > 0 )); then
+    echo "警告项（${#WARN_ITEMS[@]}）："
+    for item in "${WARN_ITEMS[@]}"; do
+      echo "  - ${item}"
+    done
+  else
+    echo "警告项：0"
+  fi
+  if (( ${#FAIL_ITEMS[@]} > 0 )); then
+    echo "失败项（${#FAIL_ITEMS[@]}）："
+    for item in "${FAIL_ITEMS[@]}"; do
+      echo "  - ${item}"
+    done
+  else
+    echo "失败项：0"
+  fi
+  echo "退出码：${exit_code}"
+  echo "退出码说明：0=通过，10=代码检查失败，20=API检查失败，30=代码+API均失败"
+  echo "============================="
+
+  if (( exit_code == 0 )); then
+    msg "验收完成：全部检查通过。"
+  else
+    err "验收失败，请按失败项处理。"
+  fi
+  exit "${exit_code}"
 }
 
 main() {
@@ -157,7 +221,7 @@ main() {
   select_python_bin
   run_py_checks
   run_api_checks
-  msg "验收完成：全部检查通过。"
+  print_summary_and_exit
 }
 
 main "$@"
