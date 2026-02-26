@@ -189,7 +189,7 @@ sudo bash scripts/admin/install_admin.sh --configure-only
 
 - `2) 配置向导（修改参数并重启）`
 
-说明：执行安装/配置向导时，会自动写入完整 `.env` 字段（包括 `BOT_MENU_TTL`、`BOT_NODE_MONITOR_INTERVAL`、`BOT_NODE_OFFLINE_THRESHOLD`），无需手工补字段。
+说明：执行安装/配置向导时，会自动写入完整 `.env` 字段（包括 `BOT_MENU_TTL`、`BOT_NODE_MONITOR_INTERVAL`、`BOT_NODE_OFFLINE_THRESHOLD`、`BOT_LOG_VIEW_COOLDOWN`、`BOT_LOG_VIEW_MAX_PAGES`），无需手工补字段。
 并且 URL 字段支持省略协议（`http://` / `https://`），脚本会自动补全。
 
 ### 管理服务器 HTTPS 证书（申请+自动续期）
@@ -316,6 +316,8 @@ scp root@旧IP:/var/backups/sb-migrate/sb-migrate-xxxx.tar.gz root@新IP:/root/
 - `BOT_MENU_TTL=60`（可选，bot 菜单按钮自动清理秒数）
 - `BOT_NODE_MONITOR_INTERVAL=60`（可选，节点在线检测周期秒数）
 - `BOT_NODE_OFFLINE_THRESHOLD=120`（可选，判定离线阈值秒数）
+- `BOT_LOG_VIEW_COOLDOWN=1`（可选，日志翻页冷却秒数，防止触发 Telegram 限流）
+- `BOT_LOG_VIEW_MAX_PAGES=100`（可选，日志查看最大页数，超出后请用服务器命令查看全量）
 - `TRUST_X_FORWARDED_FOR=0`（默认不信任 XFF）
 - `TRUSTED_PROXY_IPS=127.0.0.1,::1`（仅当启用 XFF 信任时生效）
 - `NODE_TASK_RUNNING_TIMEOUT=120`（节点任务超时秒数）
@@ -336,6 +338,8 @@ scp root@旧IP:/var/backups/sb-migrate/sb-migrate-xxxx.tar.gz root@新IP:/root/
   - `ADMIN_CHAT_IDS=你的chat_id`
   - `BOT_NODE_MONITOR_INTERVAL=60`
   - `BOT_NODE_OFFLINE_THRESHOLD=120`
+  - `BOT_LOG_VIEW_COOLDOWN=1`
+  - `BOT_LOG_VIEW_MAX_PAGES=100`
 - 重启 bot：`systemctl restart sb-bot`
 
 快速验证：
