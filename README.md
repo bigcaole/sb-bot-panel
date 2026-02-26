@@ -225,6 +225,7 @@ sudo bash scripts/admin/menu_admin.sh
 - 迁移导出 / 迁移导入（导入走非交互模式）
 - 访问安全状态（检查节点来源 IP 白名单配置）
 - 操作日志（`/admin/audit`，查看最近审计记录）
+- 访问安全（整合节点来源 IP 白名单状态 + 全局安全配置状态）
 
 ## Bot 远程管理（节点服务器）
 
@@ -371,6 +372,8 @@ scp root@旧IP:/var/backups/sb-migrate/sb-migrate-xxxx.tar.gz root@新IP:/root/
   - 开启 `SUB_LINK_REQUIRE_SIGNATURE=1` 后，`/sub/*` 必须携带 `exp` + `sig`
 - 支持轻量限流（默认关闭）：
   - `API_RATE_LIMIT_ENABLED=1` 后，会对高风险管理路径按 IP+路径限流，超限返回 429
+- 安全状态检查：
+  - `GET /admin/security/status` 可查看当前鉴权、订阅签名、XFF 信任、限流等配置状态与告警提示
 - 节点同步接口 `/nodes/{node_code}/sync` 已支持来源 IP 白名单：
   - 在节点创建/编辑时设置 `agent_ip`
   - `agent_ip` 已设置时，只有该 IP 才能拉取该节点 sync（其余返回 403）

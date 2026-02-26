@@ -914,6 +914,45 @@ def get_node_access_status(
 
 
 @app.get(
+    "/admin/security/status",
+    summary="Security configuration status",
+    description="AUTH_TOKEN 为空时不校验；非空时需要请求头 Authorization: Bearer <AUTH_TOKEN>。",
+    response_model=None,
+)
+def get_admin_security_status(
+    authorization: Optional[str] = Header(default=None, alias="Authorization")
+) -> Union[Dict[str, Union[bool, int, str, List[str]]], JSONResponse]:
+    auth_error = verify_admin_authorization(authorization)
+    if auth_error is not None:
+        return auth_error
+
+    warnings: List[str] = []
+    if not AUTH_TOKEN:
+        warnings.append("AUTH_TOKEN 未设置：管理接口未启用鉴权")
+    if not SUB_LINK_SIGN_KEY:
+        warnings.append("SUB_LINK_SIGN_KEY 未设置：订阅签名功能不可用")
+    if SUB_LINK_SIGN_KEY and not SUB_LINK_REQUIRE_SIGNATURE:
+        warnings.append("已设置 SUB_LINK_SIGN_KEY，但未强制签名（兼容模式）")
+    if TRUST_X_FORWARDED_FOR and not TRUSTED_PROXY_IPS:
+        warnings.append("已启用 XFF 信任，但 TRUSTED_PROXY_IPS 为空")
+    if not API_RATE_LIMIT_ENABLED:
+        warnings.append("轻量限流未启用")
+
+    return {
+        "auth_enabled": bool(AUTH_TOKEN),
+        "trust_x_forwarded_for": TRUST_X_FORWARDED_FOR,
+        "trusted_proxy_ips": sorted(TRUSTED_PROXY_IPS),
+        "sub_link_sign_enabled": bool(SUB_LINK_SIGN_KEY),
+        "sub_link_require_signature": SUB_LINK_REQUIRE_SIGNATURE,
+        "sub_link_default_ttl_seconds": SUB_LINK_DEFAULT_TTL_SECONDS,
+        "api_rate_limit_enabled": API_RATE_LIMIT_ENABLED,
+        "api_rate_limit_window_seconds": API_RATE_LIMIT_WINDOW_SECONDS,
+        "api_rate_limit_max_requests": API_RATE_LIMIT_MAX_REQUESTS,
+        "warnings": warnings,
+    }
+
+
+@app.get(
     "/admin/audit",
     summary="List audit logs",
     description="AUTH_TOKEN 为空时不校验；非空时需要请求头 Authorization: Bearer <AUTH_TOKEN>。",

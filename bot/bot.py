@@ -2329,6 +2329,28 @@ async def run_admin_node_access_status_action(query, back_menu_callback: str) ->
         lines.append("- （暂无）")
 
     lines.append("")
+    security_result, security_error, _ = await controller_request("GET", "/admin/security/status")
+    if security_error:
+        lines.append("全局安全状态：读取失败（{0}）".format(localize_controller_error(security_error)))
+    elif isinstance(security_result, dict):
+        auth_enabled = "已启用" if bool(security_result.get("auth_enabled")) else "未启用"
+        sign_enabled = "已启用" if bool(security_result.get("sub_link_sign_enabled")) else "未启用"
+        sign_required = (
+            "已强制" if bool(security_result.get("sub_link_require_signature")) else "兼容模式"
+        )
+        rate_limit_enabled = (
+            "已启用" if bool(security_result.get("api_rate_limit_enabled")) else "未启用"
+        )
+        lines.append("全局安全状态：")
+        lines.append(f"- 接口鉴权：{auth_enabled}")
+        lines.append(f"- 订阅签名：{sign_enabled}（{sign_required}）")
+        lines.append(f"- 轻量限流：{rate_limit_enabled}")
+        warnings = security_result.get("warnings", [])
+        if isinstance(warnings, list) and warnings:
+            lines.append("- 安全提示：")
+            for warning in warnings[:6]:
+                lines.append(f"  * {str(warning)}")
+    lines.append("")
     lines.append("建议：新增节点后立即设置“节点来源IP白名单”。")
     lines.append(f"防火墙参考（controller 端口 {CONTROLLER_PORT_HINT}）：")
     if isinstance(locked_items, list) and locked_items:
@@ -2340,8 +2362,11 @@ async def run_admin_node_access_status_action(query, back_menu_callback: str) ->
                 )
     lines.append(f"ufw deny {CONTROLLER_PORT_HINT}/tcp")
 
+    text = "\n".join(lines)
+    if len(text) > 3800:
+        text = text[:3800] + "\n...（输出较长，已截断）"
     await query.edit_message_text(
-        "\n".join(lines),
+        text,
         reply_markup=build_back_keyboard(back_menu_callback),
     )
 
