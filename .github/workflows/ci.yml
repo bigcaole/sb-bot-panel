@@ -1,0 +1,44 @@
+name: ci
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.11"]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Check Shell Script Syntax
+        run: |
+          bash -n scripts/admin/install_admin.sh
+          bash -n scripts/admin/menu_admin.sh
+          bash -n scripts/admin/sb_migrate_export.sh
+          bash -n scripts/admin/sb_migrate_import.sh
+          bash -n scripts/admin/smoke_test.sh
+          bash -n scripts/install.sh
+          bash -n scripts/menu.sh
+          bash -n scripts/sb_cert_check.sh
+
+      - name: Run Unit And Smoke Tests
+        run: |
+          bash scripts/admin/smoke_test.sh --skip-api
