@@ -17,11 +17,19 @@ from urllib.parse import quote
 
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
-from pydantic import BaseModel, Field
+from controller.db import BASE_DIR, get_connection, init_db
+from controller.schemas import (
+    AssignNodeRequest,
+    CreateNodeRequest,
+    CreateNodeTaskRequest,
+    CreateUserRequest,
+    ReportNodeTaskRequest,
+    SetUserSpeedRequest,
+    SetUserStatusRequest,
+    UpdateNodeRequest,
+)
 
 
-BASE_DIR = Path(__file__).resolve().parents[1]
-DB_PATH = BASE_DIR / "data" / "app.db"
 AUTH_TOKEN = os.getenv("AUTH_TOKEN", "").strip()
 
 
@@ -211,233 +219,6 @@ async def rate_limit_middleware(request: Request, call_next):
             headers={"Retry-After": str(retry_after)},
         )
     return await call_next(request)
-
-
-class CreateUserRequest(BaseModel):
-    display_name: str = Field(min_length=1)
-    tuic_port: int = Field(ge=1, le=65535)
-    speed_mbps: int = Field(gt=0)
-    valid_days: int = Field(gt=0)
-    note: str = ""
-
-
-class CreateNodeRequest(BaseModel):
-    node_code: str = Field(min_length=1)
-    region: str = ""
-    host: str = Field(min_length=1)
-    agent_ip: Optional[str] = None
-    reality_server_name: Optional[str] = None
-    tuic_server_name: Optional[str] = None
-    tuic_listen_port: Optional[int] = Field(default=None, ge=1, le=65535)
-    tuic_port_start: int = Field(ge=1, le=65535)
-    tuic_port_end: int = Field(ge=1, le=65535)
-    enabled: int = 1
-    supports_reality: Optional[int] = None
-    supports_tuic: Optional[int] = None
-    monitor_enabled: Optional[int] = None
-    note: str = ""
-
-
-class AssignNodeRequest(BaseModel):
-    node_code: str = Field(min_length=1)
-
-
-class SetUserSpeedRequest(BaseModel):
-    speed_mbps: int = Field(ge=1, le=10000)
-
-
-class SetUserStatusRequest(BaseModel):
-    status: str = Field(min_length=1)
-
-
-class CreateNodeTaskRequest(BaseModel):
-    task_type: str = Field(min_length=1)
-    payload: Optional[Dict[str, Any]] = None
-    max_attempts: Optional[int] = Field(default=None, ge=1, le=3)
-
-
-class ReportNodeTaskRequest(BaseModel):
-    status: str = Field(min_length=1)
-    result: str = ""
-
-
-class UpdateNodeRequest(BaseModel):
-    region: Optional[str] = None
-    host: Optional[str] = None
-    agent_ip: Optional[str] = None
-    reality_server_name: Optional[str] = None
-    tuic_server_name: Optional[str] = None
-    tuic_listen_port: Optional[int] = Field(default=None, ge=1, le=65535)
-    reality_private_key: Optional[str] = None
-    reality_public_key: Optional[str] = None
-    reality_short_id: Optional[str] = None
-    tuic_port_start: Optional[int] = Field(default=None, ge=1, le=65535)
-    tuic_port_end: Optional[int] = Field(default=None, ge=1, le=65535)
-    enabled: Optional[int] = None
-    supports_reality: Optional[int] = None
-    supports_tuic: Optional[int] = None
-    monitor_enabled: Optional[int] = None
-    note: Optional[str] = None
-
-
-def get_connection() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("PRAGMA busy_timeout = 5000")
-    return conn
-
-
-def init_db() -> None:
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with get_connection() as conn:
-        # WAL + NORMAL 同步可显著降低读写阻塞，适合本项目这种高读低写场景。
-        conn.execute("PRAGMA journal_mode = WAL")
-        conn.execute("PRAGMA synchronous = NORMAL")
-        conn.execute("PRAGMA wal_autocheckpoint = 1000")
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS users(
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_code TEXT UNIQUE,
-                display_name TEXT,
-                status TEXT,
-                created_at INTEGER,
-                expire_at INTEGER,
-                grace_days INTEGER,
-                speed_mbps INTEGER,
-                limit_mode TEXT,
-                mark INTEGER UNIQUE,
-                vless_uuid TEXT,
-                tuic_secret TEXT,
-                tuic_port INTEGER UNIQUE,
-                note TEXT
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS nodes(
-                node_code TEXT PRIMARY KEY,
-                region TEXT,
-                host TEXT,
-                agent_ip TEXT,
-                reality_server_name TEXT,
-                tuic_server_name TEXT,
-                tuic_listen_port INTEGER,
-                monitor_enabled INTEGER,
-                last_seen_at INTEGER,
-                reality_private_key TEXT,
-                reality_public_key TEXT,
-                reality_short_id TEXT,
-                tuic_port_start INTEGER,
-                tuic_port_end INTEGER,
-                enabled INTEGER,
-                supports_reality INTEGER,
-                supports_tuic INTEGER,
-                note TEXT
-            )
-            """
-        )
-        node_columns = conn.execute("PRAGMA table_info(nodes)").fetchall()
-        node_column_names = set(row["name"] for row in node_columns)
-        if "reality_server_name" not in node_column_names:
-            conn.execute("ALTER TABLE nodes ADD COLUMN reality_server_name TEXT")
-        if "agent_ip" not in node_column_names:
-            conn.execute("ALTER TABLE nodes ADD COLUMN agent_ip TEXT")
-        if "tuic_server_name" not in node_column_names:
-            conn.execute("ALTER TABLE nodes ADD COLUMN tuic_server_name TEXT")
-        if "tuic_listen_port" not in node_column_names:
-            conn.execute("ALTER TABLE nodes ADD COLUMN tuic_listen_port INTEGER")
-        if "monitor_enabled" not in node_column_names:
-            conn.execute("ALTER TABLE nodes ADD COLUMN monitor_enabled INTEGER")
-        if "last_seen_at" not in node_column_names:
-            conn.execute("ALTER TABLE nodes ADD COLUMN last_seen_at INTEGER")
-        if "reality_private_key" not in node_column_names:
-            conn.execute("ALTER TABLE nodes ADD COLUMN reality_private_key TEXT")
-        if "reality_public_key" not in node_column_names:
-            conn.execute("ALTER TABLE nodes ADD COLUMN reality_public_key TEXT")
-        if "reality_short_id" not in node_column_names:
-            conn.execute("ALTER TABLE nodes ADD COLUMN reality_short_id TEXT")
-        if "supports_reality" not in node_column_names:
-            conn.execute("ALTER TABLE nodes ADD COLUMN supports_reality INTEGER")
-        if "supports_tuic" not in node_column_names:
-            conn.execute("ALTER TABLE nodes ADD COLUMN supports_tuic INTEGER")
-        conn.execute("UPDATE nodes SET supports_reality = 1 WHERE supports_reality IS NULL")
-        conn.execute("UPDATE nodes SET supports_tuic = 1 WHERE supports_tuic IS NULL")
-        conn.execute("UPDATE nodes SET monitor_enabled = 0 WHERE monitor_enabled IS NULL")
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS user_nodes(
-                user_code TEXT,
-                node_code TEXT,
-                tuic_port INTEGER,
-                created_at INTEGER,
-                PRIMARY KEY (user_code, node_code),
-                FOREIGN KEY (user_code) REFERENCES users(user_code),
-                FOREIGN KEY (node_code) REFERENCES nodes(node_code)
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS node_tasks(
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                node_code TEXT NOT NULL,
-                task_type TEXT NOT NULL,
-                payload_json TEXT,
-                status TEXT NOT NULL,
-                attempts INTEGER,
-                max_attempts INTEGER,
-                created_at INTEGER,
-                updated_at INTEGER,
-                result_text TEXT,
-                FOREIGN KEY (node_code) REFERENCES nodes(node_code)
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS audit_logs(
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                actor TEXT,
-                action TEXT NOT NULL,
-                resource_type TEXT,
-                resource_id TEXT,
-                detail TEXT,
-                source_ip TEXT,
-                created_at INTEGER NOT NULL
-            )
-            """
-        )
-        node_task_columns = conn.execute("PRAGMA table_info(node_tasks)").fetchall()
-        node_task_column_names = set(row["name"] for row in node_task_columns)
-        if "attempts" not in node_task_column_names:
-            conn.execute("ALTER TABLE node_tasks ADD COLUMN attempts INTEGER")
-        if "max_attempts" not in node_task_column_names:
-            conn.execute("ALTER TABLE node_tasks ADD COLUMN max_attempts INTEGER")
-        conn.execute("UPDATE node_tasks SET attempts = 0 WHERE attempts IS NULL")
-        conn.execute("UPDATE node_tasks SET max_attempts = 1 WHERE max_attempts IS NULL")
-        conn.execute(
-            """
-            CREATE INDEX IF NOT EXISTS idx_node_tasks_node_status_id
-            ON node_tasks(node_code, status, id)
-            """
-        )
-        conn.execute(
-            """
-            CREATE INDEX IF NOT EXISTS idx_user_nodes_node_code
-            ON user_nodes(node_code)
-            """
-        )
-        conn.execute(
-            """
-            CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at
-            ON audit_logs(created_at DESC)
-            """
-        )
-        conn.commit()
-
 
 def validate_agent_ip(agent_ip: Optional[str]) -> Optional[str]:
     if agent_ip is None:
