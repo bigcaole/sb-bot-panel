@@ -1229,7 +1229,7 @@ def get_log_importance_level(line: str) -> int:
     return 3
 
 
-def build_priority_log_entries(raw_text: str, line_char_limit: int = 60) -> tuple:
+def build_priority_log_entries(raw_text: str, line_char_limit: int = 0) -> tuple:
     raw_lines = [str(item or "").strip() for item in str(raw_text or "").splitlines()]
     raw_lines = [item for item in raw_lines if item]
     if not raw_lines:
@@ -1239,7 +1239,7 @@ def build_priority_log_entries(raw_text: str, line_char_limit: int = 60) -> tupl
     for line in reversed(raw_lines):
         level = get_log_importance_level(line)
         compact = " ".join(line.replace("\r", "").split())
-        if len(compact) > line_char_limit:
+        if line_char_limit > 0 and len(compact) > line_char_limit:
             compact = compact[:line_char_limit] + "..."
         buckets[level].append(compact)
 
@@ -1251,17 +1251,50 @@ def build_priority_log_entries(raw_text: str, line_char_limit: int = 60) -> tupl
     return selected_lines, len(buckets[1]), len(buckets[2]), len(buckets[3])
 
 
-def paginate_log_entries(entries: list, page: int, page_size: int = 50) -> tuple:
-    total_count = len(entries)
-    if total_count <= 0:
-        return [], 1, 1
-    total_pages = (total_count + page_size - 1) // page_size
-    safe_page = 1 if page < 1 else page
-    if safe_page > total_pages:
-        safe_page = total_pages
-    start = (safe_page - 1) * page_size
-    end = start + page_size
-    return entries[start:end], safe_page, total_pages
+def split_log_entry(entry: str, max_piece_chars: int = 900) -> list:
+    text = str(entry or "")
+    if len(text) <= max_piece_chars:
+        return [text]
+    parts = []
+    total = (len(text) + max_piece_chars - 1) // max_piece_chars
+    for index in range(total):
+        start = index * max_piece_chars
+        end = start + max_piece_chars
+        piece = text[start:end]
+        parts.append("（分段 {0}/{1}）{2}".format(index + 1, total, piece))
+    return parts
+
+
+def build_log_pages(entries: list, max_lines_per_page: int = 50, max_chars_per_page: int = 3200) -> list:
+    if not entries:
+        return [["(当日无日志)"]]
+
+    normalized_entries = []
+    for entry in entries:
+        normalized_entries.extend(split_log_entry(entry, max_piece_chars=900))
+
+    pages = []
+    current_page = []
+    current_chars = 0
+    for entry in normalized_entries:
+        entry_len = len(entry) + 1
+        need_new_page = False
+        if current_page and len(current_page) >= max_lines_per_page:
+            need_new_page = True
+        if current_page and current_chars + entry_len > max_chars_per_page:
+            need_new_page = True
+        if need_new_page:
+            pages.append(current_page)
+            current_page = []
+            current_chars = 0
+        current_page.append(entry)
+        current_chars += entry_len
+
+    if current_page:
+        pages.append(current_page)
+    if not pages:
+        return [["(当日无日志)"]]
+    return pages
 
 
 def pop_user_speed_pending(
@@ -4463,18 +4496,18 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             )
             return
 
-        entries, level1_count, level2_count, level3_count = build_priority_log_entries(
-            stdout, line_char_limit=60
-        )
-        page_entries, safe_page, total_pages = paginate_log_entries(entries, page, page_size=50)
-        if not page_entries:
-            recent_logs = "(当日无日志)"
-        else:
-            recent_logs = "\n".join(page_entries)
+        entries, level1_count, level2_count, level3_count = build_priority_log_entries(stdout)
+        pages = build_log_pages(entries, max_lines_per_page=50, max_chars_per_page=3200)
+        total_pages = len(pages)
+        safe_page = 1 if page < 1 else page
+        if safe_page > total_pages:
+            safe_page = total_pages
+        page_entries = pages[safe_page - 1] if pages else ["(当日无日志)"]
+        recent_logs = "\n".join(page_entries) if page_entries else "(当日无日志)"
         await query.edit_message_text(
-            "{0} {1} 重要日志（按一级→二级→三级，时间倒序）：\n"
+            "{0} {1} 重要日志（按一级→二级→三级，时间倒序，尽量完整显示）：\n"
             "一级：{2} 条，二级：{3} 条，三级：{4} 条\n"
-            "当前页：{5}/{6}（每页 50 条）\n\n{7}".format(
+            "当前页：{5}/{6}（每页最多 50 条，且受消息长度限制）\n\n{7}".format(
                 unit,
                 day_text,
                 level1_count,
