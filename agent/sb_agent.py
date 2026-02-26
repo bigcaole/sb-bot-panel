@@ -769,6 +769,16 @@ def apply_tuic_ufw_rules(ports: List[int]) -> None:
     current_state = load_tuic_ufw_state()
     if canonical_json(current_state) == canonical_json(desired_state):
         return
+    current_ports_raw = current_state.get("ports", []) if isinstance(current_state, dict) else []
+    current_ports = set()
+    if isinstance(current_ports_raw, list):
+        for item in current_ports_raw:
+            port = parse_int(item, 0)
+            if 1 <= port <= 65535:
+                current_ports.add(port)
+    desired_ports_set = set(desired_ports)
+    to_add = sorted(list(desired_ports_set - current_ports))
+    to_remove = sorted(list(current_ports - desired_ports_set))
 
     code, stdout, _ = run_command(["ufw", "status"])
     if code != 0:
@@ -778,16 +788,30 @@ def apply_tuic_ufw_rules(ports: List[int]) -> None:
         LOGGER.warning("UFW 未启用，跳过 TUIC 防火墙规则同步")
         return
 
-    changed_count = 0
-    for port in desired_ports:
+    add_changed_count = 0
+    remove_changed_count = 0
+
+    for port in to_remove:
+        code, _, stderr = run_command(["ufw", "--force", "delete", "allow", "{0}/udp".format(port)])
+        if code == 0:
+            remove_changed_count += 1
+            continue
+        LOGGER.warning("UFW 回收失败: port=%s/udp stderr=%s", port, stderr.strip())
+
+    for port in to_add:
         code, _, stderr = run_command(["ufw", "allow", "{0}/udp".format(port)])
         if code == 0:
-            changed_count += 1
+            add_changed_count += 1
             continue
         LOGGER.warning("UFW 放行失败: port=%s/udp stderr=%s", port, stderr.strip())
 
     save_tuic_ufw_state(desired_state)
-    LOGGER.info("TUIC 防火墙规则已同步（目标端口数=%s，执行放行命令=%s）", len(desired_ports), changed_count)
+    LOGGER.info(
+        "TUIC 防火墙规则已同步（目标端口数=%s，新增=%s，回收=%s）",
+        len(desired_ports),
+        add_changed_count,
+        remove_changed_count,
+    )
 
 
 def apply_agent_config_patch(patch_payload: Dict[str, Any]) -> Tuple[bool, str]:

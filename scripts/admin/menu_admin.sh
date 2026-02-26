@@ -37,7 +37,7 @@ show_config_guide() {
   echo "  - ENABLE_HTTPS（是否启用 Caddy 自动申请/续期证书）"
   echo "  - HTTPS_DOMAIN（管理端证书域名，如 panel.example.com）"
   echo "  - HTTPS_ACME_EMAIL（可选，证书账号邮箱）"
-  echo "  - AUTH_TOKEN（可选；用于保护 /admin/*；也给 bot/agent 调用时使用）"
+  echo "  - AUTH_TOKEN（可选；用于保护 /admin/*；默认建议随机串，不建议弱口令）"
   echo "  - BOT_TOKEN（必填；Telegram 机器人 token）"
   echo "  - ADMIN_CHAT_IDS（可选；限制谁能使用 bot）"
   echo "  - MIGRATE_DIR（迁移包/备份包输出目录）"

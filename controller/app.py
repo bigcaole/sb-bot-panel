@@ -21,6 +21,36 @@ BASE_DIR = Path(__file__).resolve().parents[1]
 DB_PATH = BASE_DIR / "data" / "app.db"
 AUTH_TOKEN = os.getenv("AUTH_TOKEN", "").strip()
 
+
+def _get_int_env(name: str, default: int) -> int:
+    raw = os.getenv(name, str(default)).strip()
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+TRUST_X_FORWARDED_FOR = os.getenv("TRUST_X_FORWARDED_FOR", "0").strip() in (
+    "1",
+    "true",
+    "TRUE",
+    "yes",
+    "YES",
+)
+TRUSTED_PROXY_IPS = set(
+    item.strip()
+    for item in os.getenv("TRUSTED_PROXY_IPS", "127.0.0.1,::1").split(",")
+    if item.strip()
+)
+NODE_TASK_RUNNING_TIMEOUT_SECONDS = int(
+    _get_int_env("NODE_TASK_RUNNING_TIMEOUT", 120)
+)
+if NODE_TASK_RUNNING_TIMEOUT_SECONDS < 30:
+    NODE_TASK_RUNNING_TIMEOUT_SECONDS = 30
+NODE_TASK_RETENTION_SECONDS = int(_get_int_env("NODE_TASK_RETENTION_SECONDS", 7 * 86400))
+if NODE_TASK_RETENTION_SECONDS < 3600:
+    NODE_TASK_RETENTION_SECONDS = 3600
+
 app = FastAPI()
 
 
@@ -73,6 +103,7 @@ class SetUserStatusRequest(BaseModel):
 class CreateNodeTaskRequest(BaseModel):
     task_type: str = Field(min_length=1)
     payload: Optional[Dict[str, Any]] = None
+    max_attempts: Optional[int] = Field(default=None, ge=1, le=3)
 
 
 class ReportNodeTaskRequest(BaseModel):
@@ -201,6 +232,8 @@ def init_db() -> None:
                 task_type TEXT NOT NULL,
                 payload_json TEXT,
                 status TEXT NOT NULL,
+                attempts INTEGER,
+                max_attempts INTEGER,
                 created_at INTEGER,
                 updated_at INTEGER,
                 result_text TEXT,
@@ -208,6 +241,14 @@ def init_db() -> None:
             )
             """
         )
+        node_task_columns = conn.execute("PRAGMA table_info(node_tasks)").fetchall()
+        node_task_column_names = set(row["name"] for row in node_task_columns)
+        if "attempts" not in node_task_column_names:
+            conn.execute("ALTER TABLE node_tasks ADD COLUMN attempts INTEGER")
+        if "max_attempts" not in node_task_column_names:
+            conn.execute("ALTER TABLE node_tasks ADD COLUMN max_attempts INTEGER")
+        conn.execute("UPDATE node_tasks SET attempts = 0 WHERE attempts IS NULL")
+        conn.execute("UPDATE node_tasks SET max_attempts = 1 WHERE max_attempts IS NULL")
         conn.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_node_tasks_node_status_id
@@ -231,13 +272,32 @@ def validate_agent_ip(agent_ip: Optional[str]) -> Optional[str]:
 
 
 def get_request_ip(request: Request) -> str:
-    xff = request.headers.get("x-forwarded-for", "").strip()
-    if xff:
-        first = xff.split(",")[0].strip()
-        if first:
-            return first
+    # 默认仅信任直连源 IP。仅在开启 TRUST_X_FORWARDED_FOR 且请求来自可信代理时才解析 XFF。
+    direct_ip = ""
     if request.client and request.client.host:
-        return str(request.client.host).strip()
+        direct_ip = str(request.client.host).strip()
+    direct_ip_normalized = direct_ip
+    try:
+        if direct_ip:
+            direct_ip_normalized = str(ipaddress.ip_address(direct_ip))
+    except ValueError:
+        direct_ip_normalized = direct_ip
+
+    if (
+        TRUST_X_FORWARDED_FOR
+        and direct_ip
+        and (
+            direct_ip in TRUSTED_PROXY_IPS
+            or direct_ip_normalized in TRUSTED_PROXY_IPS
+        )
+    ):
+        xff = request.headers.get("x-forwarded-for", "").strip()
+        if xff:
+            first = xff.split(",")[0].strip()
+            if first:
+                return first
+    if direct_ip:
+        return direct_ip
     return ""
 
 
@@ -290,15 +350,142 @@ def parse_task_payload(payload_json: Optional[str]) -> Dict[str, Any]:
 
 
 def build_task_row_dict(row: sqlite3.Row) -> Dict[str, Any]:
+    attempts = int(row["attempts"] or 0)
+    max_attempts = int(row["max_attempts"] or 1)
+    if max_attempts < 1:
+        max_attempts = 1
     return {
         "id": int(row["id"]),
         "node_code": str(row["node_code"]),
         "task_type": str(row["task_type"]),
         "payload": parse_task_payload(row["payload_json"]),
         "status": str(row["status"]),
+        "attempts": attempts,
+        "max_attempts": max_attempts,
         "created_at": int(row["created_at"] or 0),
         "updated_at": int(row["updated_at"] or 0),
         "result_text": str(row["result_text"] or ""),
+    }
+
+
+def append_task_result(existing: str, extra_line: str) -> str:
+    base = str(existing or "").strip()
+    line = str(extra_line or "").strip()
+    if not line:
+        return base
+    if not base:
+        return line
+    return "{0}\n{1}".format(base, line)
+
+
+def run_node_task_housekeeping(
+    conn: sqlite3.Connection,
+    now_ts: int,
+    node_code: Optional[str] = None,
+) -> Dict[str, int]:
+    timeout_before = now_ts - NODE_TASK_RUNNING_TIMEOUT_SECONDS
+    params: List[Union[str, int]] = [timeout_before]
+    node_filter_sql = ""
+    if node_code:
+        node_filter_sql = " AND node_code = ?"
+        params.append(node_code)
+
+    stale_rows = conn.execute(
+        """
+        SELECT id, attempts, max_attempts, result_text
+        FROM node_tasks
+        WHERE status = 'running' AND updated_at > 0 AND updated_at <= ?
+        {0}
+        """.format(node_filter_sql),
+        tuple(params),
+    ).fetchall()
+
+    retried_count = 0
+    timeout_count = 0
+    for row in stale_rows:
+        task_id = int(row["id"])
+        attempts = int(row["attempts"] or 0)
+        max_attempts = int(row["max_attempts"] or 1)
+        if max_attempts < 1:
+            max_attempts = 1
+        stale_note = "[controller] task timed out after {0}s".format(
+            NODE_TASK_RUNNING_TIMEOUT_SECONDS
+        )
+        next_status = "timeout"
+        if attempts < max_attempts:
+            next_status = "pending"
+
+        next_result = append_task_result(str(row["result_text"] or ""), stale_note)
+        conn.execute(
+            """
+            UPDATE node_tasks
+            SET status = ?, updated_at = ?, result_text = ?
+            WHERE id = ?
+            """,
+            (next_status, now_ts, next_result, task_id),
+        )
+        if next_status == "pending":
+            retried_count += 1
+        else:
+            timeout_count += 1
+
+    exhausted_params: List[Union[str, int]] = []
+    exhausted_filter_sql = ""
+    if node_code:
+        exhausted_filter_sql = " AND node_code = ?"
+        exhausted_params.append(node_code)
+    exhausted_rows = conn.execute(
+        """
+        SELECT id, result_text
+        FROM node_tasks
+        WHERE status = 'pending' AND attempts >= max_attempts
+        {0}
+        """.format(exhausted_filter_sql),
+        tuple(exhausted_params),
+    ).fetchall()
+    exhausted_count = 0
+    for row in exhausted_rows:
+        exhausted_note = "[controller] retries exhausted"
+        next_result = append_task_result(str(row["result_text"] or ""), exhausted_note)
+        conn.execute(
+            """
+            UPDATE node_tasks
+            SET status = 'failed', updated_at = ?, result_text = ?
+            WHERE id = ?
+            """,
+            (now_ts, next_result, int(row["id"])),
+        )
+        exhausted_count += 1
+
+    retention_before = now_ts - NODE_TASK_RETENTION_SECONDS
+    delete_params: List[Union[str, int]] = [retention_before]
+    delete_node_filter_sql = ""
+    if node_code:
+        delete_node_filter_sql = " AND node_code = ?"
+        delete_params.append(node_code)
+    delete_cursor = conn.execute(
+        """
+        DELETE FROM node_tasks
+        WHERE status IN ('success', 'failed', 'timeout')
+          AND updated_at > 0
+          AND updated_at <= ?
+          {0}
+        """.format(delete_node_filter_sql),
+        tuple(delete_params),
+    )
+    deleted_count = int(delete_cursor.rowcount or 0)
+    if (
+        retried_count > 0
+        or timeout_count > 0
+        or exhausted_count > 0
+        or deleted_count > 0
+    ):
+        conn.commit()
+    return {
+        "retried_count": retried_count,
+        "timeout_count": timeout_count,
+        "exhausted_count": exhausted_count,
+        "deleted_count": deleted_count,
     }
 
 
@@ -761,9 +948,15 @@ def create_node_task(
         raise HTTPException(status_code=400, detail="unsupported task_type")
     payload_obj = payload.payload if isinstance(payload.payload, dict) else {}
     payload_json = json.dumps(payload_obj, ensure_ascii=False)
+    max_attempts = int(payload.max_attempts or 1)
+    if max_attempts < 1:
+        max_attempts = 1
+    if max_attempts > 3:
+        max_attempts = 3
     now_ts = int(time.time())
 
     with get_connection() as conn:
+        run_node_task_housekeeping(conn, now_ts)
         node_row = conn.execute(
             "SELECT node_code FROM nodes WHERE node_code = ?",
             (node_code,),
@@ -773,17 +966,37 @@ def create_node_task(
 
         cursor = conn.execute(
             """
-            INSERT INTO node_tasks(node_code, task_type, payload_json, status, created_at, updated_at, result_text)
-            VALUES (?, ?, ?, 'pending', ?, ?, '')
+            INSERT INTO node_tasks(
+                node_code,
+                task_type,
+                payload_json,
+                status,
+                attempts,
+                max_attempts,
+                created_at,
+                updated_at,
+                result_text
+            )
+            VALUES (?, ?, ?, 'pending', 0, ?, ?, ?, '')
             """,
-            (node_code, task_type, payload_json, now_ts, now_ts),
+            (node_code, task_type, payload_json, max_attempts, now_ts, now_ts),
         )
         conn.commit()
         task_id = int(cursor.lastrowid or 0)
 
         created_row = conn.execute(
             """
-            SELECT id, node_code, task_type, payload_json, status, created_at, updated_at, result_text
+            SELECT
+                id,
+                node_code,
+                task_type,
+                payload_json,
+                status,
+                attempts,
+                max_attempts,
+                created_at,
+                updated_at,
+                result_text
             FROM node_tasks
             WHERE id = ?
             """,
@@ -810,6 +1023,7 @@ def list_node_tasks(
         limit = 100
 
     with get_connection() as conn:
+        run_node_task_housekeeping(conn, int(time.time()), node_code=node_code)
         node_row = conn.execute(
             "SELECT node_code FROM nodes WHERE node_code = ?",
             (node_code,),
@@ -818,7 +1032,17 @@ def list_node_tasks(
             raise HTTPException(status_code=404, detail="Node not found")
         rows = conn.execute(
             """
-            SELECT id, node_code, task_type, payload_json, status, created_at, updated_at, result_text
+            SELECT
+                id,
+                node_code,
+                task_type,
+                payload_json,
+                status,
+                attempts,
+                max_attempts,
+                created_at,
+                updated_at,
+                result_text
             FROM node_tasks
             WHERE node_code = ?
             ORDER BY id DESC
@@ -841,6 +1065,7 @@ def get_next_node_task(
 
     now_ts = int(time.time())
     with get_connection() as conn:
+        run_node_task_housekeeping(conn, now_ts, node_code=node_code)
         node_row = conn.execute(
             "SELECT node_code, agent_ip FROM nodes WHERE node_code = ?",
             (node_code,),
@@ -851,9 +1076,19 @@ def get_next_node_task(
 
         row = conn.execute(
             """
-            SELECT id, node_code, task_type, payload_json, status, created_at, updated_at, result_text
+            SELECT
+                id,
+                node_code,
+                task_type,
+                payload_json,
+                status,
+                attempts,
+                max_attempts,
+                created_at,
+                updated_at,
+                result_text
             FROM node_tasks
-            WHERE node_code = ? AND status = 'pending'
+            WHERE node_code = ? AND status = 'pending' AND attempts < max_attempts
             ORDER BY id ASC
             LIMIT 1
             """,
@@ -865,8 +1100,8 @@ def get_next_node_task(
         cursor = conn.execute(
             """
             UPDATE node_tasks
-            SET status = 'running', updated_at = ?
-            WHERE id = ? AND status = 'pending'
+            SET status = 'running', attempts = attempts + 1, updated_at = ?
+            WHERE id = ? AND status = 'pending' AND attempts < max_attempts
             """,
             (now_ts, int(row["id"])),
         )
@@ -876,7 +1111,17 @@ def get_next_node_task(
 
         running_row = conn.execute(
             """
-            SELECT id, node_code, task_type, payload_json, status, created_at, updated_at, result_text
+            SELECT
+                id,
+                node_code,
+                task_type,
+                payload_json,
+                status,
+                attempts,
+                max_attempts,
+                created_at,
+                updated_at,
+                result_text
             FROM node_tasks
             WHERE id = ?
             """,
@@ -918,11 +1163,29 @@ def report_node_task(
         verify_node_agent_ip(request, node_code, node_row["agent_ip"])
 
         task_row = conn.execute(
-            "SELECT id FROM node_tasks WHERE id = ? AND node_code = ?",
+            """
+            SELECT id, attempts, max_attempts, result_text
+            FROM node_tasks
+            WHERE id = ? AND node_code = ?
+            """,
             (task_id, node_code),
         ).fetchone()
         if task_row is None:
             raise HTTPException(status_code=404, detail="Task not found")
+
+        attempts = int(task_row["attempts"] or 0)
+        max_attempts = int(task_row["max_attempts"] or 1)
+        if max_attempts < 1:
+            max_attempts = 1
+        next_status = status_value
+        next_result = result_text
+        if status_value == "failed" and attempts < max_attempts:
+            next_status = "pending"
+            retry_note = "[controller] auto retry scheduled ({0}/{1})".format(
+                attempts,
+                max_attempts,
+            )
+            next_result = append_task_result(result_text, retry_note)
 
         conn.execute(
             """
@@ -930,11 +1193,11 @@ def report_node_task(
             SET status = ?, result_text = ?, updated_at = ?
             WHERE id = ? AND node_code = ?
             """,
-            (status_value, result_text, now_ts, task_id, node_code),
+            (next_status, next_result, now_ts, task_id, node_code),
         )
         conn.commit()
 
-    return {"ok": True, "node_code": node_code, "task_id": task_id, "status": status_value}
+    return {"ok": True, "node_code": node_code, "task_id": task_id, "status": next_status}
 
 
 # Used by node-side agent polling periodically to sync node and bound-user config.

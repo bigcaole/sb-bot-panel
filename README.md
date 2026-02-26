@@ -234,6 +234,7 @@ sudo bash scripts/admin/menu_admin.sh
 - 查看 sing-box / sb-agent 状态
 - 查看 sing-box / sb-agent 日志（通过任务回传）
 - 修改节点参数（写入 `/etc/sb-agent/config.json`，如 `poll_interval`、`tuic_domain`、`tuic_listen_port` 等）
+- 任务生命周期：controller 自动处理超时任务（默认 120 秒）、失败重试（按任务重试次数）与历史清理（默认保留 7 天）
 
 安全建议：
 
@@ -308,13 +309,17 @@ scp root@旧IP:/var/backups/sb-migrate/sb-migrate-xxxx.tar.gz root@新IP:/root/
 - `HTTPS_DOMAIN=panel.example.com`（启用 HTTPS 时填写域名）
 - `HTTPS_ACME_EMAIL=admin@example.com`（可选，证书账号邮箱）
 - `CONTROLLER_PORT=8080`
-- `AUTH_TOKEN=devtoken123`（可空；空值表示关闭 `/admin/*` 鉴权）
+- `AUTH_TOKEN=随机长串`（可空；空值表示关闭 `/admin/*` 鉴权，不建议公网直连）
 - `BOT_TOKEN=xxxxxxxx`（必填）
 - `ADMIN_CHAT_IDS=123,456`（可空）
 - `MIGRATE_DIR=/var/backups/sb-migrate`
 - `BOT_MENU_TTL=60`（可选，bot 菜单按钮自动清理秒数）
 - `BOT_NODE_MONITOR_INTERVAL=60`（可选，节点在线检测周期秒数）
 - `BOT_NODE_OFFLINE_THRESHOLD=120`（可选，判定离线阈值秒数）
+- `TRUST_X_FORWARDED_FOR=0`（默认不信任 XFF）
+- `TRUSTED_PROXY_IPS=127.0.0.1,::1`（仅当启用 XFF 信任时生效）
+- `NODE_TASK_RUNNING_TIMEOUT=120`（节点任务超时秒数）
+- `NODE_TASK_RETENTION_SECONDS=604800`（节点任务历史保留秒数）
 
 ## 节点在线监控（Bot）
 
@@ -351,6 +356,7 @@ scp root@旧IP:/var/backups/sb-migrate/sb-migrate-xxxx.tar.gz root@新IP:/root/
 - 节点同步接口 `/nodes/{node_code}/sync` 已支持来源 IP 白名单：
   - 在节点创建/编辑时设置 `agent_ip`
   - `agent_ip` 已设置时，只有该 IP 才能拉取该节点 sync（其余返回 403）
+  - 默认仅信任 TCP 直连源地址，不信任 `X-Forwarded-For`（可通过 `TRUST_X_FORWARDED_FOR=1` + `TRUSTED_PROXY_IPS` 显式开启）
 - 建议同时使用防火墙限制管理端口来源（仅节点 IP）：
   - `ufw allow from <节点IP> to any port <CONTROLLER_PORT> proto tcp`
   - `ufw deny <CONTROLLER_PORT>/tcp`

@@ -39,6 +39,10 @@ MIGRATE_DIR="$MIGRATE_DIR_DEFAULT"
 BOT_MENU_TTL="60"
 BOT_NODE_MONITOR_INTERVAL="60"
 BOT_NODE_OFFLINE_THRESHOLD="120"
+TRUST_X_FORWARDED_FOR="0"
+TRUSTED_PROXY_IPS="127.0.0.1,::1"
+NODE_TASK_RUNNING_TIMEOUT="120"
+NODE_TASK_RETENTION_SECONDS="604800"
 SELF_CHECK_OK=0
 SELF_CHECK_WARN=0
 SELF_CHECK_FAIL=0
@@ -107,6 +111,23 @@ normalize_input_url() {
     default_scheme="http"
   fi
   echo "${default_scheme}://${raw%/}"
+}
+
+generate_auth_token() {
+  local token
+  token=""
+  if command -v openssl >/dev/null 2>&1; then
+    token="$(openssl rand -hex 24 2>/dev/null || true)"
+  fi
+  if [[ -z "$token" ]]; then
+    token="$( (cat /proc/sys/kernel/random/uuid 2>/dev/null || true) | tr -d '-' )"
+    token="${token}$(date +%s)"
+    token="${token:0:40}"
+  fi
+  if [[ -z "$token" ]]; then
+    token="token$(date +%s)"
+  fi
+  echo "$token"
 }
 
 sanitize_domain_input() {
@@ -206,8 +227,16 @@ get_env_value() {
   grep -E "^${key}=" "$ENV_FILE" | head -n1 | cut -d= -f2- || true
 }
 
+has_env_key() {
+  local key="$1"
+  if [[ ! -f "$ENV_FILE" ]]; then
+    return 1
+  fi
+  grep -qE "^${key}=" "$ENV_FILE"
+}
+
 load_existing_env_defaults() {
-  local old_port old_url old_public_url old_panel_base old_enable_https old_https_domain old_https_email old_auth old_bot old_admin old_migrate old_menu_ttl old_monitor_interval old_offline_threshold
+  local old_port old_url old_public_url old_panel_base old_enable_https old_https_domain old_https_email old_auth old_bot old_admin old_migrate old_menu_ttl old_monitor_interval old_offline_threshold old_trust_xff old_trusted_proxy_ips old_task_timeout old_task_retention
   old_port="$(get_env_value "CONTROLLER_PORT")"
   old_url="$(get_env_value "CONTROLLER_URL")"
   old_public_url="$(get_env_value "CONTROLLER_PUBLIC_URL")"
@@ -222,6 +251,10 @@ load_existing_env_defaults() {
   old_menu_ttl="$(get_env_value "BOT_MENU_TTL")"
   old_monitor_interval="$(get_env_value "BOT_NODE_MONITOR_INTERVAL")"
   old_offline_threshold="$(get_env_value "BOT_NODE_OFFLINE_THRESHOLD")"
+  old_trust_xff="$(get_env_value "TRUST_X_FORWARDED_FOR")"
+  old_trusted_proxy_ips="$(get_env_value "TRUSTED_PROXY_IPS")"
+  old_task_timeout="$(get_env_value "NODE_TASK_RUNNING_TIMEOUT")"
+  old_task_retention="$(get_env_value "NODE_TASK_RETENTION_SECONDS")"
 
   CONTROLLER_PORT="${old_port:-8080}"
   CONTROLLER_URL="${old_url:-http://127.0.0.1:${CONTROLLER_PORT}}"
@@ -230,18 +263,35 @@ load_existing_env_defaults() {
   ENABLE_HTTPS="${old_enable_https:-0}"
   HTTPS_DOMAIN="$(sanitize_domain_input "${old_https_domain:-}")"
   HTTPS_ACME_EMAIL="${old_https_email:-}"
-  AUTH_TOKEN="${old_auth:-devtoken123}"
+  if has_env_key "AUTH_TOKEN"; then
+    AUTH_TOKEN="$old_auth"
+  else
+    AUTH_TOKEN="$(generate_auth_token)"
+  fi
   BOT_TOKEN="${old_bot:-}"
   ADMIN_CHAT_IDS="${old_admin:-}"
   MIGRATE_DIR="${old_migrate:-$MIGRATE_DIR_DEFAULT}"
   BOT_MENU_TTL="${old_menu_ttl:-60}"
   BOT_NODE_MONITOR_INTERVAL="${old_monitor_interval:-60}"
   BOT_NODE_OFFLINE_THRESHOLD="${old_offline_threshold:-120}"
+  TRUST_X_FORWARDED_FOR="${old_trust_xff:-0}"
+  TRUSTED_PROXY_IPS="${old_trusted_proxy_ips:-127.0.0.1,::1}"
+  NODE_TASK_RUNNING_TIMEOUT="${old_task_timeout:-120}"
+  NODE_TASK_RETENTION_SECONDS="${old_task_retention:-604800}"
 }
 
 normalize_loaded_values() {
   if ! [[ "$ENABLE_HTTPS" =~ ^[01]$ ]]; then
     ENABLE_HTTPS="0"
+  fi
+  if ! [[ "$TRUST_X_FORWARDED_FOR" =~ ^[01]$ ]]; then
+    TRUST_X_FORWARDED_FOR="0"
+  fi
+  if ! [[ "$NODE_TASK_RUNNING_TIMEOUT" =~ ^[0-9]+$ ]] || (( NODE_TASK_RUNNING_TIMEOUT < 30 )); then
+    NODE_TASK_RUNNING_TIMEOUT="120"
+  fi
+  if ! [[ "$NODE_TASK_RETENTION_SECONDS" =~ ^[0-9]+$ ]] || (( NODE_TASK_RETENTION_SECONDS < 3600 )); then
+    NODE_TASK_RETENTION_SECONDS="604800"
   fi
   CONTROLLER_URL="$(normalize_input_url "$CONTROLLER_URL" "http")"
   if [[ -n "$CONTROLLER_PUBLIC_URL" ]]; then
@@ -282,13 +332,15 @@ prompt_env_config() {
   echo "  - ENABLE_HTTPS / HTTPS_DOMAIN：启用 Caddy 自动证书（申请+续期）"
   echo "  - HTTPS_ACME_EMAIL：证书账号邮箱（可选，建议填写）"
   echo "  - CONTROLLER_URL：bot 调用 controller 的地址（通常 127.0.0.1）"
-  echo "  - AUTH_TOKEN：可选；用于保护 /admin/*，bot/agent 也可携带"
+  echo "  - AUTH_TOKEN：可选；用于保护 /admin/*，默认自动生成随机串（输入 - 可关闭）"
   echo "  - BOT_TOKEN：必填；Telegram 机器人 token"
   echo "  - ADMIN_CHAT_IDS：可选；用于限制谁可操作 bot"
   echo "  - MIGRATE_DIR：迁移包/备份包输出目录"
   echo "  - BOT_MENU_TTL：bot 菜单按钮自动清理秒数"
   echo "  - BOT_NODE_MONITOR_INTERVAL：节点在线检测周期秒数"
   echo "  - BOT_NODE_OFFLINE_THRESHOLD：节点离线判定阈值秒数"
+  echo "  - TRUST_X_FORWARDED_FOR/TRUSTED_PROXY_IPS：仅在受控反代场景下才启用 XFF"
+  echo "  - NODE_TASK_*：节点任务超时与历史清理参数"
   echo ""
 
   read -r -p "CONTROLLER_PORT（controller 对外监听端口；节点 agent 需要访问） [${CONTROLLER_PORT}]: " input_port
@@ -367,8 +419,12 @@ prompt_env_config() {
   fi
   CONTROLLER_URL="$(normalize_input_url "$CONTROLLER_URL" "$controller_scheme")"
 
-  read -r -p "AUTH_TOKEN（可选；保护 /admin/*；留空=关闭鉴权） [${AUTH_TOKEN}]: " input_auth
-  AUTH_TOKEN="${input_auth:-$AUTH_TOKEN}"
+  read -r -p "AUTH_TOKEN（可选；保护 /admin/*；输入 - 可清空关闭鉴权） [${AUTH_TOKEN}]: " input_auth
+  if [[ "$input_auth" == "-" ]]; then
+    AUTH_TOKEN=""
+  else
+    AUTH_TOKEN="${input_auth:-$AUTH_TOKEN}"
+  fi
 
   while [[ -z "$BOT_TOKEN" ]]; do
     read -r -p "BOT_TOKEN（必填；Telegram 机器人 token） [保持现值请直接回车]: " input_bot
@@ -462,6 +518,18 @@ BOT_NODE_MONITOR_INTERVAL=${BOT_NODE_MONITOR_INTERVAL}
 
 # 节点离线判定阈值秒数
 BOT_NODE_OFFLINE_THRESHOLD=${BOT_NODE_OFFLINE_THRESHOLD}
+
+# 是否信任 X-Forwarded-For（仅受控反代场景建议开启）
+TRUST_X_FORWARDED_FOR=${TRUST_X_FORWARDED_FOR}
+
+# 可信代理 IP 列表（逗号分隔）
+TRUSTED_PROXY_IPS=${TRUSTED_PROXY_IPS}
+
+# 节点任务运行超时秒数（超时后自动重试/标记超时）
+NODE_TASK_RUNNING_TIMEOUT=${NODE_TASK_RUNNING_TIMEOUT}
+
+# 节点任务历史保留秒数（到期自动清理）
+NODE_TASK_RETENTION_SECONDS=${NODE_TASK_RETENTION_SECONDS}
 EOF
   chmod 0600 "$ENV_FILE"
 }
@@ -668,6 +736,17 @@ run_self_checks() {
   check_env_key "PANEL_BASE_URL"
   check_env_key "BOT_TOKEN"
   check_env_key "MIGRATE_DIR"
+  check_env_key "TRUST_X_FORWARDED_FOR"
+  check_env_key "TRUSTED_PROXY_IPS"
+  check_env_key "NODE_TASK_RUNNING_TIMEOUT"
+  check_env_key "NODE_TASK_RETENTION_SECONDS"
+  if [[ -z "$AUTH_TOKEN" ]]; then
+    check_warn "AUTH_TOKEN 为空（/admin/* 不鉴权，建议仅内网或配防火墙来源限制）"
+  elif [[ "$AUTH_TOKEN" == "devtoken123" || ${#AUTH_TOKEN} -lt 16 ]]; then
+    check_warn "AUTH_TOKEN 强度较弱，建议更新为 16 位以上随机串"
+  else
+    check_ok "AUTH_TOKEN 已设置且强度正常"
+  fi
 
   if systemctl is-enabled sb-controller >/dev/null 2>&1; then
     check_ok "sb-controller 已设为开机启动"
@@ -772,6 +851,9 @@ show_summary() {
   echo "BOT_MENU_TTL: ${BOT_MENU_TTL}"
   echo "BOT_NODE_MONITOR_INTERVAL: ${BOT_NODE_MONITOR_INTERVAL}"
   echo "BOT_NODE_OFFLINE_THRESHOLD: ${BOT_NODE_OFFLINE_THRESHOLD}"
+  echo "TRUST_X_FORWARDED_FOR: ${TRUST_X_FORWARDED_FOR}"
+  echo "NODE_TASK_RUNNING_TIMEOUT: ${NODE_TASK_RUNNING_TIMEOUT}"
+  echo "NODE_TASK_RETENTION_SECONDS: ${NODE_TASK_RETENTION_SECONDS}"
   echo ""
   echo "快捷查看："
   echo "  systemctl status sb-controller"

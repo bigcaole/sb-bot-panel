@@ -1338,6 +1338,8 @@ def format_node_tasks_text(node_code: str, tasks: list) -> str:
         task_id = int(item.get("id", 0) or 0)
         task_type = str(item.get("task_type", ""))
         status_text = str(item.get("status", ""))
+        attempts = int(item.get("attempts", 0) or 0)
+        max_attempts = int(item.get("max_attempts", 1) or 1)
         updated_at = int(item.get("updated_at", 0) or 0)
         updated_text = (
             datetime.fromtimestamp(updated_at).strftime("%Y-%m-%d %H:%M:%S")
@@ -1346,7 +1348,8 @@ def format_node_tasks_text(node_code: str, tasks: list) -> str:
         )
         result_text = truncate_task_result_text(item.get("result_text", ""))
         lines.append(
-            f"#{task_id} | {task_type} | {status_text} | {updated_text}\n结果：{result_text}"
+            f"#{task_id} | {task_type} | {status_text} | 尝试 {attempts}/{max_attempts} | {updated_text}\n"
+            f"结果：{result_text}"
         )
     return "\n\n".join(lines[:11])
 
@@ -1517,10 +1520,17 @@ async def render_node_reality_setup(query, node_code: str) -> None:
     )
 
 
-async def create_node_task(node_code: str, task_type: str, payload: dict = None) -> tuple:
+async def create_node_task(
+    node_code: str,
+    task_type: str,
+    payload: dict = None,
+    max_attempts: int = 1,
+) -> tuple:
     request_payload = {"task_type": task_type}
     if isinstance(payload, dict):
         request_payload["payload"] = payload
+    if max_attempts >= 1:
+        request_payload["max_attempts"] = int(max_attempts)
     result, error_message, status_code = await controller_request(
         "POST", f"/nodes/{node_code}/tasks/create", payload=request_payload
     )
@@ -1594,12 +1604,12 @@ async def render_node_ops_tasks(query, node_code: str, notice: str = "") -> None
 
 async def run_node_ops_action(query, node_code: str, action_key: str) -> None:
     task_mapping = {
-        "restart": ("restart_singbox", None, "已下发“重启 sing-box”任务"),
-        "status_sb": ("status_singbox", None, "已下发“查看 sing-box 状态”任务"),
-        "status_ag": ("status_agent", None, "已下发“查看 sb-agent 状态”任务"),
-        "logs_sb": ("logs_singbox", {"lines": 120}, "已下发“查看 sing-box 日志”任务"),
-        "logs_ag": ("logs_agent", {"lines": 120}, "已下发“查看 sb-agent 日志”任务"),
-        "update": ("update_sync", None, "已下发“节点同步更新”任务"),
+        "restart": ("restart_singbox", None, 2, "已下发“重启 sing-box”任务"),
+        "status_sb": ("status_singbox", None, 1, "已下发“查看 sing-box 状态”任务"),
+        "status_ag": ("status_agent", None, 1, "已下发“查看 sb-agent 状态”任务"),
+        "logs_sb": ("logs_singbox", {"lines": 120}, 1, "已下发“查看 sing-box 日志”任务"),
+        "logs_ag": ("logs_agent", {"lines": 120}, 1, "已下发“查看 sb-agent 日志”任务"),
+        "update": ("update_sync", None, 2, "已下发“节点同步更新”任务"),
     }
     if action_key not in task_mapping:
         await query.edit_message_text(
@@ -1607,8 +1617,10 @@ async def run_node_ops_action(query, node_code: str, action_key: str) -> None:
             reply_markup=build_back_keyboard(f"nodeops:panel:{node_code}"),
         )
         return
-    task_type, payload, action_text = task_mapping[action_key]
-    result, error_message, status_code = await create_node_task(node_code, task_type, payload)
+    task_type, payload, max_attempts, action_text = task_mapping[action_key]
+    result, error_message, status_code = await create_node_task(
+        node_code, task_type, payload, max_attempts=max_attempts
+    )
     if error_message:
         localized = localize_controller_error(error_message)
         if status_code == 404 and localized == "节点不存在":
@@ -2042,6 +2054,7 @@ async def node_ops_config_input(
         node_code=node_code,
         task_type="config_set",
         payload=updates,
+        max_attempts=2,
     )
     context.user_data.pop(NODE_OPS_CONFIG_KEY, None)
     if error_message:

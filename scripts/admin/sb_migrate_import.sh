@@ -20,6 +20,10 @@ ADMIN_CHAT_IDS=""
 BOT_MENU_TTL="60"
 BOT_NODE_MONITOR_INTERVAL="60"
 BOT_NODE_OFFLINE_THRESHOLD="120"
+TRUST_X_FORWARDED_FOR="0"
+TRUSTED_PROXY_IPS="127.0.0.1,::1"
+NODE_TASK_RUNNING_TIMEOUT="120"
+NODE_TASK_RETENTION_SECONDS="604800"
 NON_INTERACTIVE="0"
 PACKAGE_PATH=""
 
@@ -69,6 +73,31 @@ get_env_value() {
   fi
 }
 
+has_env_key() {
+  local key="$1"
+  if [[ ! -f "$ENV_FILE" ]]; then
+    return 1
+  fi
+  grep -qE "^${key}=" "$ENV_FILE"
+}
+
+generate_auth_token() {
+  local token
+  token=""
+  if command -v openssl >/dev/null 2>&1; then
+    token="$(openssl rand -hex 24 2>/dev/null || true)"
+  fi
+  if [[ -z "$token" ]]; then
+    token="$( (cat /proc/sys/kernel/random/uuid 2>/dev/null || true) | tr -d '-' )"
+    token="${token}$(date +%s)"
+    token="${token:0:40}"
+  fi
+  if [[ -z "$token" ]]; then
+    token="token$(date +%s)"
+  fi
+  echo "$token"
+}
+
 write_env_file() {
   cat >"$ENV_FILE" <<EOF
 # 给 bot 调用 controller 的地址
@@ -112,6 +141,18 @@ BOT_NODE_MONITOR_INTERVAL=${BOT_NODE_MONITOR_INTERVAL}
 
 # 节点离线判定阈值秒数
 BOT_NODE_OFFLINE_THRESHOLD=${BOT_NODE_OFFLINE_THRESHOLD}
+
+# 是否信任 X-Forwarded-For（仅受控反代场景建议开启）
+TRUST_X_FORWARDED_FOR=${TRUST_X_FORWARDED_FOR}
+
+# 可信代理 IP 列表（逗号分隔）
+TRUSTED_PROXY_IPS=${TRUSTED_PROXY_IPS}
+
+# 节点任务运行超时秒数（超时后自动重试/标记超时）
+NODE_TASK_RUNNING_TIMEOUT=${NODE_TASK_RUNNING_TIMEOUT}
+
+# 节点任务历史保留秒数（到期自动清理）
+NODE_TASK_RETENTION_SECONDS=${NODE_TASK_RETENTION_SECONDS}
 EOF
   chmod 0600 "$ENV_FILE"
 }
@@ -380,7 +421,11 @@ main() {
   HTTPS_DOMAIN="$(sanitize_domain_input "$HTTPS_DOMAIN")"
   HTTPS_ACME_EMAIL="$(get_env_value HTTPS_ACME_EMAIL)"
   AUTH_TOKEN="$(get_env_value AUTH_TOKEN)"
-  AUTH_TOKEN="${AUTH_TOKEN:-devtoken123}"
+  if has_env_key "AUTH_TOKEN"; then
+    AUTH_TOKEN="${AUTH_TOKEN:-}"
+  else
+    AUTH_TOKEN="$(generate_auth_token)"
+  fi
   BOT_TOKEN="$(get_env_value BOT_TOKEN)"
   ADMIN_CHAT_IDS="$(get_env_value ADMIN_CHAT_IDS)"
   MIGRATE_DIR="$(get_env_value MIGRATE_DIR)"
@@ -391,6 +436,14 @@ main() {
   BOT_NODE_MONITOR_INTERVAL="${BOT_NODE_MONITOR_INTERVAL:-60}"
   BOT_NODE_OFFLINE_THRESHOLD="$(get_env_value BOT_NODE_OFFLINE_THRESHOLD)"
   BOT_NODE_OFFLINE_THRESHOLD="${BOT_NODE_OFFLINE_THRESHOLD:-120}"
+  TRUST_X_FORWARDED_FOR="$(get_env_value TRUST_X_FORWARDED_FOR)"
+  TRUST_X_FORWARDED_FOR="${TRUST_X_FORWARDED_FOR:-0}"
+  TRUSTED_PROXY_IPS="$(get_env_value TRUSTED_PROXY_IPS)"
+  TRUSTED_PROXY_IPS="${TRUSTED_PROXY_IPS:-127.0.0.1,::1}"
+  NODE_TASK_RUNNING_TIMEOUT="$(get_env_value NODE_TASK_RUNNING_TIMEOUT)"
+  NODE_TASK_RUNNING_TIMEOUT="${NODE_TASK_RUNNING_TIMEOUT:-120}"
+  NODE_TASK_RETENTION_SECONDS="$(get_env_value NODE_TASK_RETENTION_SECONDS)"
+  NODE_TASK_RETENTION_SECONDS="${NODE_TASK_RETENTION_SECONDS:-604800}"
 
   local public_ip
   public_ip="$(detect_public_ip)"
