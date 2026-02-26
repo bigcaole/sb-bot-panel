@@ -24,6 +24,16 @@ TUIC_TC_STATE_PATH = "/etc/sb-agent/tuic_tc_state.json"
 TUIC_UFW_STATE_PATH = "/etc/sb-agent/tuic_ufw_state.json"
 
 DEFAULT_POLL_INTERVAL = 15
+DEFAULT_RUN_COMMAND_TIMEOUT = 30
+
+try:
+    RUN_COMMAND_TIMEOUT_SECONDS = int(
+        str(os.getenv("SB_AGENT_CMD_TIMEOUT", str(DEFAULT_RUN_COMMAND_TIMEOUT))).strip()
+    )
+except ValueError:
+    RUN_COMMAND_TIMEOUT_SECONDS = DEFAULT_RUN_COMMAND_TIMEOUT
+if RUN_COMMAND_TIMEOUT_SECONDS < 5:
+    RUN_COMMAND_TIMEOUT_SECONDS = 5
 
 _STOP = False
 
@@ -250,8 +260,11 @@ def run_command(command: List[str]) -> Tuple[int, str, str]:
             capture_output=True,
             text=True,
             check=False,
+            timeout=RUN_COMMAND_TIMEOUT_SECONDS,
         )
         return result.returncode, result.stdout or "", result.stderr or ""
+    except subprocess.TimeoutExpired:
+        return 124, "", "command timeout ({0}s)".format(RUN_COMMAND_TIMEOUT_SECONDS)
     except Exception as exc:
         return 1, "", str(exc)
 

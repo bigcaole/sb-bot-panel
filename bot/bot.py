@@ -245,6 +245,65 @@ def parse_chat_id_list(raw_value: str) -> list:
 
 
 ADMIN_CHAT_ID_LIST = parse_chat_id_list(os.getenv("ADMIN_CHAT_IDS", ""))
+VIEW_ADMIN_CHAT_ID_LIST = parse_chat_id_list(os.getenv("VIEW_ADMIN_CHAT_IDS", ""))
+OPS_ADMIN_CHAT_ID_LIST = parse_chat_id_list(os.getenv("OPS_ADMIN_CHAT_IDS", ""))
+SUPER_ADMIN_CHAT_ID_LIST = parse_chat_id_list(os.getenv("SUPER_ADMIN_CHAT_IDS", ""))
+
+ROLE_VIEWER = 1
+ROLE_OPERATOR = 2
+ROLE_SUPER = 3
+
+ROLE_SPLIT_ENABLED = bool(
+    VIEW_ADMIN_CHAT_ID_LIST or OPS_ADMIN_CHAT_ID_LIST or SUPER_ADMIN_CHAT_ID_LIST
+)
+SUPER_ADMIN_CHAT_ID_SET = set(ADMIN_CHAT_ID_LIST)
+SUPER_ADMIN_CHAT_ID_SET.update(SUPER_ADMIN_CHAT_ID_LIST)
+OPS_ADMIN_CHAT_ID_SET = set(OPS_ADMIN_CHAT_ID_LIST)
+OPS_ADMIN_CHAT_ID_SET.update(SUPER_ADMIN_CHAT_ID_SET)
+VIEW_ADMIN_CHAT_ID_SET = set(VIEW_ADMIN_CHAT_ID_LIST)
+VIEW_ADMIN_CHAT_ID_SET.update(OPS_ADMIN_CHAT_ID_SET)
+
+PRIVILEGED_CALLBACK_EXACT = {
+    "action:user_create": ROLE_OPERATOR,
+    "action:user_toggle": ROLE_OPERATOR,
+    "action:user_speed": ROLE_OPERATOR,
+    "action:user_nodes": ROLE_OPERATOR,
+    "action:speed_switch": ROLE_OPERATOR,
+    "action:backup_now": ROLE_OPERATOR,
+    "action:nodes_create": ROLE_OPERATOR,
+    "action:maintain_backup": ROLE_OPERATOR,
+    "action:maintain_smoke": ROLE_OPERATOR,
+    "action:maintain_controller_start": ROLE_OPERATOR,
+    "action:maintain_https_reload": ROLE_OPERATOR,
+    "action:user_delete": ROLE_SUPER,
+    "action:node_ops": ROLE_SUPER,
+    "action:maintain_update": ROLE_SUPER,
+    "action:maintain_config": ROLE_SUPER,
+    "action:maintain_controller_stop": ROLE_SUPER,
+    "action:maintain_migrate_export": ROLE_SUPER,
+    "action:maintain_migrate_import": ROLE_SUPER,
+    "usernodes:manual_input": ROLE_OPERATOR,
+    "wizard:create_confirm": ROLE_OPERATOR,
+    "wizard:nodes_create_confirm": ROLE_OPERATOR,
+}
+
+PRIVILEGED_CALLBACK_PREFIXES = {
+    "userdelete:": ROLE_SUPER,
+    "usertoggle:": ROLE_OPERATOR,
+    "userspeed:": ROLE_OPERATOR,
+    "usernodes:": ROLE_OPERATOR,
+    "node:toggle:": ROLE_OPERATOR,
+    "node:monitor_toggle:": ROLE_OPERATOR,
+    "node:delete_confirm:": ROLE_SUPER,
+    "node:delete:": ROLE_SUPER,
+    "node:edit_": ROLE_OPERATOR,
+    "node:apply_edit:": ROLE_OPERATOR,
+    "node:reality_paste:": ROLE_OPERATOR,
+    "node:reality_apply:": ROLE_OPERATOR,
+    "nodeops:": ROLE_SUPER,
+    "maintain:logs:": ROLE_OPERATOR,
+    "maintain:logsdate:": ROLE_OPERATOR,
+}
 MAINTAIN_ALLOWED_ENV_KEYS = [
     "CONTROLLER_PORT",
     "CONTROLLER_URL",
@@ -253,6 +312,9 @@ MAINTAIN_ALLOWED_ENV_KEYS = [
     "AUTH_TOKEN",
     "BOT_TOKEN",
     "ADMIN_CHAT_IDS",
+    "VIEW_ADMIN_CHAT_IDS",
+    "OPS_ADMIN_CHAT_IDS",
+    "SUPER_ADMIN_CHAT_IDS",
     "ENABLE_HTTPS",
     "HTTPS_DOMAIN",
     "HTTPS_ACME_EMAIL",
@@ -535,18 +597,61 @@ def build_node_ops_task_list_keyboard(node_code: str) -> InlineKeyboardMarkup:
 
 
 def is_admin_chat(update: Update) -> bool:
-    if not ADMIN_CHAT_ID_LIST:
-        return True
+    return get_chat_role_level(update) >= ROLE_VIEWER
+
+
+def get_chat_role_level(update: Update) -> int:
     chat = update.effective_chat
     if not chat:
-        return False
-    return int(chat.id) in ADMIN_CHAT_ID_LIST
+        return 0
+    chat_id = int(chat.id)
+
+    # 兼容旧行为：未配置任何管理员列表时默认不限制。
+    if (
+        not ROLE_SPLIT_ENABLED
+        and not ADMIN_CHAT_ID_LIST
+        and not VIEW_ADMIN_CHAT_ID_LIST
+        and not OPS_ADMIN_CHAT_ID_LIST
+        and not SUPER_ADMIN_CHAT_ID_LIST
+    ):
+        return ROLE_SUPER
+
+    if chat_id in SUPER_ADMIN_CHAT_ID_SET:
+        return ROLE_SUPER
+    if chat_id in OPS_ADMIN_CHAT_ID_SET:
+        return ROLE_OPERATOR
+    if chat_id in VIEW_ADMIN_CHAT_ID_SET:
+        return ROLE_VIEWER
+    return 0
+
+
+def role_name(role_level: int) -> str:
+    if role_level >= ROLE_SUPER:
+        return "超级管理员"
+    if role_level >= ROLE_OPERATOR:
+        return "运维管理员"
+    if role_level >= ROLE_VIEWER:
+        return "只读管理员"
+    return "未授权"
+
+
+def get_required_role_for_callback(callback_data: str) -> int:
+    if callback_data in PRIVILEGED_CALLBACK_EXACT:
+        return int(PRIVILEGED_CALLBACK_EXACT[callback_data])
+    for prefix, level in PRIVILEGED_CALLBACK_PREFIXES.items():
+        if callback_data.startswith(prefix):
+            return int(level)
+
+    if callback_data == "wizard:cancel":
+        return ROLE_OPERATOR
+    return ROLE_VIEWER
 
 
 def get_no_permission_text() -> str:
     return (
         "当前账号无权限使用管理功能。\n"
-        "请联系管理员将你的 chat_id 加入 ADMIN_CHAT_IDS。\n"
+        "请联系管理员将你的 chat_id 加入 "
+        "VIEW_ADMIN_CHAT_IDS / OPS_ADMIN_CHAT_IDS / SUPER_ADMIN_CHAT_IDS。\n"
         "可先发送 /whoami 获取自己的 chat_id。"
     )
 
@@ -563,13 +668,36 @@ async def deny_non_admin(update: Update) -> None:
         await update.message.reply_text(get_no_permission_text())
 
 
-async def ensure_admin_callback(update: Update) -> bool:
+async def deny_insufficient_role(update: Update, required_level: int) -> None:
+    required = role_name(required_level)
+    query = update.callback_query
+    if query:
+        try:
+            await query.answer("权限不足，需要：{0}".format(required), show_alert=True)
+        except BadRequest:
+            pass
+        return
+    if update.message:
+        current = role_name(get_chat_role_level(update))
+        await update.message.reply_text(
+            "当前权限不足。\n"
+            "当前角色：{0}\n"
+            "所需角色：{1}\n"
+            "请联系超级管理员调整权限。".format(current, required)
+        )
+
+
+async def ensure_admin_callback(update: Update, required_level: int = ROLE_VIEWER) -> bool:
     query = update.callback_query
     if not query:
         return False
-    if is_admin_chat(update):
+    current_level = get_chat_role_level(update)
+    if current_level >= required_level:
         return True
-    await deny_non_admin(update)
+    if current_level <= 0:
+        await deny_non_admin(update)
+        return False
+    await deny_insufficient_role(update, required_level)
     return False
 
 
@@ -695,6 +823,8 @@ def remember_known_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 def get_monitor_target_chat_ids(context: ContextTypes.DEFAULT_TYPE) -> list:
+    if VIEW_ADMIN_CHAT_ID_SET:
+        return sorted(list(VIEW_ADMIN_CHAT_ID_SET))
     if ADMIN_CHAT_ID_LIST:
         return list(dict.fromkeys(ADMIN_CHAT_ID_LIST))
     known_ids = context.application.bot_data.get(KNOWN_CHAT_IDS_KEY, set())
@@ -1188,6 +1318,11 @@ def localize_controller_error(error_message: str) -> str:
         "Node not found": "节点不存在",
         "Task not found": "任务不存在",
         "unsupported task_type": "不支持的任务类型",
+        "payload not allowed for task_type": "该任务不接受自定义参数",
+        "unsupported payload keys": "任务参数包含不支持的字段",
+        "config_set payload required": "配置任务参数不能为空",
+        "payload too large (max 2048 bytes)": "任务参数过大（超过限制）",
+        "lines must be 20-300": "日志行数必须在 20-300 之间",
         "Node is disabled": "节点已禁用",
         "User already assigned to this node": "该用户已绑定该节点",
         "No available TUIC port in node pool": "该节点端口池已满，暂无可用TUIC端口",
@@ -2414,7 +2549,7 @@ async def start_node_ops_config_wizard(
     query = update.callback_query
     if not query:
         return ConversationHandler.END
-    if not await ensure_admin_callback(update):
+    if not await ensure_admin_callback(update, ROLE_SUPER):
         return ConversationHandler.END
     await query.answer()
 
@@ -2548,7 +2683,7 @@ async def start_maintain_config_wizard(
     query = update.callback_query
     if not query:
         return ConversationHandler.END
-    if not await ensure_admin_callback(update):
+    if not await ensure_admin_callback(update, ROLE_SUPER):
         return ConversationHandler.END
     await query.answer()
 
@@ -2699,7 +2834,7 @@ async def start_maintain_import_wizard(
     query = update.callback_query
     if not query:
         return ConversationHandler.END
-    if not await ensure_admin_callback(update):
+    if not await ensure_admin_callback(update, ROLE_SUPER):
         return ConversationHandler.END
     await query.answer()
     await query.edit_message_text(
@@ -2917,8 +3052,9 @@ async def configure_command_menu(application: Application) -> None:
 
     try:
         await application.bot.set_my_commands(public_commands)
-        if ADMIN_CHAT_ID_LIST:
-            for chat_id in ADMIN_CHAT_ID_LIST:
+        scoped_admin_ids = sorted(VIEW_ADMIN_CHAT_ID_SET)
+        if scoped_admin_ids:
+            for chat_id in scoped_admin_ids:
                 await application.bot.set_my_commands(
                     admin_commands,
                     scope=BotCommandScopeChat(chat_id=chat_id),
@@ -2935,7 +3071,7 @@ async def start_create_user_wizard(
     query = update.callback_query
     if not query:
         return ConversationHandler.END
-    if not await ensure_admin_callback(update):
+    if not await ensure_admin_callback(update, ROLE_OPERATOR):
         return ConversationHandler.END
 
     await query.answer()
@@ -3048,6 +3184,8 @@ async def create_user_confirm(
     query = update.callback_query
     if not query:
         return CREATE_CONFIRM
+    if not await ensure_admin_callback(update, ROLE_OPERATOR):
+        return ConversationHandler.END
 
     await query.answer()
     callback_data = query.data or ""
@@ -3153,7 +3291,7 @@ async def start_nodes_create_wizard(
     query = update.callback_query
     if not query:
         return ConversationHandler.END
-    if not await ensure_admin_callback(update):
+    if not await ensure_admin_callback(update, ROLE_OPERATOR):
         return ConversationHandler.END
 
     await query.answer()
@@ -3335,6 +3473,8 @@ async def nodes_create_confirm(
     query = update.callback_query
     if not query:
         return NODE_CREATE_CONFIRM
+    if not await ensure_admin_callback(update, ROLE_OPERATOR):
+        return ConversationHandler.END
 
     await query.answer()
     callback_data = query.data or ""
@@ -3454,7 +3594,7 @@ async def start_user_nodes_wizard(
     query = update.callback_query
     if not query:
         return ConversationHandler.END
-    if not await ensure_admin_callback(update):
+    if not await ensure_admin_callback(update, ROLE_OPERATOR):
         return ConversationHandler.END
 
     await query.answer()
@@ -3473,7 +3613,7 @@ async def start_user_nodes_manual_input(
     query = update.callback_query
     if not query:
         return ConversationHandler.END
-    if not await ensure_admin_callback(update):
+    if not await ensure_admin_callback(update, ROLE_OPERATOR):
         return ConversationHandler.END
 
     await query.answer()
@@ -3522,7 +3662,7 @@ async def start_user_speed_wizard(
     query = update.callback_query
     if not query:
         return ConversationHandler.END
-    if not await ensure_admin_callback(update):
+    if not await ensure_admin_callback(update, ROLE_OPERATOR):
         return ConversationHandler.END
 
     await query.answer()
@@ -3541,7 +3681,7 @@ async def start_user_speed_input(
     query = update.callback_query
     if not query:
         return ConversationHandler.END
-    if not await ensure_admin_callback(update):
+    if not await ensure_admin_callback(update, ROLE_OPERATOR):
         return ConversationHandler.END
 
     await query.answer()
@@ -3645,6 +3785,8 @@ async def apply_user_speed_callback(
     query = update.callback_query
     if not query:
         return ConversationHandler.END
+    if not await ensure_admin_callback(update, ROLE_OPERATOR):
+        return ConversationHandler.END
 
     await query.answer()
     callback_data = query.data or ""
@@ -3726,7 +3868,7 @@ async def start_node_edit_host(
     query = update.callback_query
     if not query:
         return ConversationHandler.END
-    if not await ensure_admin_callback(update):
+    if not await ensure_admin_callback(update, ROLE_OPERATOR):
         return ConversationHandler.END
     await query.answer()
     callback_data = query.data or ""
@@ -3744,7 +3886,7 @@ async def start_node_edit_agent_ip(
     query = update.callback_query
     if not query:
         return ConversationHandler.END
-    if not await ensure_admin_callback(update):
+    if not await ensure_admin_callback(update, ROLE_OPERATOR):
         return ConversationHandler.END
     await query.answer()
     callback_data = query.data or ""
@@ -3764,7 +3906,7 @@ async def start_node_edit_sni(
     query = update.callback_query
     if not query:
         return ConversationHandler.END
-    if not await ensure_admin_callback(update):
+    if not await ensure_admin_callback(update, ROLE_OPERATOR):
         return ConversationHandler.END
     await query.answer()
     callback_data = query.data or ""
@@ -3782,7 +3924,7 @@ async def start_node_edit_pool(
     query = update.callback_query
     if not query:
         return ConversationHandler.END
-    if not await ensure_admin_callback(update):
+    if not await ensure_admin_callback(update, ROLE_OPERATOR):
         return ConversationHandler.END
     await query.answer()
     callback_data = query.data or ""
@@ -3800,7 +3942,7 @@ async def start_node_edit_tuic_sni(
     query = update.callback_query
     if not query:
         return ConversationHandler.END
-    if not await ensure_admin_callback(update):
+    if not await ensure_admin_callback(update, ROLE_OPERATOR):
         return ConversationHandler.END
     await query.answer()
     callback_data = query.data or ""
@@ -4072,6 +4214,8 @@ async def apply_node_edit_callback(
     query = update.callback_query
     if not query:
         return ConversationHandler.END
+    if not await ensure_admin_callback(update, ROLE_OPERATOR):
+        return ConversationHandler.END
     await query.answer()
 
     callback_data = query.data or ""
@@ -4158,7 +4302,7 @@ async def start_node_reality_paste(
     query = update.callback_query
     if not query:
         return ConversationHandler.END
-    if not await ensure_admin_callback(update):
+    if not await ensure_admin_callback(update, ROLE_OPERATOR):
         return ConversationHandler.END
     await query.answer()
 
@@ -4269,6 +4413,8 @@ async def apply_node_reality_callback(
     query = update.callback_query
     if not query:
         return ConversationHandler.END
+    if not await ensure_admin_callback(update, ROLE_OPERATOR):
+        return ConversationHandler.END
     await query.answer()
 
     callback_data = query.data or ""
@@ -4358,6 +4504,15 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     callback_data = query.data or ""
     user = query.from_user.username or query.from_user.id
     logger.info("button_click user=%s data=%s", user, callback_data)
+
+    required_role = get_required_role_for_callback(callback_data)
+    current_role = get_chat_role_level(update)
+    if current_role < required_role:
+        if current_role <= 0:
+            await deny_non_admin(update)
+        else:
+            await deny_insufficient_role(update, required_role)
+        return
 
     if callback_data.startswith("maintain:logsdate:"):
         now_ts = time.time()

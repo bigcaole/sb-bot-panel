@@ -18,6 +18,9 @@ HTTPS_ACME_EMAIL=""
 AUTH_TOKEN=""
 BOT_TOKEN=""
 ADMIN_CHAT_IDS=""
+VIEW_ADMIN_CHAT_IDS=""
+OPS_ADMIN_CHAT_IDS=""
+SUPER_ADMIN_CHAT_IDS=""
 BACKUP_RETENTION_COUNT="30"
 MIGRATE_RETENTION_COUNT="20"
 BOT_MENU_TTL="60"
@@ -140,6 +143,12 @@ BOT_TOKEN=${BOT_TOKEN}
 
 # 管理员 chat id，逗号分隔，可空
 ADMIN_CHAT_IDS=${ADMIN_CHAT_IDS}
+
+VIEW_ADMIN_CHAT_IDS=${VIEW_ADMIN_CHAT_IDS}
+
+OPS_ADMIN_CHAT_IDS=${OPS_ADMIN_CHAT_IDS}
+
+SUPER_ADMIN_CHAT_IDS=${SUPER_ADMIN_CHAT_IDS}
 
 # 迁移包目录
 MIGRATE_DIR=${MIGRATE_DIR}
@@ -527,6 +536,9 @@ main() {
   fi
   BOT_TOKEN="$(get_env_value BOT_TOKEN)"
   ADMIN_CHAT_IDS="$(get_env_value ADMIN_CHAT_IDS)"
+  VIEW_ADMIN_CHAT_IDS="$(get_env_value VIEW_ADMIN_CHAT_IDS)"
+  OPS_ADMIN_CHAT_IDS="$(get_env_value OPS_ADMIN_CHAT_IDS)"
+  SUPER_ADMIN_CHAT_IDS="$(get_env_value SUPER_ADMIN_CHAT_IDS)"
   MIGRATE_DIR="$(get_env_value MIGRATE_DIR)"
   MIGRATE_DIR="${MIGRATE_DIR:-$MIGRATE_DIR_DEFAULT}"
   BACKUP_RETENTION_COUNT="$(get_env_value BACKUP_RETENTION_COUNT)"
@@ -592,6 +604,12 @@ main() {
 
     read -r -p "ADMIN_CHAT_IDS [${ADMIN_CHAT_IDS}]: " input_admin
     ADMIN_CHAT_IDS="${input_admin:-$ADMIN_CHAT_IDS}"
+    read -r -p "VIEW_ADMIN_CHAT_IDS [${VIEW_ADMIN_CHAT_IDS}]: " input_view_admin
+    VIEW_ADMIN_CHAT_IDS="${input_view_admin:-$VIEW_ADMIN_CHAT_IDS}"
+    read -r -p "OPS_ADMIN_CHAT_IDS [${OPS_ADMIN_CHAT_IDS}]: " input_ops_admin
+    OPS_ADMIN_CHAT_IDS="${input_ops_admin:-$OPS_ADMIN_CHAT_IDS}"
+    read -r -p "SUPER_ADMIN_CHAT_IDS [${SUPER_ADMIN_CHAT_IDS}]: " input_super_admin
+    SUPER_ADMIN_CHAT_IDS="${input_super_admin:-$SUPER_ADMIN_CHAT_IDS}"
 
     read -r -p "ENABLE_HTTPS（1=启用 caddy 自动证书，0=关闭） [${ENABLE_HTTPS}]: " input_https_switch
     ENABLE_HTTPS="${input_https_switch:-$ENABLE_HTTPS}"

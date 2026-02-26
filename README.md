@@ -361,6 +361,9 @@ scp root@旧IP:/var/backups/sb-migrate/sb-migrate-xxxx.tar.gz root@新IP:/root/
 - `API_RATE_LIMIT_MAX_REQUESTS=120`（可选；单个 IP+路径窗口内请求上限）
 - `BOT_TOKEN=xxxxxxxx`（必填）
 - `ADMIN_CHAT_IDS=123,456`（可空）
+- `VIEW_ADMIN_CHAT_IDS=`（可选，只读管理员）
+- `OPS_ADMIN_CHAT_IDS=`（可选，运维管理员）
+- `SUPER_ADMIN_CHAT_IDS=`（可选，超级管理员）
 - `MIGRATE_DIR=/var/backups/sb-migrate`
 - `BACKUP_RETENTION_COUNT=30`（可选，控制器备份保留数量）
 - `MIGRATE_RETENTION_COUNT=20`（可选，迁移包保留数量）
@@ -388,7 +391,7 @@ scp root@旧IP:/var/backups/sb-migrate/sb-migrate-xxxx.tar.gz root@新IP:/root/
 建议配置：
 
 - 在管理服务器 `.env` 中设置：
-  - `ADMIN_CHAT_IDS=你的chat_id`
+  - `SUPER_ADMIN_CHAT_IDS=你的chat_id`
   - `BOT_NODE_MONITOR_INTERVAL=60`
   - `BOT_NODE_OFFLINE_THRESHOLD=120`
   - `BOT_LOG_VIEW_COOLDOWN=1`
@@ -405,8 +408,11 @@ scp root@旧IP:/var/backups/sb-migrate/sb-migrate-xxxx.tar.gz root@新IP:/root/
 
 ## 安全提示
 
-- `ADMIN_CHAT_IDS` 为空时，任何 Telegram 账号都可看到并操作管理菜单。
-- 建议生产环境务必填写 `ADMIN_CHAT_IDS`（逗号分隔），仅允许指定 chat_id 使用 bot 管理功能。
+- 若 `ADMIN_CHAT_IDS` 与 `VIEW/OPS/SUPER_ADMIN_CHAT_IDS` 全部为空，任何 Telegram 账号都可使用管理菜单（仅建议测试环境）。
+- 建议生产环境至少配置 `SUPER_ADMIN_CHAT_IDS`；推荐按职责拆分：
+  - `VIEW_ADMIN_CHAT_IDS`：只读
+  - `OPS_ADMIN_CHAT_IDS`：运维写操作
+  - `SUPER_ADMIN_CHAT_IDS`：高危操作（删除/迁移导入/远程运维）
 - Controller API 支持可选 Bearer 鉴权（全局中间件）：
   - `AUTH_TOKEN` 为空：不校验，保持兼容行为
   - `AUTH_TOKEN` 非空：除 `/health`、`/sub/*`、`/docs`、`/openapi.json`、`/redoc` 外其余接口都必须带 `Authorization: Bearer <AUTH_TOKEN>`

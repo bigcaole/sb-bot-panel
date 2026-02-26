@@ -1,6 +1,9 @@
 import json
+import re
 import sqlite3
 from typing import Any, Dict, List, Optional, Union
+
+from fastapi import HTTPException
 
 
 ALLOWED_NODE_TASK_TYPES = {
@@ -12,6 +15,110 @@ ALLOWED_NODE_TASK_TYPES = {
     "update_sync",
     "config_set",
 }
+
+MAX_NODE_TASK_PAYLOAD_BYTES = 2048
+NODE_CONFIG_SET_ALLOWED_KEYS = {
+    "poll_interval",
+    "tuic_domain",
+    "tuic_listen_port",
+    "acme_email",
+    "controller_url",
+    "auth_token",
+    "node_code",
+}
+
+
+def _parse_int_payload(value: Any, field: str) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="{0} must be integer".format(field)) from exc
+
+
+def _parse_text_payload(
+    value: Any,
+    field: str,
+    allow_empty: bool = True,
+    max_length: int = 256,
+) -> str:
+    raw = str(value or "").strip()
+    if not allow_empty and not raw:
+        raise HTTPException(status_code=400, detail="{0} cannot be empty".format(field))
+    if "\n" in raw or "\r" in raw:
+        raise HTTPException(status_code=400, detail="{0} must be single-line".format(field))
+    if len(raw) > max_length:
+        raise HTTPException(
+            status_code=400,
+            detail="{0} too long (max {1})".format(field, max_length),
+        )
+    return raw
+
+
+def validate_node_task_payload(task_type: str, payload_obj: Dict[str, Any]) -> Dict[str, Any]:
+    if task_type in ("restart_singbox", "status_singbox", "status_agent", "update_sync"):
+        if payload_obj:
+            raise HTTPException(status_code=400, detail="payload not allowed for task_type")
+        return {}
+
+    if task_type in ("logs_singbox", "logs_agent"):
+        if not payload_obj:
+            return {"lines": 120}
+        unknown_keys = [key for key in payload_obj.keys() if key != "lines"]
+        if unknown_keys:
+            raise HTTPException(status_code=400, detail="unsupported payload keys")
+        lines = _parse_int_payload(payload_obj.get("lines"), "lines")
+        if lines < 20 or lines > 300:
+            raise HTTPException(status_code=400, detail="lines must be 20-300")
+        return {"lines": lines}
+
+    if task_type == "config_set":
+        if not payload_obj:
+            raise HTTPException(status_code=400, detail="config_set payload required")
+        if len(payload_obj.keys()) > len(NODE_CONFIG_SET_ALLOWED_KEYS):
+            raise HTTPException(status_code=400, detail="too many payload keys")
+        unknown_keys = [
+            key for key in payload_obj.keys() if key not in NODE_CONFIG_SET_ALLOWED_KEYS
+        ]
+        if unknown_keys:
+            raise HTTPException(status_code=400, detail="unsupported payload keys")
+
+        sanitized: Dict[str, Any] = {}
+        for key, value in payload_obj.items():
+            if key == "poll_interval":
+                parsed = _parse_int_payload(value, key)
+                if parsed < 5 or parsed > 3600:
+                    raise HTTPException(status_code=400, detail="poll_interval must be 5-3600")
+                sanitized[key] = parsed
+            elif key == "tuic_listen_port":
+                parsed = _parse_int_payload(value, key)
+                if parsed < 1 or parsed > 65535:
+                    raise HTTPException(status_code=400, detail="tuic_listen_port must be 1-65535")
+                sanitized[key] = parsed
+            elif key == "controller_url":
+                text = _parse_text_payload(value, key, allow_empty=False, max_length=512)
+                if not re.match(r"^https?://", text):
+                    text = "http://{0}".format(text)
+                sanitized[key] = text.rstrip("/")
+            elif key == "node_code":
+                sanitized[key] = _parse_text_payload(value, key, allow_empty=False, max_length=64)
+            elif key == "auth_token":
+                sanitized[key] = _parse_text_payload(value, key, allow_empty=True, max_length=256)
+            elif key in ("tuic_domain", "acme_email"):
+                sanitized[key] = _parse_text_payload(value, key, allow_empty=True, max_length=256)
+        if not sanitized:
+            raise HTTPException(status_code=400, detail="config_set payload required")
+        return sanitized
+
+    raise HTTPException(status_code=400, detail="unsupported task_type")
+
+
+def validate_node_task_payload_size(payload_json: str) -> None:
+    size = len(str(payload_json or "").encode("utf-8"))
+    if size > MAX_NODE_TASK_PAYLOAD_BYTES:
+        raise HTTPException(
+            status_code=400,
+            detail="payload too large (max {0} bytes)".format(MAX_NODE_TASK_PAYLOAD_BYTES),
+        )
 
 
 def parse_task_payload(payload_json: Optional[str]) -> Dict[str, Any]:

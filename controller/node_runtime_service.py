@@ -11,6 +11,8 @@ from controller.node_tasks import (
     append_task_result,
     build_task_row_dict,
     run_node_task_housekeeping,
+    validate_node_task_payload,
+    validate_node_task_payload_size,
 )
 from controller.schemas import CreateNodeTaskRequest, ReportNodeTaskRequest
 from controller.security import verify_node_agent_ip
@@ -26,8 +28,10 @@ def create_node_task_service(
     task_type = str(payload.task_type or "").strip()
     if task_type not in ALLOWED_NODE_TASK_TYPES:
         raise HTTPException(status_code=400, detail="unsupported task_type")
-    payload_obj = payload.payload if isinstance(payload.payload, dict) else {}
+    raw_payload_obj = payload.payload if isinstance(payload.payload, dict) else {}
+    payload_obj = validate_node_task_payload(task_type, raw_payload_obj)
     payload_json = json.dumps(payload_obj, ensure_ascii=False)
+    validate_node_task_payload_size(payload_json)
     max_attempts = int(payload.max_attempts or 1)
     if max_attempts < 1:
         max_attempts = 1
@@ -76,6 +80,8 @@ def create_node_task_service(
                 "node_code": node_code,
                 "task_type": task_type,
                 "max_attempts": max_attempts,
+                "payload_keys": sorted(list(payload_obj.keys())),
+                "payload_size_bytes": len(payload_json.encode("utf-8")),
             },
             actor=get_request_actor(request),
             source_ip=get_source_ip_for_audit(request),

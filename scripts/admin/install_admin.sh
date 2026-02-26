@@ -36,6 +36,9 @@ HTTPS_ACME_EMAIL=""
 AUTH_TOKEN=""
 BOT_TOKEN=""
 ADMIN_CHAT_IDS=""
+VIEW_ADMIN_CHAT_IDS=""
+OPS_ADMIN_CHAT_IDS=""
+SUPER_ADMIN_CHAT_IDS=""
 MIGRATE_DIR="$MIGRATE_DIR_DEFAULT"
 BACKUP_RETENTION_COUNT="30"
 MIGRATE_RETENTION_COUNT="20"
@@ -314,7 +317,7 @@ has_env_key() {
 }
 
 load_existing_env_defaults() {
-  local old_port old_url old_public_url old_panel_base old_enable_https old_https_domain old_https_email old_auth old_bot old_admin old_migrate old_backup_retention old_migrate_retention old_menu_ttl old_monitor_interval old_offline_threshold old_trust_xff old_trusted_proxy_ips old_task_timeout old_task_retention old_sub_link_sign_key old_sub_link_require old_sub_link_ttl old_rate_limit_enabled old_rate_limit_window old_rate_limit_max old_controller_http_timeout old_bot_actor_label
+  local old_port old_url old_public_url old_panel_base old_enable_https old_https_domain old_https_email old_auth old_bot old_admin old_view_admin old_ops_admin old_super_admin old_migrate old_backup_retention old_migrate_retention old_menu_ttl old_monitor_interval old_offline_threshold old_trust_xff old_trusted_proxy_ips old_task_timeout old_task_retention old_sub_link_sign_key old_sub_link_require old_sub_link_ttl old_rate_limit_enabled old_rate_limit_window old_rate_limit_max old_controller_http_timeout old_bot_actor_label
   old_port="$(get_env_value "CONTROLLER_PORT")"
   old_url="$(get_env_value "CONTROLLER_URL")"
   old_public_url="$(get_env_value "CONTROLLER_PUBLIC_URL")"
@@ -325,6 +328,9 @@ load_existing_env_defaults() {
   old_auth="$(get_env_value "AUTH_TOKEN")"
   old_bot="$(get_env_value "BOT_TOKEN")"
   old_admin="$(get_env_value "ADMIN_CHAT_IDS")"
+  old_view_admin="$(get_env_value "VIEW_ADMIN_CHAT_IDS")"
+  old_ops_admin="$(get_env_value "OPS_ADMIN_CHAT_IDS")"
+  old_super_admin="$(get_env_value "SUPER_ADMIN_CHAT_IDS")"
   old_migrate="$(get_env_value "MIGRATE_DIR")"
   old_backup_retention="$(get_env_value "BACKUP_RETENTION_COUNT")"
   old_migrate_retention="$(get_env_value "MIGRATE_RETENTION_COUNT")"
@@ -358,6 +364,9 @@ load_existing_env_defaults() {
   fi
   BOT_TOKEN="${old_bot:-}"
   ADMIN_CHAT_IDS="${old_admin:-}"
+  VIEW_ADMIN_CHAT_IDS="${old_view_admin:-}"
+  OPS_ADMIN_CHAT_IDS="${old_ops_admin:-}"
+  SUPER_ADMIN_CHAT_IDS="${old_super_admin:-}"
   MIGRATE_DIR="${old_migrate:-$MIGRATE_DIR_DEFAULT}"
   BACKUP_RETENTION_COUNT="${old_backup_retention:-30}"
   MIGRATE_RETENTION_COUNT="${old_migrate_retention:-20}"
@@ -460,6 +469,7 @@ prompt_env_config() {
   echo "  - AUTH_TOKEN：可选；用于保护 controller 接口（除 /health、/sub/*、文档页），默认自动生成随机串（输入 - 可关闭）"
   echo "  - BOT_TOKEN：必填；Telegram 机器人 token"
   echo "  - ADMIN_CHAT_IDS：可选；用于限制谁可操作 bot"
+  echo "  - VIEW/OPS/SUPER_ADMIN_CHAT_IDS：可选；细分只读/运维/超级管理员权限"
   echo "  - MIGRATE_DIR：迁移包/备份包输出目录"
   echo "  - BACKUP_RETENTION_COUNT：控制器备份保留数量（超出自动清理）"
   echo "  - MIGRATE_RETENTION_COUNT：迁移包保留数量（超出自动清理）"
@@ -564,6 +574,13 @@ prompt_env_config() {
   read -r -p "ADMIN_CHAT_IDS（可选；逗号分隔，限制谁能操作 bot） [${ADMIN_CHAT_IDS}]: " input_admin
   ADMIN_CHAT_IDS="${input_admin:-$ADMIN_CHAT_IDS}"
 
+  read -r -p "VIEW_ADMIN_CHAT_IDS（可选；只读管理员） [${VIEW_ADMIN_CHAT_IDS}]: " input_view_admin
+  VIEW_ADMIN_CHAT_IDS="${input_view_admin:-$VIEW_ADMIN_CHAT_IDS}"
+  read -r -p "OPS_ADMIN_CHAT_IDS（可选；运维管理员） [${OPS_ADMIN_CHAT_IDS}]: " input_ops_admin
+  OPS_ADMIN_CHAT_IDS="${input_ops_admin:-$OPS_ADMIN_CHAT_IDS}"
+  read -r -p "SUPER_ADMIN_CHAT_IDS（可选；超级管理员） [${SUPER_ADMIN_CHAT_IDS}]: " input_super_admin
+  SUPER_ADMIN_CHAT_IDS="${input_super_admin:-$SUPER_ADMIN_CHAT_IDS}"
+
   read -r -p "MIGRATE_DIR（迁移包/备份包输出目录，直接回车使用默认） [${MIGRATE_DIR}]: " input_migrate
   MIGRATE_DIR="${input_migrate:-${MIGRATE_DIR:-$MIGRATE_DIR_DEFAULT}}"
   if [[ -z "$MIGRATE_DIR" ]]; then
@@ -647,6 +664,15 @@ BOT_TOKEN=${BOT_TOKEN}
 
 # 管理员 chat id，逗号分隔，可空
 ADMIN_CHAT_IDS=${ADMIN_CHAT_IDS}
+
+# 只读管理员 chat id（可选）
+VIEW_ADMIN_CHAT_IDS=${VIEW_ADMIN_CHAT_IDS}
+
+# 运维管理员 chat id（可选）
+OPS_ADMIN_CHAT_IDS=${OPS_ADMIN_CHAT_IDS}
+
+# 超级管理员 chat id（可选）
+SUPER_ADMIN_CHAT_IDS=${SUPER_ADMIN_CHAT_IDS}
 
 # 迁移包目录
 MIGRATE_DIR=${MIGRATE_DIR}
