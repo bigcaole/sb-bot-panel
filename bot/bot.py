@@ -258,6 +258,16 @@ MAINTAIN_ALLOWED_ENV_KEYS = [
     "BOT_MENU_TTL",
     "BOT_NODE_MONITOR_INTERVAL",
     "BOT_NODE_OFFLINE_THRESHOLD",
+    "BOT_LOG_VIEW_COOLDOWN",
+    "BOT_LOG_VIEW_MAX_PAGES",
+    "CONTROLLER_HTTP_TIMEOUT",
+    "BOT_ACTOR_LABEL",
+    "SUB_LINK_SIGN_KEY",
+    "SUB_LINK_REQUIRE_SIGNATURE",
+    "SUB_LINK_DEFAULT_TTL_SECONDS",
+    "API_RATE_LIMIT_ENABLED",
+    "API_RATE_LIMIT_WINDOW_SECONDS",
+    "API_RATE_LIMIT_MAX_REQUESTS",
 ]
 
 
@@ -2013,12 +2023,22 @@ def format_user_nodes_manage_text(
     return text
 
 
-def format_sub_links_info_text(user_code: str) -> str:
+def format_sub_links_info_text(
+    user_code: str, links_url: str = "", base64_url: str = "", signed: bool = False, expire_at: int = 0
+) -> str:
+    plain_url = links_url.strip() if links_url else f"{PANEL_BASE_URL}/sub/links/{user_code}"
+    b64_url = base64_url.strip() if base64_url else f"{PANEL_BASE_URL}/sub/base64/{user_code}"
+    signed_hint = ""
+    if signed and expire_at > 0:
+        signed_hint = "（已签名）\n签名到期时间：{0}\n\n".format(
+            datetime.fromtimestamp(expire_at).strftime("%Y-%m-%d %H:%M:%S")
+        )
     return (
         "明文订阅链接：\n"
-        f"{PANEL_BASE_URL}/sub/links/{user_code}\n\n"
+        f"{plain_url}\n\n"
         "Base64订阅链接：\n"
-        f"{PANEL_BASE_URL}/sub/base64/{user_code}\n\n"
+        f"{b64_url}\n\n"
+        f"{signed_hint}"
         "如果REALITY参数未配置，将在明文订阅中提示并跳过vless链接。"
     )
 
@@ -2483,6 +2503,8 @@ async def start_maintain_config_wizard(
         "ENABLE_HTTPS",
         "HTTPS_DOMAIN",
         "MIGRATE_DIR",
+        "SUB_LINK_REQUIRE_SIGNATURE",
+        "API_RATE_LIMIT_ENABLED",
     ]
     for key in show_keys:
         lines.append("{0}={1}".format(key, mask_sensitive_env_value(key, env_map.get(key, ""))))
@@ -2536,14 +2558,41 @@ async def maintain_config_input(
         if not port_value.isdigit() or int(port_value) < 1 or int(port_value) > 65535:
             await update.message.reply_text("CONTROLLER_PORT 必须是 1-65535 的整数。")
             return MAINTAIN_CONFIG_INPUT
-    for key in ("BOT_MENU_TTL", "BOT_NODE_MONITOR_INTERVAL", "BOT_NODE_OFFLINE_THRESHOLD"):
+    for key in (
+        "BOT_MENU_TTL",
+        "BOT_NODE_MONITOR_INTERVAL",
+        "BOT_NODE_OFFLINE_THRESHOLD",
+        "BOT_LOG_VIEW_MAX_PAGES",
+        "SUB_LINK_DEFAULT_TTL_SECONDS",
+        "API_RATE_LIMIT_WINDOW_SECONDS",
+        "API_RATE_LIMIT_MAX_REQUESTS",
+    ):
         if key in updates:
             if not updates[key].isdigit():
                 await update.message.reply_text("{0} 必须为整数。".format(key))
                 return MAINTAIN_CONFIG_INPUT
+    if "BOT_LOG_VIEW_COOLDOWN" in updates:
+        try:
+            float(updates["BOT_LOG_VIEW_COOLDOWN"])
+        except ValueError:
+            await update.message.reply_text("BOT_LOG_VIEW_COOLDOWN 必须为数字。")
+            return MAINTAIN_CONFIG_INPUT
+    if "CONTROLLER_HTTP_TIMEOUT" in updates:
+        try:
+            timeout_value = float(updates["CONTROLLER_HTTP_TIMEOUT"])
+        except ValueError:
+            await update.message.reply_text("CONTROLLER_HTTP_TIMEOUT 必须为数字。")
+            return MAINTAIN_CONFIG_INPUT
+        if timeout_value <= 0:
+            await update.message.reply_text("CONTROLLER_HTTP_TIMEOUT 必须大于 0。")
+            return MAINTAIN_CONFIG_INPUT
     if "ENABLE_HTTPS" in updates and updates["ENABLE_HTTPS"] not in ("0", "1"):
         await update.message.reply_text("ENABLE_HTTPS 仅支持 0 或 1。")
         return MAINTAIN_CONFIG_INPUT
+    for key in ("SUB_LINK_REQUIRE_SIGNATURE", "API_RATE_LIMIT_ENABLED"):
+        if key in updates and updates[key] not in ("0", "1"):
+            await update.message.reply_text("{0} 仅支持 0 或 1。".format(key))
+            return MAINTAIN_CONFIG_INPUT
 
     if "CONTROLLER_URL" in updates:
         updates["CONTROLLER_URL"] = normalize_simple_url(updates["CONTROLLER_URL"], "http")
@@ -4919,8 +4968,29 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await query.edit_message_text("请求无效，请重试。", reply_markup=build_submenu("user"))
             return
         user_code = parts[2]
+        signed_data, signed_error, _ = await controller_request(
+            "GET", f"/admin/sub/sign/{user_code}"
+        )
+        links_url = ""
+        base64_url = ""
+        signed_flag = False
+        expire_at = 0
+        if not signed_error and isinstance(signed_data, dict):
+            links_url = str(signed_data.get("links_url") or "")
+            base64_url = str(signed_data.get("base64_url") or "")
+            signed_flag = bool(signed_data.get("signed"))
+            try:
+                expire_at = int(signed_data.get("expire_at", 0) or 0)
+            except (TypeError, ValueError):
+                expire_at = 0
         await query.edit_message_text(
-            format_sub_links_info_text(user_code),
+            format_sub_links_info_text(
+                user_code,
+                links_url=links_url,
+                base64_url=base64_url,
+                signed=signed_flag,
+                expire_at=expire_at,
+            ),
             reply_markup=build_sub_links_info_keyboard(user_code),
         )
         return

@@ -43,6 +43,14 @@ TRUST_X_FORWARDED_FOR="0"
 TRUSTED_PROXY_IPS="127.0.0.1,::1"
 NODE_TASK_RUNNING_TIMEOUT="120"
 NODE_TASK_RETENTION_SECONDS="604800"
+SUB_LINK_SIGN_KEY=""
+SUB_LINK_REQUIRE_SIGNATURE="0"
+SUB_LINK_DEFAULT_TTL_SECONDS="604800"
+API_RATE_LIMIT_ENABLED="0"
+API_RATE_LIMIT_WINDOW_SECONDS="60"
+API_RATE_LIMIT_MAX_REQUESTS="120"
+CONTROLLER_HTTP_TIMEOUT="10"
+BOT_ACTOR_LABEL="sb-bot"
 SELF_CHECK_OK=0
 SELF_CHECK_WARN=0
 SELF_CHECK_FAIL=0
@@ -236,7 +244,7 @@ has_env_key() {
 }
 
 load_existing_env_defaults() {
-  local old_port old_url old_public_url old_panel_base old_enable_https old_https_domain old_https_email old_auth old_bot old_admin old_migrate old_menu_ttl old_monitor_interval old_offline_threshold old_trust_xff old_trusted_proxy_ips old_task_timeout old_task_retention
+  local old_port old_url old_public_url old_panel_base old_enable_https old_https_domain old_https_email old_auth old_bot old_admin old_migrate old_menu_ttl old_monitor_interval old_offline_threshold old_trust_xff old_trusted_proxy_ips old_task_timeout old_task_retention old_sub_link_sign_key old_sub_link_require old_sub_link_ttl old_rate_limit_enabled old_rate_limit_window old_rate_limit_max old_controller_http_timeout old_bot_actor_label
   old_port="$(get_env_value "CONTROLLER_PORT")"
   old_url="$(get_env_value "CONTROLLER_URL")"
   old_public_url="$(get_env_value "CONTROLLER_PUBLIC_URL")"
@@ -255,6 +263,14 @@ load_existing_env_defaults() {
   old_trusted_proxy_ips="$(get_env_value "TRUSTED_PROXY_IPS")"
   old_task_timeout="$(get_env_value "NODE_TASK_RUNNING_TIMEOUT")"
   old_task_retention="$(get_env_value "NODE_TASK_RETENTION_SECONDS")"
+  old_sub_link_sign_key="$(get_env_value "SUB_LINK_SIGN_KEY")"
+  old_sub_link_require="$(get_env_value "SUB_LINK_REQUIRE_SIGNATURE")"
+  old_sub_link_ttl="$(get_env_value "SUB_LINK_DEFAULT_TTL_SECONDS")"
+  old_rate_limit_enabled="$(get_env_value "API_RATE_LIMIT_ENABLED")"
+  old_rate_limit_window="$(get_env_value "API_RATE_LIMIT_WINDOW_SECONDS")"
+  old_rate_limit_max="$(get_env_value "API_RATE_LIMIT_MAX_REQUESTS")"
+  old_controller_http_timeout="$(get_env_value "CONTROLLER_HTTP_TIMEOUT")"
+  old_bot_actor_label="$(get_env_value "BOT_ACTOR_LABEL")"
 
   CONTROLLER_PORT="${old_port:-8080}"
   CONTROLLER_URL="${old_url:-http://127.0.0.1:${CONTROLLER_PORT}}"
@@ -278,6 +294,14 @@ load_existing_env_defaults() {
   TRUSTED_PROXY_IPS="${old_trusted_proxy_ips:-127.0.0.1,::1}"
   NODE_TASK_RUNNING_TIMEOUT="${old_task_timeout:-120}"
   NODE_TASK_RETENTION_SECONDS="${old_task_retention:-604800}"
+  SUB_LINK_SIGN_KEY="${old_sub_link_sign_key:-}"
+  SUB_LINK_REQUIRE_SIGNATURE="${old_sub_link_require:-0}"
+  SUB_LINK_DEFAULT_TTL_SECONDS="${old_sub_link_ttl:-604800}"
+  API_RATE_LIMIT_ENABLED="${old_rate_limit_enabled:-0}"
+  API_RATE_LIMIT_WINDOW_SECONDS="${old_rate_limit_window:-60}"
+  API_RATE_LIMIT_MAX_REQUESTS="${old_rate_limit_max:-120}"
+  CONTROLLER_HTTP_TIMEOUT="${old_controller_http_timeout:-10}"
+  BOT_ACTOR_LABEL="${old_bot_actor_label:-sb-bot}"
 }
 
 normalize_loaded_values() {
@@ -292,6 +316,27 @@ normalize_loaded_values() {
   fi
   if ! [[ "$NODE_TASK_RETENTION_SECONDS" =~ ^[0-9]+$ ]] || (( NODE_TASK_RETENTION_SECONDS < 3600 )); then
     NODE_TASK_RETENTION_SECONDS="604800"
+  fi
+  if ! [[ "$SUB_LINK_REQUIRE_SIGNATURE" =~ ^[01]$ ]]; then
+    SUB_LINK_REQUIRE_SIGNATURE="0"
+  fi
+  if ! [[ "$SUB_LINK_DEFAULT_TTL_SECONDS" =~ ^[0-9]+$ ]] || (( SUB_LINK_DEFAULT_TTL_SECONDS < 60 )); then
+    SUB_LINK_DEFAULT_TTL_SECONDS="604800"
+  fi
+  if ! [[ "$API_RATE_LIMIT_ENABLED" =~ ^[01]$ ]]; then
+    API_RATE_LIMIT_ENABLED="0"
+  fi
+  if ! [[ "$API_RATE_LIMIT_WINDOW_SECONDS" =~ ^[0-9]+$ ]] || (( API_RATE_LIMIT_WINDOW_SECONDS < 1 )); then
+    API_RATE_LIMIT_WINDOW_SECONDS="60"
+  fi
+  if ! [[ "$API_RATE_LIMIT_MAX_REQUESTS" =~ ^[0-9]+$ ]] || (( API_RATE_LIMIT_MAX_REQUESTS < 1 )); then
+    API_RATE_LIMIT_MAX_REQUESTS="120"
+  fi
+  if ! [[ "$CONTROLLER_HTTP_TIMEOUT" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+    CONTROLLER_HTTP_TIMEOUT="10"
+  fi
+  if [[ -z "$BOT_ACTOR_LABEL" ]]; then
+    BOT_ACTOR_LABEL="sb-bot"
   fi
   CONTROLLER_URL="$(normalize_input_url "$CONTROLLER_URL" "http")"
   if [[ -n "$CONTROLLER_PUBLIC_URL" ]]; then
@@ -530,6 +575,30 @@ NODE_TASK_RUNNING_TIMEOUT=${NODE_TASK_RUNNING_TIMEOUT}
 
 # 节点任务历史保留秒数（到期自动清理）
 NODE_TASK_RETENTION_SECONDS=${NODE_TASK_RETENTION_SECONDS}
+
+# 订阅签名密钥（可选，留空关闭签名）
+SUB_LINK_SIGN_KEY=${SUB_LINK_SIGN_KEY}
+
+# 是否强制订阅签名（1=强制，0=兼容）
+SUB_LINK_REQUIRE_SIGNATURE=${SUB_LINK_REQUIRE_SIGNATURE}
+
+# 订阅签名默认有效期（秒）
+SUB_LINK_DEFAULT_TTL_SECONDS=${SUB_LINK_DEFAULT_TTL_SECONDS}
+
+# controller 轻量限流开关（1=启用，0=关闭）
+API_RATE_LIMIT_ENABLED=${API_RATE_LIMIT_ENABLED}
+
+# 限流窗口秒数
+API_RATE_LIMIT_WINDOW_SECONDS=${API_RATE_LIMIT_WINDOW_SECONDS}
+
+# 窗口内最大请求数
+API_RATE_LIMIT_MAX_REQUESTS=${API_RATE_LIMIT_MAX_REQUESTS}
+
+# bot 调 controller 请求超时（秒）
+CONTROLLER_HTTP_TIMEOUT=${CONTROLLER_HTTP_TIMEOUT}
+
+# bot 审计操作者标识
+BOT_ACTOR_LABEL=${BOT_ACTOR_LABEL}
 EOF
   chmod 0600 "$ENV_FILE"
 }
@@ -740,6 +809,14 @@ run_self_checks() {
   check_env_key "TRUSTED_PROXY_IPS"
   check_env_key "NODE_TASK_RUNNING_TIMEOUT"
   check_env_key "NODE_TASK_RETENTION_SECONDS"
+  check_env_key "SUB_LINK_SIGN_KEY"
+  check_env_key "SUB_LINK_REQUIRE_SIGNATURE"
+  check_env_key "SUB_LINK_DEFAULT_TTL_SECONDS"
+  check_env_key "API_RATE_LIMIT_ENABLED"
+  check_env_key "API_RATE_LIMIT_WINDOW_SECONDS"
+  check_env_key "API_RATE_LIMIT_MAX_REQUESTS"
+  check_env_key "CONTROLLER_HTTP_TIMEOUT"
+  check_env_key "BOT_ACTOR_LABEL"
   if [[ -z "$AUTH_TOKEN" ]]; then
     check_warn "AUTH_TOKEN 为空（controller 接口不鉴权，建议仅内网或配防火墙来源限制）"
   elif [[ "$AUTH_TOKEN" == "devtoken123" || ${#AUTH_TOKEN} -lt 16 ]]; then
@@ -854,6 +931,13 @@ show_summary() {
   echo "TRUST_X_FORWARDED_FOR: ${TRUST_X_FORWARDED_FOR}"
   echo "NODE_TASK_RUNNING_TIMEOUT: ${NODE_TASK_RUNNING_TIMEOUT}"
   echo "NODE_TASK_RETENTION_SECONDS: ${NODE_TASK_RETENTION_SECONDS}"
+  echo "SUB_LINK_REQUIRE_SIGNATURE: ${SUB_LINK_REQUIRE_SIGNATURE}"
+  echo "SUB_LINK_DEFAULT_TTL_SECONDS: ${SUB_LINK_DEFAULT_TTL_SECONDS}"
+  echo "API_RATE_LIMIT_ENABLED: ${API_RATE_LIMIT_ENABLED}"
+  echo "API_RATE_LIMIT_WINDOW_SECONDS: ${API_RATE_LIMIT_WINDOW_SECONDS}"
+  echo "API_RATE_LIMIT_MAX_REQUESTS: ${API_RATE_LIMIT_MAX_REQUESTS}"
+  echo "CONTROLLER_HTTP_TIMEOUT: ${CONTROLLER_HTTP_TIMEOUT}"
+  echo "BOT_ACTOR_LABEL: ${BOT_ACTOR_LABEL}"
   echo ""
   echo "快捷查看："
   echo "  systemctl status sb-controller"

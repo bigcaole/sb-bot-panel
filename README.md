@@ -311,6 +311,12 @@ scp root@旧IP:/var/backups/sb-migrate/sb-migrate-xxxx.tar.gz root@新IP:/root/
 - `HTTPS_ACME_EMAIL=admin@example.com`（可选，证书账号邮箱）
 - `CONTROLLER_PORT=8080`
 - `AUTH_TOKEN=随机长串`（可空；空值表示关闭接口鉴权。不为空时，除 `/health`、`/sub/*`、文档页外其余 API 均需 Bearer）
+- `SUB_LINK_SIGN_KEY=`（可选；设置后可生成带签名订阅链接）
+- `SUB_LINK_REQUIRE_SIGNATURE=0`（可选；1=强制订阅必须带签名）
+- `SUB_LINK_DEFAULT_TTL_SECONDS=604800`（可选；签名默认有效期）
+- `API_RATE_LIMIT_ENABLED=0`（可选；controller 轻量限流开关）
+- `API_RATE_LIMIT_WINDOW_SECONDS=60`（可选；限流窗口）
+- `API_RATE_LIMIT_MAX_REQUESTS=120`（可选；单个 IP+路径窗口内请求上限）
 - `BOT_TOKEN=xxxxxxxx`（必填）
 - `ADMIN_CHAT_IDS=123,456`（可空）
 - `MIGRATE_DIR=/var/backups/sb-migrate`
@@ -360,6 +366,11 @@ scp root@旧IP:/var/backups/sb-migrate/sb-migrate-xxxx.tar.gz root@新IP:/root/
 - Controller API 支持可选 Bearer 鉴权（全局中间件）：
   - `AUTH_TOKEN` 为空：不校验，保持兼容行为
   - `AUTH_TOKEN` 非空：除 `/health`、`/sub/*`、`/docs`、`/openapi.json`、`/redoc` 外其余接口都必须带 `Authorization: Bearer <AUTH_TOKEN>`
+- 支持订阅签名：
+  - 配置 `SUB_LINK_SIGN_KEY` 后，可通过 `/admin/sub/sign/{user_code}` 生成带签名 URL
+  - 开启 `SUB_LINK_REQUIRE_SIGNATURE=1` 后，`/sub/*` 必须携带 `exp` + `sig`
+- 支持轻量限流（默认关闭）：
+  - `API_RATE_LIMIT_ENABLED=1` 后，会对高风险管理路径按 IP+路径限流，超限返回 429
 - 节点同步接口 `/nodes/{node_code}/sync` 已支持来源 IP 白名单：
   - 在节点创建/编辑时设置 `agent_ip`
   - `agent_ip` 已设置时，只有该 IP 才能拉取该节点 sync（其余返回 403）

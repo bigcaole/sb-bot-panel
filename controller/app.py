@@ -1,4 +1,5 @@
 import base64
+import hashlib
 import hmac
 import ipaddress
 import json
@@ -10,7 +11,8 @@ import uuid
 from pathlib import Path
 import shutil
 import tempfile
-from typing import Any, Dict, List, Optional, Union
+from threading import Lock
+from typing import Any, Dict, List, Optional, Tuple, Union
 from urllib.parse import quote
 
 from fastapi import FastAPI, Header, HTTPException, Request
@@ -51,6 +53,35 @@ if NODE_TASK_RUNNING_TIMEOUT_SECONDS < 30:
 NODE_TASK_RETENTION_SECONDS = int(_get_int_env("NODE_TASK_RETENTION_SECONDS", 7 * 86400))
 if NODE_TASK_RETENTION_SECONDS < 3600:
     NODE_TASK_RETENTION_SECONDS = 3600
+SUB_LINK_SIGN_KEY = os.getenv("SUB_LINK_SIGN_KEY", "").strip()
+SUB_LINK_REQUIRE_SIGNATURE = os.getenv("SUB_LINK_REQUIRE_SIGNATURE", "0").strip() in (
+    "1",
+    "true",
+    "TRUE",
+    "yes",
+    "YES",
+)
+SUB_LINK_DEFAULT_TTL_SECONDS = int(_get_int_env("SUB_LINK_DEFAULT_TTL_SECONDS", 7 * 86400))
+if SUB_LINK_DEFAULT_TTL_SECONDS < 60:
+    SUB_LINK_DEFAULT_TTL_SECONDS = 60
+if SUB_LINK_DEFAULT_TTL_SECONDS > 30 * 86400:
+    SUB_LINK_DEFAULT_TTL_SECONDS = 30 * 86400
+API_RATE_LIMIT_ENABLED = os.getenv("API_RATE_LIMIT_ENABLED", "0").strip() in (
+    "1",
+    "true",
+    "TRUE",
+    "yes",
+    "YES",
+)
+API_RATE_LIMIT_WINDOW_SECONDS = int(_get_int_env("API_RATE_LIMIT_WINDOW_SECONDS", 60))
+if API_RATE_LIMIT_WINDOW_SECONDS < 1:
+    API_RATE_LIMIT_WINDOW_SECONDS = 1
+API_RATE_LIMIT_MAX_REQUESTS = int(_get_int_env("API_RATE_LIMIT_MAX_REQUESTS", 120))
+if API_RATE_LIMIT_MAX_REQUESTS < 1:
+    API_RATE_LIMIT_MAX_REQUESTS = 1
+_RATE_LIMIT_LOCK = Lock()
+_RATE_LIMIT_STATE: Dict[str, Tuple[int, int]] = {}
+_RATE_LIMIT_LAST_CLEANUP_AT = 0
 
 app = FastAPI()
 
@@ -76,6 +107,65 @@ def is_auth_exempt_path(path: str) -> bool:
     return False
 
 
+def get_rate_limit_identity(request: Request) -> str:
+    request_ip = ""
+    if request.client and request.client.host:
+        request_ip = str(request.client.host).strip()
+    if not request_ip:
+        request_ip = "unknown"
+    path = str(request.url.path or "/")
+    return "{0}:{1}".format(request_ip, path)
+
+
+def is_rate_limit_target_path(path: str) -> bool:
+    normalized = str(path or "").strip() or "/"
+    if normalized.startswith("/admin/"):
+        return True
+    if normalized == "/users/create":
+        return True
+    if normalized.startswith("/users/") and (
+        normalized.endswith("/set_speed")
+        or normalized.endswith("/set_status")
+        or normalized.endswith("/assign_node")
+        or normalized.endswith("/unassign_node")
+    ):
+        return True
+    if normalized.startswith("/nodes/") and (
+        normalized.endswith("/create")
+        or normalized.endswith("/tasks/create")
+    ):
+        return True
+    if normalized.startswith("/nodes/") and normalized.count("/") == 2:
+        return True
+    return False
+
+
+def check_and_consume_rate_limit(identity: str, now_ts: int) -> Tuple[bool, int]:
+    global _RATE_LIMIT_LAST_CLEANUP_AT
+    with _RATE_LIMIT_LOCK:
+        window_start, count = _RATE_LIMIT_STATE.get(identity, (0, 0))
+        if window_start <= 0 or now_ts - window_start >= API_RATE_LIMIT_WINDOW_SECONDS:
+            window_start, count = now_ts, 0
+        count += 1
+        _RATE_LIMIT_STATE[identity] = (window_start, count)
+
+        if now_ts - _RATE_LIMIT_LAST_CLEANUP_AT >= max(60, API_RATE_LIMIT_WINDOW_SECONDS):
+            expired_keys = []
+            for key, item in _RATE_LIMIT_STATE.items():
+                if now_ts - int(item[0]) >= API_RATE_LIMIT_WINDOW_SECONDS:
+                    expired_keys.append(key)
+            for key in expired_keys:
+                _RATE_LIMIT_STATE.pop(key, None)
+            _RATE_LIMIT_LAST_CLEANUP_AT = now_ts
+
+    if count > API_RATE_LIMIT_MAX_REQUESTS:
+        retry_after = API_RATE_LIMIT_WINDOW_SECONDS - (now_ts - window_start)
+        if retry_after < 1:
+            retry_after = 1
+        return True, retry_after
+    return False, 0
+
+
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
     if not AUTH_TOKEN:
@@ -86,7 +176,40 @@ async def auth_middleware(request: Request, call_next):
     authorization = request.headers.get("Authorization")
     expected = "Bearer {0}".format(AUTH_TOKEN)
     if not hmac.compare_digest(str(authorization or ""), expected):
+        try:
+            with get_connection() as conn:
+                write_audit_log(
+                    conn,
+                    action="auth.unauthorized",
+                    resource_type="http",
+                    resource_id=str(request.url.path or "/"),
+                    detail={"method": request.method},
+                    actor=get_request_actor(request),
+                    source_ip=get_source_ip_for_audit(request),
+                )
+                conn.commit()
+        except Exception:
+            pass
         return JSONResponse(status_code=401, content={"ok": False, "error": "unauthorized"})
+    return await call_next(request)
+
+
+@app.middleware("http")
+async def rate_limit_middleware(request: Request, call_next):
+    if not API_RATE_LIMIT_ENABLED:
+        return await call_next(request)
+    if not is_rate_limit_target_path(request.url.path):
+        return await call_next(request)
+
+    now_ts = int(time.time())
+    identity = get_rate_limit_identity(request)
+    limited, retry_after = check_and_consume_rate_limit(identity, now_ts)
+    if limited:
+        return JSONResponse(
+            status_code=429,
+            content={"ok": False, "error": "rate_limited", "retry_after": retry_after},
+            headers={"Retry-After": str(retry_after)},
+        )
     return await call_next(request)
 
 
@@ -1921,6 +2044,52 @@ def list_users() -> List[Dict[str, Union[int, str, None]]]:
     return [dict(row) for row in rows]
 
 
+def ensure_user_exists(user_code: str) -> None:
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT user_code FROM users WHERE user_code = ?",
+            (user_code,),
+        ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="User not found")
+
+
+def build_sub_signature(user_code: str, expire_at: int) -> str:
+    if not SUB_LINK_SIGN_KEY:
+        return ""
+    message = "{0}:{1}".format(user_code, int(expire_at))
+    return hmac.new(
+        SUB_LINK_SIGN_KEY.encode("utf-8"),
+        message.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def verify_sub_access(user_code: str, exp: str = "", sig: str = "") -> None:
+    ensure_user_exists(user_code)
+    if not SUB_LINK_SIGN_KEY:
+        return
+
+    exp_raw = str(exp or "").strip()
+    sig_raw = str(sig or "").strip()
+    if not exp_raw or not sig_raw:
+        if SUB_LINK_REQUIRE_SIGNATURE:
+            raise HTTPException(status_code=403, detail="subscription signature required")
+        return
+
+    try:
+        expire_at = int(exp_raw)
+    except ValueError as exc:
+        raise HTTPException(status_code=403, detail="invalid subscription signature") from exc
+    now_ts = int(time.time())
+    if expire_at <= now_ts:
+        raise HTTPException(status_code=403, detail="subscription signature expired")
+
+    expected = build_sub_signature(user_code, expire_at)
+    if not expected or not hmac.compare_digest(sig_raw, expected):
+        raise HTTPException(status_code=403, detail="invalid subscription signature")
+
+
 def _build_subscription_links_text(user_code: str) -> str:
     with get_connection() as conn:
         user_row = conn.execute(
@@ -2021,16 +2190,73 @@ def _build_subscription_links_text(user_code: str) -> str:
 
 
 @app.get("/sub/links/{user_code}", response_class=PlainTextResponse)
-def get_sub_links(user_code: str) -> PlainTextResponse:
+def get_sub_links(user_code: str, exp: str = "", sig: str = "") -> PlainTextResponse:
+    verify_sub_access(user_code, exp=exp, sig=sig)
     text = _build_subscription_links_text(user_code)
     return PlainTextResponse(content=text)
 
 
 @app.get("/sub/base64/{user_code}", response_class=PlainTextResponse)
-def get_sub_base64(user_code: str) -> PlainTextResponse:
+def get_sub_base64(user_code: str, exp: str = "", sig: str = "") -> PlainTextResponse:
+    verify_sub_access(user_code, exp=exp, sig=sig)
     text = _build_subscription_links_text(user_code)
     encoded = base64.b64encode(text.encode("utf-8")).decode("ascii")
     return PlainTextResponse(content=encoded)
+
+
+@app.get(
+    "/admin/sub/sign/{user_code}",
+    summary="Generate signed subscription URLs",
+    description="AUTH_TOKEN 为空时不校验；非空时需要 Bearer。可用于 bot 生成带签名订阅链接。",
+    response_model=None,
+)
+def get_signed_sub_urls(
+    user_code: str,
+    request: Request,
+    ttl_seconds: int = 0,
+    authorization: Optional[str] = Header(default=None, alias="Authorization"),
+) -> Union[Dict[str, Union[bool, int, str]], JSONResponse]:
+    auth_error = verify_admin_authorization(authorization)
+    if auth_error is not None:
+        return auth_error
+    ensure_user_exists(user_code)
+
+    ttl = int(ttl_seconds or 0)
+    if ttl <= 0:
+        ttl = SUB_LINK_DEFAULT_TTL_SECONDS
+    if ttl > 30 * 86400:
+        ttl = 30 * 86400
+    expire_at = int(time.time()) + ttl
+
+    base_links = str(request.base_url).rstrip("/")
+    links_path = "/sub/links/{0}".format(user_code)
+    base64_path = "/sub/base64/{0}".format(user_code)
+    query_string = ""
+    if SUB_LINK_SIGN_KEY:
+        sig = build_sub_signature(user_code, expire_at)
+        query_string = "?exp={0}&sig={1}".format(expire_at, sig)
+
+    links_url = "{0}{1}{2}".format(base_links, links_path, query_string)
+    base64_url = "{0}{1}{2}".format(base_links, base64_path, query_string)
+    with get_connection() as conn:
+        write_audit_log(
+            conn,
+            action="admin.sub.sign",
+            resource_type="user",
+            resource_id=user_code,
+            detail={"ttl_seconds": ttl, "signed": bool(SUB_LINK_SIGN_KEY)},
+            actor=get_request_actor(request),
+            source_ip=get_source_ip_for_audit(request),
+        )
+        conn.commit()
+    return {
+        "ok": True,
+        "user_code": user_code,
+        "signed": bool(SUB_LINK_SIGN_KEY),
+        "expire_at": expire_at,
+        "links_url": links_url,
+        "base64_url": base64_url,
+    }
 
 
 if __name__ == "__main__":
