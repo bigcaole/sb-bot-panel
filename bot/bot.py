@@ -53,11 +53,26 @@ except ValueError:
     MENU_AUTO_CLEAR_SECONDS = 60
 if MENU_AUTO_CLEAR_SECONDS <= 0:
     MENU_AUTO_CLEAR_SECONDS = 60
+try:
+    LOG_VIEW_COOLDOWN_SECONDS = float(
+        os.getenv("BOT_LOG_VIEW_COOLDOWN", "1").strip() or "1"
+    )
+except ValueError:
+    LOG_VIEW_COOLDOWN_SECONDS = 1.0
+if LOG_VIEW_COOLDOWN_SECONDS < 0:
+    LOG_VIEW_COOLDOWN_SECONDS = 0.0
+try:
+    LOG_VIEW_MAX_PAGES = int(os.getenv("BOT_LOG_VIEW_MAX_PAGES", "100").strip() or "100")
+except ValueError:
+    LOG_VIEW_MAX_PAGES = 100
+if LOG_VIEW_MAX_PAGES < 1:
+    LOG_VIEW_MAX_PAGES = 1
 
 MENU_AUTO_CLEAR_JOBS_KEY = "menu_auto_clear_jobs"
 NODE_MONITOR_STATE_KEY = "node_monitor_state"
 KNOWN_CHAT_IDS_KEY = "known_chat_ids"
 MAIN_MENU_MESSAGE_IDS_KEY = "main_menu_message_ids"
+LOG_VIEW_LAST_ACTION_AT_KEY = "maintain_log_last_action_at"
 try:
     NODE_MONITOR_INTERVAL_SECONDS = int(
         os.getenv("BOT_NODE_MONITOR_INTERVAL", "60").strip() or "60"
@@ -1295,6 +1310,28 @@ def build_log_pages(entries: list, max_lines_per_page: int = 50, max_chars_per_p
     if not pages:
         return [["(当日无日志)"]]
     return pages
+
+
+def get_log_view_cooldown_remaining(
+    context: ContextTypes.DEFAULT_TYPE, now_ts: float = 0.0
+) -> float:
+    if LOG_VIEW_COOLDOWN_SECONDS <= 0:
+        return 0.0
+    if now_ts <= 0:
+        now_ts = time.time()
+    try:
+        last_ts = float(context.user_data.get(LOG_VIEW_LAST_ACTION_AT_KEY, 0.0) or 0.0)
+    except (TypeError, ValueError):
+        last_ts = 0.0
+    delta = now_ts - last_ts
+    remaining = LOG_VIEW_COOLDOWN_SECONDS - delta
+    return remaining if remaining > 0 else 0.0
+
+
+def mark_log_view_action(context: ContextTypes.DEFAULT_TYPE, now_ts: float = 0.0) -> None:
+    if now_ts <= 0:
+        now_ts = time.time()
+    context.user_data[LOG_VIEW_LAST_ACTION_AT_KEY] = now_ts
 
 
 def pop_user_speed_pending(
@@ -4111,6 +4148,15 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     user = query.from_user.username or query.from_user.id
     logger.info("button_click user=%s data=%s", user, callback_data)
 
+    if callback_data.startswith("maintain:logsdate:"):
+        now_ts = time.time()
+        cooldown_remaining = get_log_view_cooldown_remaining(context, now_ts=now_ts)
+        if cooldown_remaining > 0:
+            wait_seconds = "{0:.1f}".format(cooldown_remaining)
+            await query.answer(f"日志翻页过快，请 {wait_seconds} 秒后重试", show_alert=False)
+            return
+        mark_log_view_action(context, now_ts=now_ts)
+
     if callback_data == "usernodes:manual_input":
         await start_user_nodes_manual_input(update, context)
         return
@@ -4498,16 +4544,28 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
         entries, level1_count, level2_count, level3_count = build_priority_log_entries(stdout)
         pages = build_log_pages(entries, max_lines_per_page=50, max_chars_per_page=3200)
+        pages_truncated = False
+        if len(pages) > LOG_VIEW_MAX_PAGES:
+            pages = pages[:LOG_VIEW_MAX_PAGES]
+            pages_truncated = True
         total_pages = len(pages)
         safe_page = 1 if page < 1 else page
         if safe_page > total_pages:
             safe_page = total_pages
         page_entries = pages[safe_page - 1] if pages else ["(当日无日志)"]
         recent_logs = "\n".join(page_entries) if page_entries else "(当日无日志)"
+        truncated_notice = ""
+        if pages_truncated:
+            truncated_notice = (
+                "\n提示：日志页数过多，当前仅展示前 {0} 页。"
+                "\n如需全量查看请在服务器执行：journalctl -u {1} --since '{2} 00:00:00' --until '{2} 23:59:59' --no-pager".format(
+                    LOG_VIEW_MAX_PAGES, unit, day_text
+                )
+            )
         await query.edit_message_text(
             "{0} {1} 重要日志（按一级→二级→三级，时间倒序，尽量完整显示）：\n"
             "一级：{2} 条，二级：{3} 条，三级：{4} 条\n"
-            "当前页：{5}/{6}（每页最多 50 条，且受消息长度限制）\n\n{7}".format(
+            "当前页：{5}/{6}（每页最多 50 条，且受消息长度限制）{8}\n\n{7}".format(
                 unit,
                 day_text,
                 level1_count,
@@ -4516,6 +4574,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 safe_page,
                 total_pages,
                 recent_logs,
+                truncated_notice,
             ),
             reply_markup=build_maintain_log_result_keyboard(
                 target, date_key, safe_page, total_pages
