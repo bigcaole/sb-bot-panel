@@ -370,6 +370,38 @@ def build_maintain_logs_keyboard() -> InlineKeyboardMarkup:
     )
 
 
+def build_maintain_log_date_keyboard(target: str, date_keys: list) -> InlineKeyboardMarkup:
+    rows = []
+    for date_key in date_keys[:7]:
+        day_text = "{0}-{1}-{2}".format(date_key[0:4], date_key[4:6], date_key[6:8])
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    day_text, callback_data=f"maintain:logsdate:{target}:{date_key}"
+                )
+            ]
+        )
+    rows.append([InlineKeyboardButton("刷新日期列表", callback_data=f"maintain:logs:{target}")])
+    rows.append([InlineKeyboardButton("返回服务选择", callback_data="action:maintain_logs")])
+    rows.append([InlineKeyboardButton("返回维护菜单", callback_data="menu:maintain")])
+    return InlineKeyboardMarkup(rows)
+
+
+def build_maintain_log_result_keyboard(target: str, date_key: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "同日刷新", callback_data=f"maintain:logsdate:{target}:{date_key}"
+                ),
+                InlineKeyboardButton("切换日期", callback_data=f"maintain:logs:{target}"),
+            ],
+            [InlineKeyboardButton("返回服务选择", callback_data="action:maintain_logs")],
+            [InlineKeyboardButton("返回维护菜单", callback_data="menu:maintain")],
+        ]
+    )
+
+
 def build_node_ops_picker_keyboard(nodes: list) -> InlineKeyboardMarkup:
     rows = []
     for node in nodes or []:
@@ -1079,6 +1111,133 @@ def localize_controller_error(error_message: str) -> str:
         "agent_ip must be a valid IPv4/IPv6 address": "节点来源IP格式无效，请填写正确的IP地址",
     }
     return mapping.get(error_message, error_message)
+
+
+def get_maintain_log_unit(target: str) -> str:
+    unit_map = {
+        "controller": "sb-controller",
+        "bot": "sb-bot",
+        "caddy": "caddy",
+    }
+    return unit_map.get(target, "")
+
+
+def extract_log_date_keys(raw_text: str, max_dates: int = 7) -> list:
+    matched_dates = []
+    seen = set()
+    for raw_line in str(raw_text or "").splitlines():
+        line = raw_line.strip()
+        match = re.match(r"^(\d{4})-(\d{2})-(\d{2})", line)
+        if not match:
+            continue
+        date_key = "{0}{1}{2}".format(match.group(1), match.group(2), match.group(3))
+        if date_key in seen:
+            continue
+        seen.add(date_key)
+        matched_dates.append(date_key)
+    matched_dates.sort(reverse=True)
+    return matched_dates[:max_dates]
+
+
+def get_log_importance_level(line: str) -> int:
+    text = str(line or "").lower()
+    level_1_keywords = [
+        "panic",
+        "fatal",
+        "critical",
+        "error",
+        "failed",
+        "failure",
+        "exception",
+        "traceback",
+        "unauthorized",
+        "denied",
+        "timeout",
+        "refused",
+        "segfault",
+        "invalid",
+        "no such",
+        "not found",
+        "expired",
+        "错误",
+        "失败",
+        "异常",
+        "拒绝",
+        "超时",
+        "崩溃",
+        "未授权",
+        "无效",
+        "中断",
+    ]
+    level_2_keywords = [
+        "warn",
+        "warning",
+        "degraded",
+        "reload",
+        "restart",
+        "start",
+        "stop",
+        "stopped",
+        "changed",
+        "update",
+        "notice",
+        "retry",
+        "证书",
+        "续期",
+        "重载",
+        "重启",
+        "更新",
+        "告警",
+        "警告",
+    ]
+    for keyword in level_1_keywords:
+        if keyword in text:
+            return 1
+    for keyword in level_2_keywords:
+        if keyword in text:
+            return 2
+    return 3
+
+
+def format_priority_logs(
+    raw_text: str, line_limit: int = 50, line_char_limit: int = 220, total_char_limit: int = 3200
+) -> str:
+    raw_lines = [str(item or "").strip() for item in str(raw_text or "").splitlines()]
+    raw_lines = [item for item in raw_lines if item]
+    if not raw_lines:
+        return "(当日无日志)"
+
+    buckets = {1: [], 2: [], 3: []}
+    for line in reversed(raw_lines):
+        level = get_log_importance_level(line)
+        compact = " ".join(line.replace("\r", "").split())
+        if len(compact) > line_char_limit:
+            compact = compact[:line_char_limit] + "..."
+        buckets[level].append(compact)
+
+    labels = {1: "[一级]", 2: "[二级]", 3: "[三级]"}
+    selected_lines = []
+    for level in (1, 2, 3):
+        for line in buckets[level]:
+            selected_lines.append("{0} {1}".format(labels[level], line))
+            if len(selected_lines) >= line_limit:
+                break
+        if len(selected_lines) >= line_limit:
+            break
+
+    if not selected_lines:
+        return "(当日无日志)"
+
+    output_lines = []
+    current_size = 0
+    for item in selected_lines:
+        next_size = current_size + len(item) + 1
+        if next_size > total_char_limit:
+            output_lines.append("…（内容过长，已截断）")
+            break
+        output_lines.append(item)
+        current_size = next_size
+    return "\n".join(output_lines) if output_lines else "(当日无日志)"
 
 
 def pop_user_speed_pending(
@@ -4196,18 +4355,16 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await query.edit_message_text("请求无效，请重试。", reply_markup=build_back_keyboard("menu:maintain"))
             return
         target = parts[2]
-        unit_map = {
-            "controller": "sb-controller",
-            "bot": "sb-bot",
-            "caddy": "caddy",
-        }
-        unit = unit_map.get(target, "")
+        unit = get_maintain_log_unit(target)
         if not unit:
             await query.edit_message_text("不支持的日志目标。", reply_markup=build_back_keyboard("menu:maintain"))
             return
+
         code, stdout, stderr = await run_local_shell(
-            "journalctl -u {0} -n 200 --no-pager".format(shlex.quote(unit)),
-            timeout=25,
+            "journalctl -u {0} --since '14 days ago' --output=short-iso --no-pager".format(
+                shlex.quote(unit)
+            ),
+            timeout=30,
         )
         if code != 0:
             await query.edit_message_text(
@@ -4215,10 +4372,74 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 reply_markup=build_back_keyboard("action:maintain_logs"),
             )
             return
-        recent_logs = format_recent_log_output(stdout, line_limit=50, char_limit=3200)
+
+        date_keys = extract_log_date_keys(stdout, max_dates=7)
+        if not date_keys:
+            await query.edit_message_text(
+                "{0} 近 14 天无可用日志。".format(unit),
+                reply_markup=build_back_keyboard("action:maintain_logs"),
+            )
+            return
+
         await query.edit_message_text(
-            "{0} 最近日志（最近50行）：\n\n{1}".format(unit, recent_logs),
-            reply_markup=build_back_keyboard("action:maintain_logs"),
+            "{0} 日志日期选择（服务器本地时区）：\n"
+            "规则：优先显示一级日志，不足 50 条再补二级，再补三级。".format(unit),
+            reply_markup=build_maintain_log_date_keyboard(target, date_keys),
+        )
+        return
+
+    if callback_data.startswith("maintain:logsdate:"):
+        parts = callback_data.split(":", maxsplit=3)
+        if len(parts) != 4:
+            await query.edit_message_text("请求无效，请重试。", reply_markup=build_back_keyboard("action:maintain_logs"))
+            return
+        target = parts[2]
+        date_key = parts[3]
+        if not re.fullmatch(r"\d{8}", date_key):
+            await query.edit_message_text(
+                "日期参数无效，请重新选择。",
+                reply_markup=build_back_keyboard(f"maintain:logs:{target}"),
+            )
+            return
+
+        try:
+            datetime.strptime(date_key, "%Y%m%d")
+        except ValueError:
+            await query.edit_message_text(
+                "日期参数无效，请重新选择。",
+                reply_markup=build_back_keyboard(f"maintain:logs:{target}"),
+            )
+            return
+
+        unit = get_maintain_log_unit(target)
+        if not unit:
+            await query.edit_message_text("不支持的日志目标。", reply_markup=build_back_keyboard("action:maintain_logs"))
+            return
+
+        day_text = "{0}-{1}-{2}".format(date_key[0:4], date_key[4:6], date_key[6:8])
+        code, stdout, stderr = await run_local_shell(
+            "journalctl -u {0} --since '{1} 00:00:00' --until '{1} 23:59:59' --output=short-iso --no-pager".format(
+                shlex.quote(unit), day_text
+            ),
+            timeout=30,
+        )
+        if code != 0:
+            await query.edit_message_text(
+                "读取日志失败：\n{0}".format(truncate_output(stderr or stdout)),
+                reply_markup=build_back_keyboard(f"maintain:logs:{target}"),
+            )
+            return
+        recent_logs = format_priority_logs(
+            stdout,
+            line_limit=50,
+            line_char_limit=220,
+            total_char_limit=3200,
+        )
+        await query.edit_message_text(
+            "{0} {1} 重要日志（最多 50 条，按一级→二级→三级，时间倒序）：\n\n{2}".format(
+                unit, day_text, recent_logs
+            ),
+            reply_markup=build_maintain_log_result_keyboard(target, date_key),
         )
         return
 
