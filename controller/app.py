@@ -1,4 +1,5 @@
 import base64
+import hmac
 import ipaddress
 import json
 import os
@@ -58,9 +59,35 @@ def verify_admin_authorization(authorization: Optional[str]) -> Optional[JSONRes
     if not AUTH_TOKEN:
         return None
     expected = "Bearer {0}".format(AUTH_TOKEN)
-    if authorization != expected:
+    if not hmac.compare_digest(str(authorization or ""), expected):
         return JSONResponse(status_code=401, content={"ok": False, "error": "unauthorized"})
     return None
+
+
+def is_auth_exempt_path(path: str) -> bool:
+    normalized = str(path or "").strip() or "/"
+    if normalized in ("/health", "/openapi.json", "/docs", "/redoc"):
+        return True
+    if normalized.startswith("/docs/") or normalized.startswith("/redoc/"):
+        return True
+    # 订阅链接需给客户端直接拉取，保持匿名可访问。
+    if normalized.startswith("/sub/"):
+        return True
+    return False
+
+
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    if not AUTH_TOKEN:
+        return await call_next(request)
+    if is_auth_exempt_path(request.url.path):
+        return await call_next(request)
+
+    authorization = request.headers.get("Authorization")
+    expected = "Bearer {0}".format(AUTH_TOKEN)
+    if not hmac.compare_digest(str(authorization or ""), expected):
+        return JSONResponse(status_code=401, content={"ok": False, "error": "unauthorized"})
+    return await call_next(request)
 
 
 class CreateUserRequest(BaseModel):
@@ -134,12 +161,17 @@ def get_connection() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA busy_timeout = 5000")
     return conn
 
 
 def init_db() -> None:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     with get_connection() as conn:
+        # WAL + NORMAL 同步可显著降低读写阻塞，适合本项目这种高读低写场景。
+        conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute("PRAGMA synchronous = NORMAL")
+        conn.execute("PRAGMA wal_autocheckpoint = 1000")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS users(
@@ -253,6 +285,12 @@ def init_db() -> None:
             """
             CREATE INDEX IF NOT EXISTS idx_node_tasks_node_status_id
             ON node_tasks(node_code, status, id)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_user_nodes_node_code
+            ON user_nodes(node_code)
             """
         )
         conn.commit()
@@ -866,7 +904,6 @@ def list_nodes() -> List[Dict[str, Union[int, str, None]]]:
                 tuic_listen_port,
                 monitor_enabled,
                 last_seen_at,
-                reality_private_key,
                 reality_public_key,
                 reality_short_id,
                 tuic_port_start,
@@ -897,7 +934,6 @@ def get_node(node_code: str) -> Dict[str, Union[int, str, None]]:
                 tuic_listen_port,
                 monitor_enabled,
                 last_seen_at,
-                reality_private_key,
                 reality_public_key,
                 reality_short_id,
                 tuic_port_start,
@@ -1328,7 +1364,6 @@ def update_node(
                 tuic_listen_port,
                 monitor_enabled,
                 last_seen_at,
-                reality_private_key,
                 reality_public_key,
                 reality_short_id,
                 tuic_port_start,
@@ -1395,7 +1430,6 @@ def update_node(
                 tuic_listen_port,
                 monitor_enabled,
                 last_seen_at,
-                reality_private_key,
                 reality_public_key,
                 reality_short_id,
                 tuic_port_start,

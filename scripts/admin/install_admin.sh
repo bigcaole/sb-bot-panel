@@ -332,7 +332,7 @@ prompt_env_config() {
   echo "  - ENABLE_HTTPS / HTTPS_DOMAIN：启用 Caddy 自动证书（申请+续期）"
   echo "  - HTTPS_ACME_EMAIL：证书账号邮箱（可选，建议填写）"
   echo "  - CONTROLLER_URL：bot 调用 controller 的地址（通常 127.0.0.1）"
-  echo "  - AUTH_TOKEN：可选；用于保护 /admin/*，默认自动生成随机串（输入 - 可关闭）"
+  echo "  - AUTH_TOKEN：可选；用于保护 controller 接口（除 /health、/sub/*、文档页），默认自动生成随机串（输入 - 可关闭）"
   echo "  - BOT_TOKEN：必填；Telegram 机器人 token"
   echo "  - ADMIN_CHAT_IDS：可选；用于限制谁可操作 bot"
   echo "  - MIGRATE_DIR：迁移包/备份包输出目录"
@@ -419,7 +419,7 @@ prompt_env_config() {
   fi
   CONTROLLER_URL="$(normalize_input_url "$CONTROLLER_URL" "$controller_scheme")"
 
-  read -r -p "AUTH_TOKEN（可选；保护 /admin/*；输入 - 可清空关闭鉴权） [${AUTH_TOKEN}]: " input_auth
+  read -r -p "AUTH_TOKEN（可选；保护 controller 接口；输入 - 可清空关闭鉴权） [${AUTH_TOKEN}]: " input_auth
   if [[ "$input_auth" == "-" ]]; then
     AUTH_TOKEN=""
   else
@@ -741,7 +741,7 @@ run_self_checks() {
   check_env_key "NODE_TASK_RUNNING_TIMEOUT"
   check_env_key "NODE_TASK_RETENTION_SECONDS"
   if [[ -z "$AUTH_TOKEN" ]]; then
-    check_warn "AUTH_TOKEN 为空（/admin/* 不鉴权，建议仅内网或配防火墙来源限制）"
+    check_warn "AUTH_TOKEN 为空（controller 接口不鉴权，建议仅内网或配防火墙来源限制）"
   elif [[ "$AUTH_TOKEN" == "devtoken123" || ${#AUTH_TOKEN} -lt 16 ]]; then
     check_warn "AUTH_TOKEN 强度较弱，建议更新为 16 位以上随机串"
   else

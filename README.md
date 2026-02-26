@@ -309,7 +309,7 @@ scp root@旧IP:/var/backups/sb-migrate/sb-migrate-xxxx.tar.gz root@新IP:/root/
 - `HTTPS_DOMAIN=panel.example.com`（启用 HTTPS 时填写域名）
 - `HTTPS_ACME_EMAIL=admin@example.com`（可选，证书账号邮箱）
 - `CONTROLLER_PORT=8080`
-- `AUTH_TOKEN=随机长串`（可空；空值表示关闭 `/admin/*` 鉴权，不建议公网直连）
+- `AUTH_TOKEN=随机长串`（可空；空值表示关闭接口鉴权。不为空时，除 `/health`、`/sub/*`、文档页外其余 API 均需 Bearer）
 - `BOT_TOKEN=xxxxxxxx`（必填）
 - `ADMIN_CHAT_IDS=123,456`（可空）
 - `MIGRATE_DIR=/var/backups/sb-migrate`
@@ -354,9 +354,9 @@ scp root@旧IP:/var/backups/sb-migrate/sb-migrate-xxxx.tar.gz root@新IP:/root/
 
 - `ADMIN_CHAT_IDS` 为空时，任何 Telegram 账号都可看到并操作管理菜单。
 - 建议生产环境务必填写 `ADMIN_CHAT_IDS`（逗号分隔），仅允许指定 chat_id 使用 bot 管理功能。
-- `/admin/backup`、`/admin/migrate/export` 支持可选 Bearer 鉴权：
+- Controller API 支持可选 Bearer 鉴权（全局中间件）：
   - `AUTH_TOKEN` 为空：不校验，保持兼容行为
-  - `AUTH_TOKEN` 非空：必须带 `Authorization: Bearer <AUTH_TOKEN>`
+  - `AUTH_TOKEN` 非空：除 `/health`、`/sub/*`、`/docs`、`/openapi.json`、`/redoc` 外其余接口都必须带 `Authorization: Bearer <AUTH_TOKEN>`
 - 节点同步接口 `/nodes/{node_code}/sync` 已支持来源 IP 白名单：
   - 在节点创建/编辑时设置 `agent_ip`
   - `agent_ip` 已设置时，只有该 IP 才能拉取该节点 sync（其余返回 403）
