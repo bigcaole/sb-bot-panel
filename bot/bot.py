@@ -387,19 +387,49 @@ def build_maintain_log_date_keyboard(target: str, date_keys: list) -> InlineKeyb
     return InlineKeyboardMarkup(rows)
 
 
-def build_maintain_log_result_keyboard(target: str, date_key: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        [
+def build_maintain_log_result_keyboard(
+    target: str, date_key: str, current_page: int, total_pages: int
+) -> InlineKeyboardMarkup:
+    safe_page = 1 if current_page < 1 else current_page
+    safe_total = 1 if total_pages < 1 else total_pages
+    if safe_page > safe_total:
+        safe_page = safe_total
+    prev_page = safe_page - 1 if safe_page > 1 else 1
+    next_page = safe_page + 1 if safe_page < safe_total else safe_total
+
+    rows = []
+    if safe_total > 1:
+        rows.append(
             [
                 InlineKeyboardButton(
-                    "同日刷新", callback_data=f"maintain:logsdate:{target}:{date_key}"
+                    "上一页",
+                    callback_data=f"maintain:logsdate:{target}:{date_key}:{prev_page}",
                 ),
-                InlineKeyboardButton("切换日期", callback_data=f"maintain:logs:{target}"),
-            ],
-            [InlineKeyboardButton("返回服务选择", callback_data="action:maintain_logs")],
-            [InlineKeyboardButton("返回维护菜单", callback_data="menu:maintain")],
+                InlineKeyboardButton(
+                    "下一页",
+                    callback_data=f"maintain:logsdate:{target}:{date_key}:{next_page}",
+                ),
+            ]
+        )
+    rows.append(
+        [
+            InlineKeyboardButton(
+                f"第 {safe_page}/{safe_total} 页（50条/页）",
+                callback_data=f"maintain:logsdate:{target}:{date_key}:{safe_page}",
+            )
         ]
     )
+    rows.append(
+        [
+            InlineKeyboardButton(
+                "同日刷新", callback_data=f"maintain:logsdate:{target}:{date_key}:{safe_page}"
+            ),
+            InlineKeyboardButton("切换日期", callback_data=f"maintain:logs:{target}"),
+        ]
+    )
+    rows.append([InlineKeyboardButton("返回服务选择", callback_data="action:maintain_logs")])
+    rows.append([InlineKeyboardButton("返回维护菜单", callback_data="menu:maintain")])
+    return InlineKeyboardMarkup(rows)
 
 
 def build_node_ops_picker_keyboard(nodes: list) -> InlineKeyboardMarkup:
@@ -1199,13 +1229,11 @@ def get_log_importance_level(line: str) -> int:
     return 3
 
 
-def format_priority_logs(
-    raw_text: str, line_limit: int = 50, line_char_limit: int = 220, total_char_limit: int = 3200
-) -> str:
+def build_priority_log_entries(raw_text: str, line_char_limit: int = 60) -> tuple:
     raw_lines = [str(item or "").strip() for item in str(raw_text or "").splitlines()]
     raw_lines = [item for item in raw_lines if item]
     if not raw_lines:
-        return "(当日无日志)"
+        return [], 0, 0, 0
 
     buckets = {1: [], 2: [], 3: []}
     for line in reversed(raw_lines):
@@ -1220,24 +1248,20 @@ def format_priority_logs(
     for level in (1, 2, 3):
         for line in buckets[level]:
             selected_lines.append("{0} {1}".format(labels[level], line))
-            if len(selected_lines) >= line_limit:
-                break
-        if len(selected_lines) >= line_limit:
-            break
+    return selected_lines, len(buckets[1]), len(buckets[2]), len(buckets[3])
 
-    if not selected_lines:
-        return "(当日无日志)"
 
-    output_lines = []
-    current_size = 0
-    for item in selected_lines:
-        next_size = current_size + len(item) + 1
-        if next_size > total_char_limit:
-            output_lines.append("…（内容过长，已截断）")
-            break
-        output_lines.append(item)
-        current_size = next_size
-    return "\n".join(output_lines) if output_lines else "(当日无日志)"
+def paginate_log_entries(entries: list, page: int, page_size: int = 50) -> tuple:
+    total_count = len(entries)
+    if total_count <= 0:
+        return [], 1, 1
+    total_pages = (total_count + page_size - 1) // page_size
+    safe_page = 1 if page < 1 else page
+    if safe_page > total_pages:
+        safe_page = total_pages
+    start = (safe_page - 1) * page_size
+    end = start + page_size
+    return entries[start:end], safe_page, total_pages
 
 
 def pop_user_speed_pending(
@@ -4383,18 +4407,27 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
         await query.edit_message_text(
             "{0} 日志日期选择（服务器本地时区）：\n"
-            "规则：优先显示一级日志，不足 50 条再补二级，再补三级。".format(unit),
+            "规则：按一级→二级→三级排序；每页 50 条，可翻页查看全部重要日志。".format(unit),
             reply_markup=build_maintain_log_date_keyboard(target, date_keys),
         )
         return
 
     if callback_data.startswith("maintain:logsdate:"):
-        parts = callback_data.split(":", maxsplit=3)
-        if len(parts) != 4:
+        parts = callback_data.split(":")
+        if len(parts) not in (4, 5):
             await query.edit_message_text("请求无效，请重试。", reply_markup=build_back_keyboard("action:maintain_logs"))
             return
         target = parts[2]
         date_key = parts[3]
+        page = 1
+        if len(parts) == 5:
+            if not str(parts[4]).isdigit():
+                await query.edit_message_text(
+                    "分页参数无效，请重新选择。",
+                    reply_markup=build_back_keyboard(f"maintain:logs:{target}"),
+                )
+                return
+            page = int(parts[4])
         if not re.fullmatch(r"\d{8}", date_key):
             await query.edit_message_text(
                 "日期参数无效，请重新选择。",
@@ -4429,17 +4462,31 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 reply_markup=build_back_keyboard(f"maintain:logs:{target}"),
             )
             return
-        recent_logs = format_priority_logs(
-            stdout,
-            line_limit=50,
-            line_char_limit=220,
-            total_char_limit=3200,
+
+        entries, level1_count, level2_count, level3_count = build_priority_log_entries(
+            stdout, line_char_limit=60
         )
+        page_entries, safe_page, total_pages = paginate_log_entries(entries, page, page_size=50)
+        if not page_entries:
+            recent_logs = "(当日无日志)"
+        else:
+            recent_logs = "\n".join(page_entries)
         await query.edit_message_text(
-            "{0} {1} 重要日志（最多 50 条，按一级→二级→三级，时间倒序）：\n\n{2}".format(
-                unit, day_text, recent_logs
+            "{0} {1} 重要日志（按一级→二级→三级，时间倒序）：\n"
+            "一级：{2} 条，二级：{3} 条，三级：{4} 条\n"
+            "当前页：{5}/{6}（每页 50 条）\n\n{7}".format(
+                unit,
+                day_text,
+                level1_count,
+                level2_count,
+                level3_count,
+                safe_page,
+                total_pages,
+                recent_logs,
             ),
-            reply_markup=build_maintain_log_result_keyboard(target, date_key),
+            reply_markup=build_maintain_log_result_keyboard(
+                target, date_key, safe_page, total_pages
+            ),
         )
         return
 
