@@ -1,0 +1,32 @@
+import os
+
+
+def _get_int_env(name: str, default: int) -> int:
+    raw = os.getenv(name, str(default)).strip()
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+NODE_TASK_RUNNING_TIMEOUT_SECONDS = int(_get_int_env("NODE_TASK_RUNNING_TIMEOUT", 120))
+if NODE_TASK_RUNNING_TIMEOUT_SECONDS < 30:
+    NODE_TASK_RUNNING_TIMEOUT_SECONDS = 30
+
+NODE_TASK_RETENTION_SECONDS = int(_get_int_env("NODE_TASK_RETENTION_SECONDS", 7 * 86400))
+if NODE_TASK_RETENTION_SECONDS < 3600:
+    NODE_TASK_RETENTION_SECONDS = 3600
+
+SUB_LINK_SIGN_KEY = os.getenv("SUB_LINK_SIGN_KEY", "").strip()
+SUB_LINK_REQUIRE_SIGNATURE = os.getenv("SUB_LINK_REQUIRE_SIGNATURE", "0").strip() in (
+    "1",
+    "true",
+    "TRUE",
+    "yes",
+    "YES",
+)
+SUB_LINK_DEFAULT_TTL_SECONDS = int(_get_int_env("SUB_LINK_DEFAULT_TTL_SECONDS", 7 * 86400))
+if SUB_LINK_DEFAULT_TTL_SECONDS < 60:
+    SUB_LINK_DEFAULT_TTL_SECONDS = 60
+if SUB_LINK_DEFAULT_TTL_SECONDS > 30 * 86400:
+    SUB_LINK_DEFAULT_TTL_SECONDS = 30 * 86400
