@@ -23,6 +23,7 @@ DEFAULT_PROJECT_DIR="/root/sb-bot-panel"
 PROJECT_DIR="${PROJECT_DIR:-$DEFAULT_PROJECT_DIR}"
 VENV_DIR=""
 ENV_FILE=""
+PYTHON_BIN=""
 MIGRATE_DIR_DEFAULT="/var/backups/sb-migrate"
 
 CONTROLLER_PORT="8080"
@@ -198,6 +199,73 @@ install_base_packages() {
     python3-pip \
     ca-certificates \
     ufw
+}
+
+python_version_ge_311() {
+  local cmd="$1"
+  "$cmd" - <<'PY'
+import sys
+raise SystemExit(0 if sys.version_info >= (3, 11) else 1)
+PY
+}
+
+ensure_python_311_runtime() {
+  local os_id=""
+  local os_version=""
+  if [[ -f /etc/os-release ]]; then
+    # shellcheck disable=SC1091
+    . /etc/os-release
+    os_id="${ID:-}"
+    os_version="${VERSION_ID:-}"
+  fi
+
+  if command -v python3.11 >/dev/null 2>&1 && python_version_ge_311 python3.11; then
+    PYTHON_BIN="$(command -v python3.11)"
+    msg "检测到 Python 3.11: ${PYTHON_BIN}"
+    return
+  fi
+
+  msg "尝试安装 Python 3.11..."
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get install -y python3.11 python3.11-venv python3.11-distutils >/dev/null 2>&1 || true
+
+  if command -v python3.11 >/dev/null 2>&1 && python_version_ge_311 python3.11; then
+    PYTHON_BIN="$(command -v python3.11)"
+    msg "Python 3.11 安装完成: ${PYTHON_BIN}"
+    return
+  fi
+
+  if [[ "$os_id" == "debian" && "$os_version" == 11* ]]; then
+    msg "检测到 Debian 11，尝试启用 bullseye-backports 安装 Python 3.11..."
+    if [[ ! -f /etc/apt/sources.list.d/bullseye-backports.list ]]; then
+      echo "deb http://deb.debian.org/debian bullseye-backports main" >/etc/apt/sources.list.d/bullseye-backports.list
+    fi
+    apt-get update -y >/dev/null 2>&1 || true
+    apt-get install -y -t bullseye-backports python3.11 python3.11-venv >/dev/null 2>&1 || true
+  fi
+
+  if [[ "$os_id" == "ubuntu" ]]; then
+    msg "检测到 Ubuntu，尝试 deadsnakes PPA 安装 Python 3.11..."
+    apt-get install -y software-properties-common >/dev/null 2>&1 || true
+    add-apt-repository -y ppa:deadsnakes/ppa >/dev/null 2>&1 || true
+    apt-get update -y >/dev/null 2>&1 || true
+    apt-get install -y python3.11 python3.11-venv >/dev/null 2>&1 || true
+  fi
+
+  if command -v python3.11 >/dev/null 2>&1 && python_version_ge_311 python3.11; then
+    PYTHON_BIN="$(command -v python3.11)"
+    msg "Python 3.11 安装完成: ${PYTHON_BIN}"
+    return
+  fi
+
+  if command -v python3 >/dev/null 2>&1 && python_version_ge_311 python3; then
+    PYTHON_BIN="$(command -v python3)"
+    warn "未找到 python3.11，回退使用 ${PYTHON_BIN}（版本>=3.11）"
+    return
+  fi
+
+  err "未能找到 Python >=3.11。请手动安装 python3.11 与 python3.11-venv 后重试。"
+  exit 1
 }
 
 install_admin_menu_commands() {
@@ -643,9 +711,20 @@ setup_venv_and_requirements() {
     exit 1
   fi
 
+  if [[ -z "$PYTHON_BIN" ]]; then
+    ensure_python_311_runtime
+  fi
+
+  if [[ -d "$VENV_DIR" && -x "$VENV_DIR/bin/python" ]]; then
+    if ! python_version_ge_311 "$VENV_DIR/bin/python"; then
+      warn "检测到旧 venv Python < 3.11，正在重建 venv..."
+      rm -rf "$VENV_DIR"
+    fi
+  fi
+
   if [[ ! -d "$VENV_DIR" ]]; then
     msg "创建 venv: $VENV_DIR"
-    python3 -m venv "$VENV_DIR"
+    "$PYTHON_BIN" -m venv "$VENV_DIR"
   fi
 
   msg "安装 Python 依赖..."
@@ -998,10 +1077,12 @@ main() {
 
   if [[ "$MODE" == "install" ]]; then
     install_base_packages
+    ensure_python_311_runtime
     setup_venv_and_requirements
   elif [[ "$MODE" == "reuse-config" ]]; then
     msg "更新模式：优先复用现有配置（不重复提问）。"
     install_base_packages
+    ensure_python_311_runtime
     setup_venv_and_requirements
     load_existing_env_defaults
     normalize_loaded_values

@@ -6,6 +6,7 @@ MIGRATE_DIR_DEFAULT="/var/backups/sb-migrate"
 MIGRATE_DIR="$MIGRATE_DIR_DEFAULT"
 ENV_FILE="${PROJECT_DIR}/.env"
 VENV_DIR="${PROJECT_DIR}/venv"
+PYTHON_BIN=""
 
 CONTROLLER_PORT="8080"
 CONTROLLER_URL=""
@@ -17,6 +18,8 @@ HTTPS_ACME_EMAIL=""
 AUTH_TOKEN=""
 BOT_TOKEN=""
 ADMIN_CHAT_IDS=""
+BACKUP_RETENTION_COUNT="30"
+MIGRATE_RETENTION_COUNT="20"
 BOT_MENU_TTL="60"
 BOT_NODE_MONITOR_INTERVAL="60"
 BOT_NODE_OFFLINE_THRESHOLD="120"
@@ -141,6 +144,12 @@ ADMIN_CHAT_IDS=${ADMIN_CHAT_IDS}
 # 迁移包目录
 MIGRATE_DIR=${MIGRATE_DIR}
 
+# 控制器备份保留数量（超出自动清理）
+BACKUP_RETENTION_COUNT=${BACKUP_RETENTION_COUNT}
+
+# 迁移包保留数量（超出自动清理）
+MIGRATE_RETENTION_COUNT=${MIGRATE_RETENTION_COUNT}
+
 # Bot 菜单按钮自动清理秒数
 BOT_MENU_TTL=${BOT_MENU_TTL}
 
@@ -237,6 +246,14 @@ is_valid_domain() {
   [[ "$value" =~ ^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$ ]]
 }
 
+python_version_ge_311() {
+  local cmd="$1"
+  "$cmd" - <<'PY'
+import sys
+raise SystemExit(0 if sys.version_info >= (3, 11) else 1)
+PY
+}
+
 install_dependencies() {
   msg "安装基础依赖..."
   export DEBIAN_FRONTEND=noninteractive
@@ -252,13 +269,67 @@ install_dependencies() {
     ufw
 }
 
+ensure_python_311_runtime() {
+  local os_id=""
+  local os_version=""
+  if [[ -f /etc/os-release ]]; then
+    # shellcheck disable=SC1091
+    . /etc/os-release
+    os_id="${ID:-}"
+    os_version="${VERSION_ID:-}"
+  fi
+
+  if command -v python3.11 >/dev/null 2>&1 && python_version_ge_311 python3.11; then
+    PYTHON_BIN="$(command -v python3.11)"
+    return
+  fi
+
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get install -y python3.11 python3.11-venv python3.11-distutils >/dev/null 2>&1 || true
+
+  if [[ "$os_id" == "debian" && "$os_version" == 11* ]]; then
+    if [[ ! -f /etc/apt/sources.list.d/bullseye-backports.list ]]; then
+      echo "deb http://deb.debian.org/debian bullseye-backports main" >/etc/apt/sources.list.d/bullseye-backports.list
+    fi
+    apt-get update -y >/dev/null 2>&1 || true
+    apt-get install -y -t bullseye-backports python3.11 python3.11-venv >/dev/null 2>&1 || true
+  fi
+
+  if [[ "$os_id" == "ubuntu" ]]; then
+    apt-get install -y software-properties-common >/dev/null 2>&1 || true
+    add-apt-repository -y ppa:deadsnakes/ppa >/dev/null 2>&1 || true
+    apt-get update -y >/dev/null 2>&1 || true
+    apt-get install -y python3.11 python3.11-venv >/dev/null 2>&1 || true
+  fi
+
+  if command -v python3.11 >/dev/null 2>&1 && python_version_ge_311 python3.11; then
+    PYTHON_BIN="$(command -v python3.11)"
+    return
+  fi
+  if command -v python3 >/dev/null 2>&1 && python_version_ge_311 python3; then
+    PYTHON_BIN="$(command -v python3)"
+    return
+  fi
+  err "未能找到 Python >=3.11。请先安装 python3.11 与 python3.11-venv 后再导入。"
+  exit 1
+}
+
 setup_venv() {
   if [[ ! -f "$PROJECT_DIR/requirements.txt" ]]; then
     err "缺少 requirements.txt，请先确保项目代码完整。"
     exit 1
   fi
+  if [[ -z "$PYTHON_BIN" ]]; then
+    ensure_python_311_runtime
+  fi
+  if [[ -d "$VENV_DIR" && -x "$VENV_DIR/bin/python" ]]; then
+    if ! python_version_ge_311 "$VENV_DIR/bin/python"; then
+      warn "检测到旧 venv Python < 3.11，正在重建 venv..."
+      rm -rf "$VENV_DIR"
+    fi
+  fi
   if [[ ! -d "$VENV_DIR" ]]; then
-    python3 -m venv "$VENV_DIR"
+    "$PYTHON_BIN" -m venv "$VENV_DIR"
   fi
   "$VENV_DIR/bin/pip" install --upgrade pip setuptools wheel >/dev/null
   "$VENV_DIR/bin/pip" install -r "$PROJECT_DIR/requirements.txt"
@@ -458,6 +529,10 @@ main() {
   ADMIN_CHAT_IDS="$(get_env_value ADMIN_CHAT_IDS)"
   MIGRATE_DIR="$(get_env_value MIGRATE_DIR)"
   MIGRATE_DIR="${MIGRATE_DIR:-$MIGRATE_DIR_DEFAULT}"
+  BACKUP_RETENTION_COUNT="$(get_env_value BACKUP_RETENTION_COUNT)"
+  BACKUP_RETENTION_COUNT="${BACKUP_RETENTION_COUNT:-30}"
+  MIGRATE_RETENTION_COUNT="$(get_env_value MIGRATE_RETENTION_COUNT)"
+  MIGRATE_RETENTION_COUNT="${MIGRATE_RETENTION_COUNT:-20}"
   BOT_MENU_TTL="$(get_env_value BOT_MENU_TTL)"
   BOT_MENU_TTL="${BOT_MENU_TTL:-60}"
   BOT_NODE_MONITOR_INTERVAL="$(get_env_value BOT_NODE_MONITOR_INTERVAL)"
@@ -573,6 +648,7 @@ main() {
   write_env_file
 
   install_dependencies
+  ensure_python_311_runtime
   install_caddy_if_needed
   setup_venv
   write_services

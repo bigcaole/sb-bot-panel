@@ -7,16 +7,16 @@
 ## 目录新增
 
 - `agent/sb_agent.py`
-  - 节点侧 agent（Python 3.9），轮询 controller `/nodes/{node_code}/sync`，生成并热更新 `sing-box` 配置。
+  - 节点侧 agent（Python 3.11+），轮询 controller `/nodes/{node_code}/sync`，生成并热更新 `sing-box` 配置。
   - 当 UFW 已启用时，agent 会自动放行 TUIC 相关 UDP 端口（含监听端口与端口池范围）。
 - `scripts/install.sh`
-  - Debian 12 中文交互式安装/更新脚本（含域名解析检查、防火墙、服务部署、证书检查 timer）。
+  - Debian/Ubuntu 中文交互式安装/更新脚本（含域名解析检查、防火墙、服务部署、证书检查 timer）。
 - `scripts/menu.sh`
   - 中文数字菜单（安装/配置/启停/日志/证书刷新/卸载）。
 - `scripts/sb_cert_check.sh`
   - 证书状态检查脚本（供菜单与 timer 调用）。
 
-## 节点一键安装（Debian 12）
+## 节点一键安装（Debian/Ubuntu）
 
 ### 方式 A：仓库内执行（推荐）
 
@@ -289,7 +289,20 @@ bash /root/sb-bot-panel/scripts/admin/smoke_test.sh --require-api
 - 检查内容：
   - 管理/节点脚本 `bash -n` 语法检查
   - `scripts/admin/smoke_test.sh --skip-api`（语法 + 单元测试）
-- Python 版本：`3.9`、`3.11`
+- Python 版本：`3.11`、`3.12`
+
+## Python 与系统兼容
+
+- 生产基线：`Python 3.11`（推荐）
+- 兼容版本：`Python 3.12`
+- 不再建议：`Python 3.9`（已退役，缺少安全支持）
+
+安装脚本已内置 Python 3.11 适配逻辑：
+
+- Debian 12：直接使用系统 Python 3.11
+- Debian 13：系统 Python 通常 >=3.11，直接可用
+- Debian 11：自动尝试 `bullseye-backports` 安装 Python 3.11
+- Ubuntu（20.04/22.04/24.04）：自动尝试系统包，必要时回退 `deadsnakes` 安装 Python 3.11
 
 ## 迁移导出/导入（管理服务器）
 

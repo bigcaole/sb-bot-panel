@@ -43,6 +43,7 @@ ACME_EMAIL=""
 TUIC_LISTEN_PORT=8443
 POLL_INTERVAL=15
 PUBLIC_IP=""
+AGENT_PYTHON_BIN=""
 
 msg() { echo -e "\033[1;32m[信息]\033[0m $*"; }
 warn() { echo -e "\033[1;33m[警告]\033[0m $*"; }
@@ -161,6 +162,63 @@ install_base_packages() {
     bind9-host
 }
 
+python_version_ge_311() {
+  local cmd="$1"
+  "$cmd" - <<'PY'
+import sys
+raise SystemExit(0 if sys.version_info >= (3, 11) else 1)
+PY
+}
+
+ensure_python_311_runtime() {
+  local os_id=""
+  local os_version=""
+  if [[ -f /etc/os-release ]]; then
+    # shellcheck disable=SC1091
+    . /etc/os-release
+    os_id="${ID:-}"
+    os_version="${VERSION_ID:-}"
+  fi
+
+  if command -v python3.11 >/dev/null 2>&1 && python_version_ge_311 python3.11; then
+    AGENT_PYTHON_BIN="$(command -v python3.11)"
+    msg "检测到 Python 3.11: ${AGENT_PYTHON_BIN}"
+    return
+  fi
+
+  msg "尝试安装 Python 3.11..."
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get install -y python3.11 python3.11-venv python3.11-distutils >/dev/null 2>&1 || true
+
+  if [[ "$os_id" == "debian" && "$os_version" == 11* ]]; then
+    if [[ ! -f /etc/apt/sources.list.d/bullseye-backports.list ]]; then
+      echo "deb http://deb.debian.org/debian bullseye-backports main" >/etc/apt/sources.list.d/bullseye-backports.list
+    fi
+    apt-get update -y >/dev/null 2>&1 || true
+    apt-get install -y -t bullseye-backports python3.11 python3.11-venv >/dev/null 2>&1 || true
+  fi
+
+  if [[ "$os_id" == "ubuntu" ]]; then
+    apt-get install -y software-properties-common >/dev/null 2>&1 || true
+    add-apt-repository -y ppa:deadsnakes/ppa >/dev/null 2>&1 || true
+    apt-get update -y >/dev/null 2>&1 || true
+    apt-get install -y python3.11 python3.11-venv >/dev/null 2>&1 || true
+  fi
+
+  if command -v python3.11 >/dev/null 2>&1 && python_version_ge_311 python3.11; then
+    AGENT_PYTHON_BIN="$(command -v python3.11)"
+    msg "Python 3.11 安装完成: ${AGENT_PYTHON_BIN}"
+    return
+  fi
+  if command -v python3 >/dev/null 2>&1 && python_version_ge_311 python3; then
+    AGENT_PYTHON_BIN="$(command -v python3)"
+    warn "未找到 python3.11，回退使用 ${AGENT_PYTHON_BIN}（版本>=3.11）"
+    return
+  fi
+  err "未能找到 Python >=3.11。请手动安装 python3.11 与 python3.11-venv 后重试。"
+  exit 1
+}
+
 ensure_dns_tools() {
   if command -v dig >/dev/null 2>&1 || command -v host >/dev/null 2>&1; then
     return
@@ -190,9 +248,20 @@ ensure_dirs() {
 }
 
 setup_python_venv() {
+  if [[ -z "$AGENT_PYTHON_BIN" ]]; then
+    ensure_python_311_runtime
+  fi
+
+  if [[ -d "$AGENT_VENV" && -x "$AGENT_VENV/bin/python" ]]; then
+    if ! python_version_ge_311 "$AGENT_VENV/bin/python"; then
+      warn "检测到旧 venv Python < 3.11，正在重建 venv..."
+      rm -rf "$AGENT_VENV"
+    fi
+  fi
+
   if [[ ! -d "$AGENT_VENV" ]]; then
     msg "创建 sb-agent 虚拟环境: $AGENT_VENV"
-    python3 -m venv "$AGENT_VENV"
+    "$AGENT_PYTHON_BIN" -m venv "$AGENT_VENV"
   fi
   "$AGENT_VENV/bin/pip" install --upgrade pip setuptools wheel >/dev/null
 }
@@ -577,6 +646,7 @@ main() {
     fi
   fi
 
+  ensure_python_311_runtime
   ensure_dirs
   setup_python_venv
   install_agent_files

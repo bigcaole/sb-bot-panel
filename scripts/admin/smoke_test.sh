@@ -94,6 +94,14 @@ select_python_bin() {
     err "未找到可用的 Python 解释器。"
     exit 1
   fi
+  if ! "$PYTHON_BIN" - <<'PY'
+import sys
+raise SystemExit(0 if sys.version_info >= (3, 11) else 1)
+PY
+  then
+    err "当前 Python 版本低于 3.11：${PYTHON_BIN}。请先执行安装/更新脚本升级运行环境。"
+    exit 10
+  fi
   msg "使用 Python: ${PYTHON_BIN}"
 }
 
