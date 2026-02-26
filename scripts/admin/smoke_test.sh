@@ -108,7 +108,10 @@ run_py_checks() {
   fi
 
   msg "2/3 运行 unittest..."
-  if ! PYTHONPYCACHEPREFIX=/tmp/pycache_sb_panel "$PYTHON_BIN" -m unittest discover \
+  local py_warnings
+  py_warnings="ignore:Unclosed <MemoryObjectSendStream:ResourceWarning,ignore:Unclosed <MemoryObjectReceiveStream:ResourceWarning"
+  if ! PYTHONPYCACHEPREFIX=/tmp/pycache_sb_panel PYTHONWARNINGS="$py_warnings" \
+      "$PYTHON_BIN" -m unittest discover \
       -s "${PROJECT_DIR}/tests" \
       -p 'test_*.py' \
       -v; then

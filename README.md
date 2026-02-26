@@ -281,6 +281,16 @@ bash /root/sb-bot-panel/scripts/admin/smoke_test.sh --require-api
 - 检查项：Python 语法、`tests/` 单元测试、controller API 鉴权冒烟
 - 退出码：`0=通过`，`10=代码检查失败`，`20=API检查失败`，`30=代码+API均失败`
 
+## GitHub 自动验收（CI）
+
+仓库已新增：`.github/workflows/ci.yml`
+
+- 触发时机：`push main`、`pull request`
+- 检查内容：
+  - 管理/节点脚本 `bash -n` 语法检查
+  - `scripts/admin/smoke_test.sh --skip-api`（语法 + 单元测试）
+- Python 版本：`3.9`、`3.11`
+
 ## 迁移导出/导入（管理服务器）
 
 默认迁移包目录：`/var/backups/sb-migrate/`
