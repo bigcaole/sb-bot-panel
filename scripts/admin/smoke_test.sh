@@ -4,6 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 ENV_FILE="${PROJECT_DIR}/.env"
+PYTHON_BIN=""
 
 API_MODE="auto" # auto | require | skip
 API_BASE_URL=""
@@ -66,15 +67,29 @@ load_env() {
   fi
 }
 
+select_python_bin() {
+  if [[ -x "${PROJECT_DIR}/venv/bin/python3" ]]; then
+    PYTHON_BIN="${PROJECT_DIR}/venv/bin/python3"
+  elif [[ -x "${PROJECT_DIR}/venv/bin/python" ]]; then
+    PYTHON_BIN="${PROJECT_DIR}/venv/bin/python"
+  elif command -v python3 >/dev/null 2>&1; then
+    PYTHON_BIN="$(command -v python3)"
+  else
+    err "未找到可用的 Python 解释器。"
+    exit 1
+  fi
+  msg "使用 Python: ${PYTHON_BIN}"
+}
+
 run_py_checks() {
   msg "1/3 运行 Python 语法检查..."
-  PYTHONPYCACHEPREFIX=/tmp/pycache_sb_panel python3 -m py_compile \
+  PYTHONPYCACHEPREFIX=/tmp/pycache_sb_panel "$PYTHON_BIN" -m py_compile \
     "${PROJECT_DIR}"/controller/*.py \
     "${PROJECT_DIR}"/bot/bot.py \
     "${PROJECT_DIR}"/tests/*.py
 
   msg "2/3 运行 unittest..."
-  PYTHONPYCACHEPREFIX=/tmp/pycache_sb_panel python3 -m unittest discover \
+  PYTHONPYCACHEPREFIX=/tmp/pycache_sb_panel "$PYTHON_BIN" -m unittest discover \
     -s "${PROJECT_DIR}/tests" \
     -p 'test_*.py' \
     -v
@@ -139,6 +154,7 @@ run_api_checks() {
 main() {
   parse_args "$@"
   load_env
+  select_python_bin
   run_py_checks
   run_api_checks
   msg "验收完成：全部检查通过。"
