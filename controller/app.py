@@ -15,7 +15,7 @@ from threading import Lock
 from typing import Any, Dict, List, Optional, Tuple, Union
 from urllib.parse import quote
 
-from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi import APIRouter, FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
 from controller.db import BASE_DIR, get_connection, init_db
 from controller.schemas import (
@@ -92,6 +92,11 @@ _RATE_LIMIT_STATE: Dict[str, Tuple[int, int]] = {}
 _RATE_LIMIT_LAST_CLEANUP_AT = 0
 
 app = FastAPI()
+misc_router = APIRouter(tags=["misc"])
+admin_router = APIRouter(tags=["admin"])
+users_router = APIRouter(tags=["users"])
+nodes_router = APIRouter(tags=["nodes"])
+sub_router = APIRouter(tags=["sub"])
 
 
 def verify_admin_authorization(authorization: Optional[str]) -> Optional[JSONResponse]:
@@ -517,12 +522,12 @@ def on_startup() -> None:
     init_db()
 
 
-@app.get("/health")
+@misc_router.get("/health")
 def health() -> Dict[str, bool]:
     return {"ok": True}
 
 
-@app.post(
+@admin_router.post(
     "/admin/backup",
     summary="Create controller backup",
     description="AUTH_TOKEN 为空时不校验；非空时需要请求头 Authorization: Bearer <AUTH_TOKEN>。",
@@ -574,7 +579,7 @@ def create_backup(
     }
 
 
-@app.post(
+@admin_router.post(
     "/admin/migrate/export",
     summary="Create migration export package",
     description="AUTH_TOKEN 为空时不校验；非空时需要请求头 Authorization: Bearer <AUTH_TOKEN>。",
@@ -647,7 +652,7 @@ def create_migrate_export(
     }
 
 
-@app.get(
+@admin_router.get(
     "/admin/node_access/status",
     summary="Node access control status",
     description="AUTH_TOKEN 为空时不校验；非空时需要请求头 Authorization: Bearer <AUTH_TOKEN>。",
@@ -694,7 +699,7 @@ def get_node_access_status(
     }
 
 
-@app.get(
+@admin_router.get(
     "/admin/security/status",
     summary="Security configuration status",
     description="AUTH_TOKEN 为空时不校验；非空时需要请求头 Authorization: Bearer <AUTH_TOKEN>。",
@@ -733,7 +738,7 @@ def get_admin_security_status(
     }
 
 
-@app.get(
+@admin_router.get(
     "/admin/audit",
     summary="List audit logs",
     description="AUTH_TOKEN 为空时不校验；非空时需要请求头 Authorization: Bearer <AUTH_TOKEN>。",
@@ -778,7 +783,7 @@ def list_admin_audit_logs(
     return [dict(row) for row in rows]
 
 
-@app.post("/users/create")
+@users_router.post("/users/create")
 def create_user(payload: CreateUserRequest, request: Request) -> Dict[str, Union[int, str]]:
     now = int(time.time())
 
@@ -854,7 +859,7 @@ def create_user(payload: CreateUserRequest, request: Request) -> Dict[str, Union
     }
 
 
-@app.post("/users/{user_code}/set_speed")
+@users_router.post("/users/{user_code}/set_speed")
 def set_user_speed(
     user_code: str, payload: SetUserSpeedRequest, request: Request
 ) -> Dict[str, Union[bool, int, str]]:
@@ -884,7 +889,7 @@ def set_user_speed(
     return {"ok": True, "user_code": user_code, "speed_mbps": payload.speed_mbps}
 
 
-@app.post("/users/{user_code}/set_status")
+@users_router.post("/users/{user_code}/set_status")
 def set_user_status(
     user_code: str, payload: SetUserStatusRequest, request: Request
 ) -> Dict[str, Union[bool, str]]:
@@ -918,7 +923,7 @@ def set_user_status(
     return {"ok": True, "user_code": user_code, "status": status_value}
 
 
-@app.delete("/users/{user_code}")
+@users_router.delete("/users/{user_code}")
 def delete_user(user_code: str, request: Request) -> Dict[str, Union[bool, str]]:
     with get_connection() as conn:
         user_row = conn.execute(
@@ -950,7 +955,7 @@ def delete_user(user_code: str, request: Request) -> Dict[str, Union[bool, str]]
     return {"ok": True, "user_code": user_code}
 
 
-@app.post("/nodes/create")
+@nodes_router.post("/nodes/create")
 def create_node(payload: CreateNodeRequest, request: Request) -> Dict[str, Union[int, str, None]]:
     if payload.tuic_port_start > payload.tuic_port_end:
         raise HTTPException(status_code=400, detail="Invalid port range: start must be <= end")
@@ -1042,7 +1047,7 @@ def create_node(payload: CreateNodeRequest, request: Request) -> Dict[str, Union
     }
 
 
-@app.get("/nodes")
+@nodes_router.get("/nodes")
 def list_nodes() -> List[Dict[str, Union[int, str, None]]]:
     with get_connection() as conn:
         rows = conn.execute(
@@ -1072,7 +1077,7 @@ def list_nodes() -> List[Dict[str, Union[int, str, None]]]:
     return [dict(row) for row in rows]
 
 
-@app.get("/nodes/{node_code}")
+@nodes_router.get("/nodes/{node_code}")
 def get_node(node_code: str) -> Dict[str, Union[int, str, None]]:
     with get_connection() as conn:
         row = conn.execute(
@@ -1105,7 +1110,7 @@ def get_node(node_code: str) -> Dict[str, Union[int, str, None]]:
     return dict(row)
 
 
-@app.get("/nodes/{node_code}/stats")
+@nodes_router.get("/nodes/{node_code}/stats")
 def get_node_stats(node_code: str) -> Dict[str, Union[int, str]]:
     with get_connection() as conn:
         node_row = conn.execute(
@@ -1122,7 +1127,7 @@ def get_node_stats(node_code: str) -> Dict[str, Union[int, str]]:
     return {"node_code": node_code, "bound_users": int(count_row["bound_users"])}
 
 
-@app.post("/nodes/{node_code}/tasks/create", response_model=None)
+@nodes_router.post("/nodes/{node_code}/tasks/create", response_model=None)
 def create_node_task(
     node_code: str,
     payload: CreateNodeTaskRequest,
@@ -1211,7 +1216,7 @@ def create_node_task(
     return build_task_row_dict(created_row)
 
 
-@app.get("/nodes/{node_code}/tasks", response_model=None)
+@nodes_router.get("/nodes/{node_code}/tasks", response_model=None)
 def list_node_tasks(
     node_code: str,
     limit: int = 20,
@@ -1257,7 +1262,7 @@ def list_node_tasks(
     return [build_task_row_dict(row) for row in rows]
 
 
-@app.post("/nodes/{node_code}/tasks/next", response_model=None)
+@nodes_router.post("/nodes/{node_code}/tasks/next", response_model=None)
 def get_next_node_task(
     node_code: str,
     request: Request,
@@ -1337,7 +1342,7 @@ def get_next_node_task(
     return {"ok": True, "task": build_task_row_dict(running_row)}
 
 
-@app.post("/nodes/{node_code}/tasks/{task_id}/report", response_model=None)
+@nodes_router.post("/nodes/{node_code}/tasks/{task_id}/report", response_model=None)
 def report_node_task(
     node_code: str,
     task_id: int,
@@ -1416,7 +1421,7 @@ def report_node_task(
 
 # Used by node-side agent polling periodically to sync node and bound-user config.
 # If nodes.agent_ip is set, this endpoint enforces source-IP matching for extra safety.
-@app.get("/nodes/{node_code}/sync")
+@nodes_router.get("/nodes/{node_code}/sync")
 def get_node_sync(node_code: str, request: Request) -> Dict[str, Union[Dict, List, int]]:
     generated_at = int(time.time())
     with get_connection() as conn:
@@ -1481,7 +1486,7 @@ def get_node_sync(node_code: str, request: Request) -> Dict[str, Union[Dict, Lis
     }
 
 
-@app.patch("/nodes/{node_code}")
+@nodes_router.patch("/nodes/{node_code}")
 def update_node(
     node_code: str, payload: UpdateNodeRequest, request: Request
 ) -> Dict[str, Union[int, str, None]]:
@@ -1639,7 +1644,7 @@ def update_node(
     return dict(updated)
 
 
-@app.delete("/nodes/{node_code}")
+@nodes_router.delete("/nodes/{node_code}")
 def delete_node(node_code: str, request: Request) -> Dict[str, bool]:
     with get_connection() as conn:
         node_row = conn.execute(
@@ -1688,7 +1693,7 @@ def _pick_smallest_free_port(
     return None
 
 
-@app.post("/users/{user_code}/assign_node")
+@users_router.post("/users/{user_code}/assign_node")
 def assign_node(
     user_code: str, payload: AssignNodeRequest, request: Request
 ) -> Dict[str, Union[int, str]]:
@@ -1756,7 +1761,7 @@ def assign_node(
     return {"user_code": user_code, "node_code": payload.node_code, "tuic_port": tuic_port}
 
 
-@app.post("/users/{user_code}/unassign_node")
+@users_router.post("/users/{user_code}/unassign_node")
 def unassign_node(
     user_code: str, payload: AssignNodeRequest, request: Request
 ) -> Dict[str, Union[bool, str]]:
@@ -1804,7 +1809,7 @@ def unassign_node(
     return {"ok": True, "user_code": user_code, "node_code": payload.node_code}
 
 
-@app.get("/users/{user_code}/nodes")
+@users_router.get("/users/{user_code}/nodes")
 def list_user_nodes(user_code: str) -> List[Dict[str, Union[int, str, None]]]:
     with get_connection() as conn:
         user_row = conn.execute(
@@ -1834,7 +1839,7 @@ def list_user_nodes(user_code: str) -> List[Dict[str, Union[int, str, None]]]:
     return [dict(row) for row in rows]
 
 
-@app.get("/users/{user_code}")
+@users_router.get("/users/{user_code}")
 def get_user(user_code: str) -> Dict[str, Union[int, str, None]]:
     with get_connection() as conn:
         row = conn.execute("SELECT * FROM users WHERE user_code = ?", (user_code,)).fetchone()
@@ -1845,7 +1850,7 @@ def get_user(user_code: str) -> Dict[str, Union[int, str, None]]:
     return dict(row)
 
 
-@app.get("/users")
+@users_router.get("/users")
 def list_users() -> List[Dict[str, Union[int, str, None]]]:
     with get_connection() as conn:
         rows = conn.execute(
@@ -2009,14 +2014,14 @@ def _build_subscription_links_text(user_code: str) -> str:
     return "\n".join(lines)
 
 
-@app.get("/sub/links/{user_code}", response_class=PlainTextResponse)
+@sub_router.get("/sub/links/{user_code}", response_class=PlainTextResponse)
 def get_sub_links(user_code: str, exp: str = "", sig: str = "") -> PlainTextResponse:
     verify_sub_access(user_code, exp=exp, sig=sig)
     text = _build_subscription_links_text(user_code)
     return PlainTextResponse(content=text)
 
 
-@app.get("/sub/base64/{user_code}", response_class=PlainTextResponse)
+@sub_router.get("/sub/base64/{user_code}", response_class=PlainTextResponse)
 def get_sub_base64(user_code: str, exp: str = "", sig: str = "") -> PlainTextResponse:
     verify_sub_access(user_code, exp=exp, sig=sig)
     text = _build_subscription_links_text(user_code)
@@ -2024,7 +2029,7 @@ def get_sub_base64(user_code: str, exp: str = "", sig: str = "") -> PlainTextRes
     return PlainTextResponse(content=encoded)
 
 
-@app.get(
+@admin_router.get(
     "/admin/sub/sign/{user_code}",
     summary="Generate signed subscription URLs",
     description="AUTH_TOKEN 为空时不校验；非空时需要 Bearer。可用于 bot 生成带签名订阅链接。",
@@ -2077,6 +2082,13 @@ def get_signed_sub_urls(
         "links_url": links_url,
         "base64_url": base64_url,
     }
+
+
+app.include_router(misc_router)
+app.include_router(admin_router)
+app.include_router(users_router)
+app.include_router(nodes_router)
+app.include_router(sub_router)
 
 
 if __name__ == "__main__":
