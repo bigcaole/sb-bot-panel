@@ -216,14 +216,13 @@ sudo bash scripts/admin/menu_admin.sh
 
 在 Telegram 的 `管理服务器` 菜单中已支持：
 
-- 安装/更新（后台执行 `install_admin.sh --reuse-config`）
+- 安装/更新（后台执行 `install_admin.sh --reuse-config`，仅作用于当前管理服务器）
 - 配置向导（远程修改 `.env` 后后台重载）
 - 启动/停止 controller
 - 状态查看（controller/bot/caddy）
 - 查看日志（controller/bot/caddy）
 - HTTPS 证书状态 / 刷新
 - 迁移导出 / 迁移导入（导入走非交互模式）
-- 访问安全状态（检查节点来源 IP 白名单配置）
 - 操作日志（`/admin/audit`，查看最近审计记录）
 - 访问安全（整合节点来源 IP 白名单状态 + 全局安全配置状态）
 
@@ -231,7 +230,7 @@ sudo bash scripts/admin/menu_admin.sh
 
 在 Telegram 的 `节点与线路 -> 节点远程运维` 中可按节点下发任务：
 
-- 同步更新（节点执行 `scripts/install.sh --sync-only`）
+- 同步更新（节点执行 `scripts/install.sh --sync-only`，仅作用于你当前选中的该节点）
 - 重启 sing-box
 - 查看 sing-box / sb-agent 状态
 - 查看 sing-box / sb-agent 日志（通过任务回传）

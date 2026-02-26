@@ -202,7 +202,7 @@ SUBMENUS = {
     "maintain": {
         "title": "管理服务器",
         "buttons": [
-            ("安装/更新", "action:maintain_update"),
+            ("安装/更新（本管理服务器）", "action:maintain_update"),
             ("配置向导", "action:maintain_config"),
             ("启动controller", "action:maintain_controller_start"),
             ("停止controller", "action:maintain_controller_stop"),
@@ -493,7 +493,7 @@ def build_node_ops_picker_keyboard(nodes: list) -> InlineKeyboardMarkup:
 def build_node_ops_panel_keyboard(node_code: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
-            [InlineKeyboardButton("同步更新（节点侧）", callback_data=f"nodeops:run:{node_code}:update")],
+            [InlineKeyboardButton("同步更新（仅当前节点）", callback_data=f"nodeops:run:{node_code}:update")],
             [InlineKeyboardButton("重启 sing-box", callback_data=f"nodeops:run:{node_code}:restart")],
             [
                 InlineKeyboardButton("查看 sing-box 状态", callback_data=f"nodeops:run:{node_code}:status_sb"),
@@ -656,6 +656,13 @@ def register_main_menu_message(
     message_map[chat_id] = existing[-20:]
 
 
+def set_main_menu_message(
+    context: ContextTypes.DEFAULT_TYPE, chat_id: int, message_id: int
+) -> None:
+    message_map = get_main_menu_message_map(context)
+    message_map[chat_id] = [message_id]
+
+
 async def purge_main_menu_messages(
     context: ContextTypes.DEFAULT_TYPE, chat_id: int
 ) -> None:
@@ -663,13 +670,12 @@ async def purge_main_menu_messages(
     existing = message_map.get(chat_id, [])
     if not isinstance(existing, list):
         existing = []
-    remaining = []
     for old_message_id in existing:
         try:
             await context.bot.delete_message(chat_id=chat_id, message_id=old_message_id)
         except (BadRequest, Forbidden):
-            remaining.append(old_message_id)
-    message_map[chat_id] = remaining
+            pass
+    message_map[chat_id] = []
 
 
 def remember_known_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1952,7 +1958,7 @@ async def run_node_ops_action(query, node_code: str, action_key: str) -> None:
         "status_ag": ("status_agent", None, 1, "已下发“查看 sb-agent 状态”任务"),
         "logs_sb": ("logs_singbox", {"lines": 120}, 1, "已下发“查看 sing-box 日志”任务"),
         "logs_ag": ("logs_agent", {"lines": 120}, 1, "已下发“查看 sb-agent 日志”任务"),
-        "update": ("update_sync", None, 2, "已下发“节点同步更新”任务"),
+        "update": ("update_sync", None, 2, "已下发“节点同步更新”任务（仅当前节点）"),
     }
     if action_key not in task_mapping:
         await query.edit_message_text(
@@ -2794,12 +2800,32 @@ async def send_user_nodes_manage_message(
 async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message:
         chat_id = update.message.chat_id
+        message_map = get_main_menu_message_map(context)
+        existing = message_map.get(chat_id, [])
+        if not isinstance(existing, list):
+            existing = []
+
+        # 优先复用最近一条机器人菜单消息，避免 /start /menu 反复刷出新菜单消息。
+        for old_message_id in reversed(existing):
+            try:
+                await context.bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=old_message_id,
+                    text="主菜单",
+                    reply_markup=build_main_menu(),
+                )
+                set_main_menu_message(context, chat_id, old_message_id)
+                schedule_menu_auto_clear(context, chat_id, old_message_id)
+                return
+            except (BadRequest, Forbidden):
+                continue
+
         await purge_main_menu_messages(context, chat_id)
 
         sent = await reply_text_with_auto_clear(
             update.message, context, "主菜单", reply_markup=build_main_menu()
         )
-        register_main_menu_message(context, chat_id, sent.message_id)
+        set_main_menu_message(context, chat_id, sent.message_id)
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -4560,7 +4586,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         )
         log_path = launch_background_job(update_cmd, "maintain-update")
         await query.edit_message_text(
-            "安装/更新任务已启动（后台执行）。\n"
+            "管理服务器安装/更新任务已启动（后台执行）。\n"
+            "作用范围：仅当前这台运行 sb-controller/sb-bot 的管理服务器。\n"
             f"日志文件：{log_path}\n\n"
             "说明：该任务会拉取更新、校验依赖并重启服务。",
             reply_markup=build_back_keyboard("menu:maintain"),
