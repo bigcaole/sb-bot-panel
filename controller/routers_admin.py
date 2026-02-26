@@ -19,11 +19,45 @@ from controller.security import (
     TRUST_X_FORWARDED_FOR,
     verify_admin_authorization,
 )
-from controller.settings import SUB_LINK_DEFAULT_TTL_SECONDS, SUB_LINK_REQUIRE_SIGNATURE, SUB_LINK_SIGN_KEY
+from controller.settings import (
+    BACKUP_RETENTION_COUNT,
+    MIGRATE_RETENTION_COUNT,
+    SUB_LINK_DEFAULT_TTL_SECONDS,
+    SUB_LINK_REQUIRE_SIGNATURE,
+    SUB_LINK_SIGN_KEY,
+)
 from controller.subscription import build_signed_subscription_urls
 
 
 router = APIRouter(tags=["admin"])
+
+
+def cleanup_archives_by_count(
+    directory: Path, name_prefix: str, keep_count: int
+) -> int:
+    if keep_count < 1:
+        keep_count = 1
+    if not directory.exists():
+        return 0
+    files = []
+    for item in directory.iterdir():
+        if item.is_file() and item.name.startswith(name_prefix) and item.name.endswith(".tar.gz"):
+            files.append(item)
+    def _mtime(file_path: Path) -> float:
+        try:
+            return float(file_path.stat().st_mtime)
+        except OSError:
+            return 0.0
+
+    files.sort(key=_mtime, reverse=True)
+    removed_count = 0
+    for old_file in files[keep_count:]:
+        try:
+            old_file.unlink()
+            removed_count += 1
+        except OSError:
+            continue
+    return removed_count
 
 
 @router.post(
@@ -54,6 +88,9 @@ def create_backup(
         with tarfile.open(backup_path, "w:gz") as archive:
             archive.add(data_dir, arcname="data")
         size_bytes = int(backup_path.stat().st_size)
+        cleaned_files = cleanup_archives_by_count(
+            backup_dir, "backup-", BACKUP_RETENTION_COUNT
+        )
     except OSError as exc:
         raise HTTPException(status_code=500, detail="Backup failed: {0}".format(exc)) from exc
 
@@ -63,7 +100,12 @@ def create_backup(
             action="admin.backup.create",
             resource_type="backup",
             resource_id=backup_name,
-            detail={"path": str(backup_path), "size_bytes": size_bytes},
+            detail={
+                "path": str(backup_path),
+                "size_bytes": size_bytes,
+                "cleaned_files": cleaned_files,
+                "keep_count": BACKUP_RETENTION_COUNT,
+            },
             actor=get_request_actor(request),
             source_ip=get_source_ip_for_audit(request),
             created_at=created_at,
@@ -74,6 +116,8 @@ def create_backup(
         "ok": True,
         "path": str(backup_path),
         "size_bytes": size_bytes,
+        "cleaned_files": cleaned_files,
+        "keep_count": BACKUP_RETENTION_COUNT,
         "created_at": created_at,
     }
 
@@ -125,6 +169,9 @@ def create_migrate_export(
             if any(systemd_stage.iterdir()):
                 archive.add(systemd_stage, arcname="systemd")
         size_bytes = int(backup_path.stat().st_size)
+        cleaned_files = cleanup_archives_by_count(
+            migrate_dir, "sb-migrate-", MIGRATE_RETENTION_COUNT
+        )
     except OSError as exc:
         raise HTTPException(status_code=500, detail="Migrate export failed: {0}".format(exc)) from exc
     finally:
@@ -136,7 +183,12 @@ def create_migrate_export(
             action="admin.migrate.export",
             resource_type="migrate",
             resource_id=backup_name,
-            detail={"path": str(backup_path), "size_bytes": size_bytes},
+            detail={
+                "path": str(backup_path),
+                "size_bytes": size_bytes,
+                "cleaned_files": cleaned_files,
+                "keep_count": MIGRATE_RETENTION_COUNT,
+            },
             actor=get_request_actor(request),
             source_ip=get_source_ip_for_audit(request),
             created_at=created_at,
@@ -147,6 +199,8 @@ def create_migrate_export(
         "ok": True,
         "path": str(backup_path),
         "size_bytes": size_bytes,
+        "cleaned_files": cleaned_files,
+        "keep_count": MIGRATE_RETENTION_COUNT,
         "created_at": created_at,
     }
 

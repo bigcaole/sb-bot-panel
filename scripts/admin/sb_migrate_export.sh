@@ -4,6 +4,7 @@ set -euo pipefail
 PROJECT_DIR="${PROJECT_DIR:-/root/sb-bot-panel}"
 ENV_FILE="${PROJECT_DIR}/.env"
 MIGRATE_DIR="/var/backups/sb-migrate"
+MIGRATE_RETENTION_COUNT="20"
 INCLUDE_CONTROLLER_BACKUPS="N"
 
 msg() { echo -e "\033[1;32m[信息]\033[0m $*"; }
@@ -37,6 +38,27 @@ get_env_value() {
   fi
 }
 
+cleanup_old_migrate_packages() {
+  local keep_count="$1"
+  if ! [[ "$keep_count" =~ ^[0-9]+$ ]] || (( keep_count < 1 )); then
+    keep_count=20
+  fi
+  local files
+  mapfile -t files < <(find "$MIGRATE_DIR" -maxdepth 1 -type f -name 'sb-migrate-*.tar.gz' -printf '%T@ %p\n' | sort -nr | awk '{print $2}')
+  local total="${#files[@]}"
+  if (( total <= keep_count )); then
+    msg "迁移包保留策略：当前 ${total} 个，无需清理（保留 ${keep_count} 个）"
+    return
+  fi
+  local remove_count=0
+  local idx
+  for (( idx=keep_count; idx<total; idx++ )); do
+    rm -f "${files[$idx]}" || true
+    remove_count=$((remove_count + 1))
+  done
+  msg "迁移包保留策略：已清理 ${remove_count} 个旧包（保留 ${keep_count} 个）"
+}
+
 stop_services() {
   systemctl stop sb-bot 2>/dev/null || true
   systemctl stop sb-controller 2>/dev/null || true
@@ -64,6 +86,11 @@ main() {
   env_migrate="$(get_env_value MIGRATE_DIR)"
   if [[ -n "$env_migrate" ]]; then
     MIGRATE_DIR="$env_migrate"
+  fi
+  local env_migrate_retention
+  env_migrate_retention="$(get_env_value MIGRATE_RETENTION_COUNT)"
+  if [[ -n "$env_migrate_retention" ]]; then
+    MIGRATE_RETENTION_COUNT="$env_migrate_retention"
   fi
   mkdir -p "$MIGRATE_DIR"
 
@@ -102,6 +129,7 @@ main() {
   fi
 
   tar -czf "$pkg_path" -C "$stage_dir" .
+  cleanup_old_migrate_packages "$MIGRATE_RETENTION_COUNT"
   local size_bytes
   size_bytes="$(stat -c%s "$pkg_path" 2>/dev/null || stat -f%z "$pkg_path")"
 

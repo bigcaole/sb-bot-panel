@@ -2244,6 +2244,8 @@ async def run_admin_backup_action(query, back_menu_callback: str) -> None:
 
     backup_path = str(result.get("path", "")) if isinstance(result, dict) else ""
     size_bytes = int(result.get("size_bytes", 0)) if isinstance(result, dict) else 0
+    cleaned_files = int(result.get("cleaned_files", 0)) if isinstance(result, dict) else 0
+    keep_count = int(result.get("keep_count", 0)) if isinstance(result, dict) else 0
     created_at = int(result.get("created_at", 0)) if isinstance(result, dict) else 0
     created_text = (
         datetime.fromtimestamp(created_at).strftime("%Y-%m-%d %H:%M:%S")
@@ -2254,6 +2256,7 @@ async def run_admin_backup_action(query, back_menu_callback: str) -> None:
         "备份已生成\n\n"
         f"路径：{backup_path}\n"
         f"大小：{size_bytes} bytes\n"
+        f"清理旧备份：{cleaned_files} 个（保留 {keep_count} 个）\n"
         f"时间：{created_text}\n\n"
         "可用以下命令拉取备份：\n"
         f"scp root@你的服务器IP:{backup_path} ./",
@@ -2272,6 +2275,8 @@ async def run_admin_migrate_export_action(query, back_menu_callback: str) -> Non
 
     export_path = str(result.get("path", "")) if isinstance(result, dict) else ""
     size_bytes = int(result.get("size_bytes", 0)) if isinstance(result, dict) else 0
+    cleaned_files = int(result.get("cleaned_files", 0)) if isinstance(result, dict) else 0
+    keep_count = int(result.get("keep_count", 0)) if isinstance(result, dict) else 0
     created_at = int(result.get("created_at", 0)) if isinstance(result, dict) else 0
     created_text = (
         datetime.fromtimestamp(created_at).strftime("%Y-%m-%d %H:%M:%S")
@@ -2282,6 +2287,7 @@ async def run_admin_migrate_export_action(query, back_menu_callback: str) -> Non
         "迁移包已生成（保存在服务器本地）\n\n"
         f"路径：{export_path}\n"
         f"大小：{size_bytes} bytes\n"
+        f"清理旧迁移包：{cleaned_files} 个（保留 {keep_count} 个）\n"
         f"时间：{created_text}\n\n"
         "可用以下命令拉取迁移包：\n"
         f"scp root@你的服务器IP:{export_path} ./",

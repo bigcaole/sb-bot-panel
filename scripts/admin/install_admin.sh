@@ -36,6 +36,8 @@ AUTH_TOKEN=""
 BOT_TOKEN=""
 ADMIN_CHAT_IDS=""
 MIGRATE_DIR="$MIGRATE_DIR_DEFAULT"
+BACKUP_RETENTION_COUNT="30"
+MIGRATE_RETENTION_COUNT="20"
 BOT_MENU_TTL="60"
 BOT_NODE_MONITOR_INTERVAL="60"
 BOT_NODE_OFFLINE_THRESHOLD="120"
@@ -244,7 +246,7 @@ has_env_key() {
 }
 
 load_existing_env_defaults() {
-  local old_port old_url old_public_url old_panel_base old_enable_https old_https_domain old_https_email old_auth old_bot old_admin old_migrate old_menu_ttl old_monitor_interval old_offline_threshold old_trust_xff old_trusted_proxy_ips old_task_timeout old_task_retention old_sub_link_sign_key old_sub_link_require old_sub_link_ttl old_rate_limit_enabled old_rate_limit_window old_rate_limit_max old_controller_http_timeout old_bot_actor_label
+  local old_port old_url old_public_url old_panel_base old_enable_https old_https_domain old_https_email old_auth old_bot old_admin old_migrate old_backup_retention old_migrate_retention old_menu_ttl old_monitor_interval old_offline_threshold old_trust_xff old_trusted_proxy_ips old_task_timeout old_task_retention old_sub_link_sign_key old_sub_link_require old_sub_link_ttl old_rate_limit_enabled old_rate_limit_window old_rate_limit_max old_controller_http_timeout old_bot_actor_label
   old_port="$(get_env_value "CONTROLLER_PORT")"
   old_url="$(get_env_value "CONTROLLER_URL")"
   old_public_url="$(get_env_value "CONTROLLER_PUBLIC_URL")"
@@ -256,6 +258,8 @@ load_existing_env_defaults() {
   old_bot="$(get_env_value "BOT_TOKEN")"
   old_admin="$(get_env_value "ADMIN_CHAT_IDS")"
   old_migrate="$(get_env_value "MIGRATE_DIR")"
+  old_backup_retention="$(get_env_value "BACKUP_RETENTION_COUNT")"
+  old_migrate_retention="$(get_env_value "MIGRATE_RETENTION_COUNT")"
   old_menu_ttl="$(get_env_value "BOT_MENU_TTL")"
   old_monitor_interval="$(get_env_value "BOT_NODE_MONITOR_INTERVAL")"
   old_offline_threshold="$(get_env_value "BOT_NODE_OFFLINE_THRESHOLD")"
@@ -287,6 +291,8 @@ load_existing_env_defaults() {
   BOT_TOKEN="${old_bot:-}"
   ADMIN_CHAT_IDS="${old_admin:-}"
   MIGRATE_DIR="${old_migrate:-$MIGRATE_DIR_DEFAULT}"
+  BACKUP_RETENTION_COUNT="${old_backup_retention:-30}"
+  MIGRATE_RETENTION_COUNT="${old_migrate_retention:-20}"
   BOT_MENU_TTL="${old_menu_ttl:-60}"
   BOT_NODE_MONITOR_INTERVAL="${old_monitor_interval:-60}"
   BOT_NODE_OFFLINE_THRESHOLD="${old_offline_threshold:-120}"
@@ -331,6 +337,12 @@ normalize_loaded_values() {
   fi
   if ! [[ "$API_RATE_LIMIT_MAX_REQUESTS" =~ ^[0-9]+$ ]] || (( API_RATE_LIMIT_MAX_REQUESTS < 1 )); then
     API_RATE_LIMIT_MAX_REQUESTS="120"
+  fi
+  if ! [[ "$BACKUP_RETENTION_COUNT" =~ ^[0-9]+$ ]] || (( BACKUP_RETENTION_COUNT < 1 )); then
+    BACKUP_RETENTION_COUNT="30"
+  fi
+  if ! [[ "$MIGRATE_RETENTION_COUNT" =~ ^[0-9]+$ ]] || (( MIGRATE_RETENTION_COUNT < 1 )); then
+    MIGRATE_RETENTION_COUNT="20"
   fi
   if ! [[ "$CONTROLLER_HTTP_TIMEOUT" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
     CONTROLLER_HTTP_TIMEOUT="10"
@@ -381,6 +393,8 @@ prompt_env_config() {
   echo "  - BOT_TOKEN：必填；Telegram 机器人 token"
   echo "  - ADMIN_CHAT_IDS：可选；用于限制谁可操作 bot"
   echo "  - MIGRATE_DIR：迁移包/备份包输出目录"
+  echo "  - BACKUP_RETENTION_COUNT：控制器备份保留数量（超出自动清理）"
+  echo "  - MIGRATE_RETENTION_COUNT：迁移包保留数量（超出自动清理）"
   echo "  - BOT_MENU_TTL：bot 菜单按钮自动清理秒数"
   echo "  - BOT_NODE_MONITOR_INTERVAL：节点在线检测周期秒数"
   echo "  - BOT_NODE_OFFLINE_THRESHOLD：节点离线判定阈值秒数"
@@ -488,6 +502,20 @@ prompt_env_config() {
     MIGRATE_DIR="$MIGRATE_DIR_DEFAULT"
   fi
 
+  read -r -p "BACKUP_RETENTION_COUNT（控制器备份保留数量） [${BACKUP_RETENTION_COUNT}]: " input_backup_retention
+  BACKUP_RETENTION_COUNT="${input_backup_retention:-$BACKUP_RETENTION_COUNT}"
+  if ! [[ "$BACKUP_RETENTION_COUNT" =~ ^[0-9]+$ ]] || (( BACKUP_RETENTION_COUNT < 1 )); then
+    warn "BACKUP_RETENTION_COUNT 无效，回退为 30"
+    BACKUP_RETENTION_COUNT="30"
+  fi
+
+  read -r -p "MIGRATE_RETENTION_COUNT（迁移包保留数量） [${MIGRATE_RETENTION_COUNT}]: " input_migrate_retention
+  MIGRATE_RETENTION_COUNT="${input_migrate_retention:-$MIGRATE_RETENTION_COUNT}"
+  if ! [[ "$MIGRATE_RETENTION_COUNT" =~ ^[0-9]+$ ]] || (( MIGRATE_RETENTION_COUNT < 1 )); then
+    warn "MIGRATE_RETENTION_COUNT 无效，回退为 20"
+    MIGRATE_RETENTION_COUNT="20"
+  fi
+
   read -r -p "BOT_MENU_TTL（bot 菜单自动清理秒数） [${BOT_MENU_TTL}]: " input_menu_ttl
   BOT_MENU_TTL="${input_menu_ttl:-$BOT_MENU_TTL}"
   if ! [[ "$BOT_MENU_TTL" =~ ^[0-9]+$ ]] || (( BOT_MENU_TTL < 5 )); then
@@ -554,6 +582,12 @@ ADMIN_CHAT_IDS=${ADMIN_CHAT_IDS}
 
 # 迁移包目录
 MIGRATE_DIR=${MIGRATE_DIR}
+
+# 控制器备份保留数量（超出自动清理）
+BACKUP_RETENTION_COUNT=${BACKUP_RETENTION_COUNT}
+
+# 迁移包保留数量（超出自动清理）
+MIGRATE_RETENTION_COUNT=${MIGRATE_RETENTION_COUNT}
 
 # Bot 菜单按钮自动清理秒数
 BOT_MENU_TTL=${BOT_MENU_TTL}
@@ -805,6 +839,8 @@ run_self_checks() {
   check_env_key "PANEL_BASE_URL"
   check_env_key "BOT_TOKEN"
   check_env_key "MIGRATE_DIR"
+  check_env_key "BACKUP_RETENTION_COUNT"
+  check_env_key "MIGRATE_RETENTION_COUNT"
   check_env_key "TRUST_X_FORWARDED_FOR"
   check_env_key "TRUSTED_PROXY_IPS"
   check_env_key "NODE_TASK_RUNNING_TIMEOUT"
@@ -925,6 +961,8 @@ show_summary() {
   fi
   echo "PANEL_BASE_URL: ${PANEL_BASE_URL}"
   echo "MIGRATE_DIR: ${MIGRATE_DIR}"
+  echo "BACKUP_RETENTION_COUNT: ${BACKUP_RETENTION_COUNT}"
+  echo "MIGRATE_RETENTION_COUNT: ${MIGRATE_RETENTION_COUNT}"
   echo "BOT_MENU_TTL: ${BOT_MENU_TTL}"
   echo "BOT_NODE_MONITOR_INTERVAL: ${BOT_NODE_MONITOR_INTERVAL}"
   echo "BOT_NODE_OFFLINE_THRESHOLD: ${BOT_NODE_OFFLINE_THRESHOLD}"

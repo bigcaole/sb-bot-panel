@@ -285,6 +285,11 @@ bash /root/sb-bot-panel/scripts/admin/smoke_test.sh --require-api
 
 默认迁移包目录：`/var/backups/sb-migrate/`
 
+默认保留策略：
+
+- 控制器备份：保留最近 `30` 个（`BACKUP_RETENTION_COUNT`）
+- 迁移包：保留最近 `20` 个（`MIGRATE_RETENTION_COUNT`）
+
 ### 旧机导出
 
 - 进入菜单后执行：`11) 迁移：导出迁移包`
@@ -334,6 +339,8 @@ scp root@旧IP:/var/backups/sb-migrate/sb-migrate-xxxx.tar.gz root@新IP:/root/
 - `BOT_TOKEN=xxxxxxxx`（必填）
 - `ADMIN_CHAT_IDS=123,456`（可空）
 - `MIGRATE_DIR=/var/backups/sb-migrate`
+- `BACKUP_RETENTION_COUNT=30`（可选，控制器备份保留数量）
+- `MIGRATE_RETENTION_COUNT=20`（可选，迁移包保留数量）
 - `BOT_MENU_TTL=60`（可选，bot 菜单按钮自动清理秒数）
 - `BOT_NODE_MONITOR_INTERVAL=60`（可选，节点在线检测周期秒数）
 - `BOT_NODE_OFFLINE_THRESHOLD=120`（可选，判定离线阈值秒数）
