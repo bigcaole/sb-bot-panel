@@ -273,6 +273,20 @@ def init_db() -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS audit_logs(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                actor TEXT,
+                action TEXT NOT NULL,
+                resource_type TEXT,
+                resource_id TEXT,
+                detail TEXT,
+                source_ip TEXT,
+                created_at INTEGER NOT NULL
+            )
+            """
+        )
         node_task_columns = conn.execute("PRAGMA table_info(node_tasks)").fetchall()
         node_task_column_names = set(row["name"] for row in node_task_columns)
         if "attempts" not in node_task_column_names:
@@ -291,6 +305,12 @@ def init_db() -> None:
             """
             CREATE INDEX IF NOT EXISTS idx_user_nodes_node_code
             ON user_nodes(node_code)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at
+            ON audit_logs(created_at DESC)
             """
         )
         conn.commit()
@@ -361,6 +381,67 @@ def verify_node_agent_ip(request: Request, node_code: str, expected_agent_ip: Op
             status_code=403,
             detail="node source ip not allowed for {0}".format(node_code),
         )
+
+
+def get_request_actor(request: Optional[Request]) -> str:
+    if request is None:
+        return ""
+    actor = str(request.headers.get("X-Actor", "") or "").strip()
+    if not actor:
+        return ""
+    if len(actor) > 120:
+        actor = actor[:120]
+    return actor
+
+
+def get_source_ip_for_audit(request: Optional[Request]) -> str:
+    if request is None:
+        return ""
+    return get_request_ip(request)
+
+
+def normalize_audit_detail(detail: Any, max_length: int = 1200) -> str:
+    if isinstance(detail, str):
+        text = detail.strip()
+    else:
+        try:
+            text = json.dumps(detail, ensure_ascii=False, separators=(",", ":"))
+        except (TypeError, ValueError):
+            text = str(detail)
+    if len(text) > max_length:
+        text = text[:max_length] + "...(truncated)"
+    return text
+
+
+def write_audit_log(
+    conn: sqlite3.Connection,
+    action: str,
+    resource_type: str = "",
+    resource_id: str = "",
+    detail: Any = "",
+    actor: str = "",
+    source_ip: str = "",
+    created_at: int = 0,
+) -> None:
+    action_text = str(action or "").strip()
+    if not action_text:
+        return
+    ts = int(created_at or time.time())
+    conn.execute(
+        """
+        INSERT INTO audit_logs(actor, action, resource_type, resource_id, detail, source_ip, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            str(actor or "").strip(),
+            action_text,
+            str(resource_type or "").strip(),
+            str(resource_id or "").strip(),
+            normalize_audit_detail(detail),
+            str(source_ip or "").strip(),
+            ts,
+        ),
+    )
 
 
 ALLOWED_NODE_TASK_TYPES = {
@@ -544,6 +625,7 @@ def health() -> Dict[str, bool]:
     response_model=None,
 )
 def create_backup(
+    request: Request,
     authorization: Optional[str] = Header(default=None, alias="Authorization")
 ) -> Union[Dict[str, Union[bool, int, str]], JSONResponse]:
     auth_error = verify_admin_authorization(authorization)
@@ -567,6 +649,19 @@ def create_backup(
     except OSError as exc:
         raise HTTPException(status_code=500, detail="Backup failed: {0}".format(exc)) from exc
 
+    with get_connection() as conn:
+        write_audit_log(
+            conn,
+            action="admin.backup.create",
+            resource_type="backup",
+            resource_id=backup_name,
+            detail={"path": str(backup_path), "size_bytes": size_bytes},
+            actor=get_request_actor(request),
+            source_ip=get_source_ip_for_audit(request),
+            created_at=created_at,
+        )
+        conn.commit()
+
     return {
         "ok": True,
         "path": str(backup_path),
@@ -582,6 +677,7 @@ def create_backup(
     response_model=None,
 )
 def create_migrate_export(
+    request: Request,
     authorization: Optional[str] = Header(default=None, alias="Authorization")
 ) -> Union[Dict[str, Union[bool, int, str]], JSONResponse]:
     auth_error = verify_admin_authorization(authorization)
@@ -625,6 +721,19 @@ def create_migrate_export(
         raise HTTPException(status_code=500, detail="Migrate export failed: {0}".format(exc)) from exc
     finally:
         shutil.rmtree(stage_dir, ignore_errors=True)
+
+    with get_connection() as conn:
+        write_audit_log(
+            conn,
+            action="admin.migrate.export",
+            resource_type="migrate",
+            resource_id=backup_name,
+            detail={"path": str(backup_path), "size_bytes": size_bytes},
+            actor=get_request_actor(request),
+            source_ip=get_source_ip_for_audit(request),
+            created_at=created_at,
+        )
+        conn.commit()
 
     return {
         "ok": True,
@@ -681,8 +790,53 @@ def get_node_access_status(
     }
 
 
+@app.get(
+    "/admin/audit",
+    summary="List audit logs",
+    description="AUTH_TOKEN 为空时不校验；非空时需要请求头 Authorization: Bearer <AUTH_TOKEN>。",
+    response_model=None,
+)
+def list_admin_audit_logs(
+    limit: int = 50,
+    action: str = "",
+    authorization: Optional[str] = Header(default=None, alias="Authorization"),
+) -> Union[List[Dict[str, Union[int, str]]], JSONResponse]:
+    auth_error = verify_admin_authorization(authorization)
+    if auth_error is not None:
+        return auth_error
+
+    if limit < 1:
+        limit = 1
+    if limit > 200:
+        limit = 200
+    action_value = str(action or "").strip()
+    with get_connection() as conn:
+        if action_value:
+            rows = conn.execute(
+                """
+                SELECT id, actor, action, resource_type, resource_id, detail, source_ip, created_at
+                FROM audit_logs
+                WHERE action = ?
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (action_value, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT id, actor, action, resource_type, resource_id, detail, source_ip, created_at
+                FROM audit_logs
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+    return [dict(row) for row in rows]
+
+
 @app.post("/users/create")
-def create_user(payload: CreateUserRequest) -> Dict[str, Union[int, str]]:
+def create_user(payload: CreateUserRequest, request: Request) -> Dict[str, Union[int, str]]:
     now = int(time.time())
 
     with get_connection() as conn:
@@ -728,6 +882,20 @@ def create_user(payload: CreateUserRequest) -> Dict[str, Union[int, str]]:
                     payload.note,
                 ),
             )
+            write_audit_log(
+                conn,
+                action="user.create",
+                resource_type="user",
+                resource_id=user_code,
+                detail={
+                    "display_name": payload.display_name,
+                    "speed_mbps": payload.speed_mbps,
+                    "valid_days": payload.valid_days,
+                },
+                actor=get_request_actor(request),
+                source_ip=get_source_ip_for_audit(request),
+                created_at=now,
+            )
             conn.commit()
         except sqlite3.IntegrityError as exc:
             raise HTTPException(status_code=409, detail="Conflict: duplicate unique field") from exc
@@ -745,7 +913,7 @@ def create_user(payload: CreateUserRequest) -> Dict[str, Union[int, str]]:
 
 @app.post("/users/{user_code}/set_speed")
 def set_user_speed(
-    user_code: str, payload: SetUserSpeedRequest
+    user_code: str, payload: SetUserSpeedRequest, request: Request
 ) -> Dict[str, Union[bool, int, str]]:
     with get_connection() as conn:
         user_row = conn.execute(
@@ -759,6 +927,15 @@ def set_user_speed(
             "UPDATE users SET speed_mbps = ? WHERE user_code = ?",
             (payload.speed_mbps, user_code),
         )
+        write_audit_log(
+            conn,
+            action="user.set_speed",
+            resource_type="user",
+            resource_id=user_code,
+            detail={"speed_mbps": payload.speed_mbps},
+            actor=get_request_actor(request),
+            source_ip=get_source_ip_for_audit(request),
+        )
         conn.commit()
 
     return {"ok": True, "user_code": user_code, "speed_mbps": payload.speed_mbps}
@@ -766,7 +943,7 @@ def set_user_speed(
 
 @app.post("/users/{user_code}/set_status")
 def set_user_status(
-    user_code: str, payload: SetUserStatusRequest
+    user_code: str, payload: SetUserStatusRequest, request: Request
 ) -> Dict[str, Union[bool, str]]:
     status_value = str(payload.status or "").strip().lower()
     if status_value not in ("active", "disabled"):
@@ -784,13 +961,22 @@ def set_user_status(
             "UPDATE users SET status = ? WHERE user_code = ?",
             (status_value, user_code),
         )
+        write_audit_log(
+            conn,
+            action="user.set_status",
+            resource_type="user",
+            resource_id=user_code,
+            detail={"status": status_value},
+            actor=get_request_actor(request),
+            source_ip=get_source_ip_for_audit(request),
+        )
         conn.commit()
 
     return {"ok": True, "user_code": user_code, "status": status_value}
 
 
 @app.delete("/users/{user_code}")
-def delete_user(user_code: str) -> Dict[str, Union[bool, str]]:
+def delete_user(user_code: str, request: Request) -> Dict[str, Union[bool, str]]:
     with get_connection() as conn:
         user_row = conn.execute(
             "SELECT user_code FROM users WHERE user_code = ?",
@@ -807,13 +993,22 @@ def delete_user(user_code: str) -> Dict[str, Union[bool, str]]:
             raise HTTPException(status_code=400, detail="该用户仍有节点绑定，请先解绑后再删除")
 
         conn.execute("DELETE FROM users WHERE user_code = ?", (user_code,))
+        write_audit_log(
+            conn,
+            action="user.delete",
+            resource_type="user",
+            resource_id=user_code,
+            detail={"ok": True},
+            actor=get_request_actor(request),
+            source_ip=get_source_ip_for_audit(request),
+        )
         conn.commit()
 
     return {"ok": True, "user_code": user_code}
 
 
 @app.post("/nodes/create")
-def create_node(payload: CreateNodeRequest) -> Dict[str, Union[int, str, None]]:
+def create_node(payload: CreateNodeRequest, request: Request) -> Dict[str, Union[int, str, None]]:
     if payload.tuic_port_start > payload.tuic_port_end:
         raise HTTPException(status_code=400, detail="Invalid port range: start must be <= end")
     if payload.enabled not in (0, 1):
@@ -866,6 +1061,21 @@ def create_node(payload: CreateNodeRequest) -> Dict[str, Union[int, str, None]]:
                     supports_tuic,
                     payload.note,
                 ),
+            )
+            write_audit_log(
+                conn,
+                action="node.create",
+                resource_type="node",
+                resource_id=payload.node_code,
+                detail={
+                    "region": payload.region,
+                    "host": payload.host,
+                    "enabled": payload.enabled,
+                    "supports_reality": supports_reality,
+                    "supports_tuic": supports_tuic,
+                },
+                actor=get_request_actor(request),
+                source_ip=get_source_ip_for_audit(request),
             )
             conn.commit()
         except sqlite3.IntegrityError as exc:
@@ -973,6 +1183,7 @@ def get_node_stats(node_code: str) -> Dict[str, Union[int, str]]:
 def create_node_task(
     node_code: str,
     payload: CreateNodeTaskRequest,
+    request: Request,
     authorization: Optional[str] = Header(default=None, alias="Authorization"),
 ) -> Union[Dict[str, Any], JSONResponse]:
     auth_error = verify_admin_authorization(authorization)
@@ -1017,8 +1228,22 @@ def create_node_task(
             """,
             (node_code, task_type, payload_json, max_attempts, now_ts, now_ts),
         )
-        conn.commit()
         task_id = int(cursor.lastrowid or 0)
+        write_audit_log(
+            conn,
+            action="node.task.create",
+            resource_type="node_task",
+            resource_id=str(task_id),
+            detail={
+                "node_code": node_code,
+                "task_type": task_type,
+                "max_attempts": max_attempts,
+            },
+            actor=get_request_actor(request),
+            source_ip=get_source_ip_for_audit(request),
+            created_at=now_ts,
+        )
+        conn.commit()
 
         created_row = conn.execute(
             """
@@ -1231,6 +1456,16 @@ def report_node_task(
             """,
             (next_status, next_result, now_ts, task_id, node_code),
         )
+        write_audit_log(
+            conn,
+            action="node.task.report",
+            resource_type="node_task",
+            resource_id=str(task_id),
+            detail={"node_code": node_code, "status": next_status},
+            actor=get_request_actor(request),
+            source_ip=get_source_ip_for_audit(request),
+            created_at=now_ts,
+        )
         conn.commit()
 
     return {"ok": True, "node_code": node_code, "task_id": task_id, "status": next_status}
@@ -1305,7 +1540,7 @@ def get_node_sync(node_code: str, request: Request) -> Dict[str, Union[Dict, Lis
 
 @app.patch("/nodes/{node_code}")
 def update_node(
-    node_code: str, payload: UpdateNodeRequest
+    node_code: str, payload: UpdateNodeRequest, request: Request
 ) -> Dict[str, Union[int, str, None]]:
     update_data = payload.model_dump(exclude_unset=True)
     if "agent_ip" in update_data:
@@ -1416,6 +1651,18 @@ def update_node(
                     "UPDATE nodes SET {0} WHERE node_code = ?".format(", ".join(assignments)),
                     tuple(values),
                 )
+                audit_update_data = dict(update_data)
+                if "reality_private_key" in audit_update_data:
+                    audit_update_data["reality_private_key"] = "***"
+                write_audit_log(
+                    conn,
+                    action="node.update",
+                    resource_type="node",
+                    resource_id=node_code,
+                    detail=audit_update_data,
+                    actor=get_request_actor(request),
+                    source_ip=get_source_ip_for_audit(request),
+                )
                 conn.commit()
 
         updated = conn.execute(
@@ -1450,7 +1697,7 @@ def update_node(
 
 
 @app.delete("/nodes/{node_code}")
-def delete_node(node_code: str) -> Dict[str, bool]:
+def delete_node(node_code: str, request: Request) -> Dict[str, bool]:
     with get_connection() as conn:
         node_row = conn.execute(
             "SELECT node_code FROM nodes WHERE node_code = ?",
@@ -1467,6 +1714,15 @@ def delete_node(node_code: str) -> Dict[str, bool]:
             raise HTTPException(status_code=400, detail="该节点仍有用户绑定，请先解绑后再删除")
 
         conn.execute("DELETE FROM nodes WHERE node_code = ?", (node_code,))
+        write_audit_log(
+            conn,
+            action="node.delete",
+            resource_type="node",
+            resource_id=node_code,
+            detail={"ok": True},
+            actor=get_request_actor(request),
+            source_ip=get_source_ip_for_audit(request),
+        )
         conn.commit()
 
     return {"ok": True}
@@ -1491,7 +1747,7 @@ def _pick_smallest_free_port(
 
 @app.post("/users/{user_code}/assign_node")
 def assign_node(
-    user_code: str, payload: AssignNodeRequest
+    user_code: str, payload: AssignNodeRequest, request: Request
 ) -> Dict[str, Union[int, str]]:
     now = int(time.time())
     with get_connection() as conn:
@@ -1542,6 +1798,16 @@ def assign_node(
             """,
             (user_code, payload.node_code, tuic_port, now),
         )
+        write_audit_log(
+            conn,
+            action="user.assign_node",
+            resource_type="user_node",
+            resource_id="{0}:{1}".format(user_code, payload.node_code),
+            detail={"tuic_port": tuic_port},
+            actor=get_request_actor(request),
+            source_ip=get_source_ip_for_audit(request),
+            created_at=now,
+        )
         conn.commit()
 
     return {"user_code": user_code, "node_code": payload.node_code, "tuic_port": tuic_port}
@@ -1549,7 +1815,7 @@ def assign_node(
 
 @app.post("/users/{user_code}/unassign_node")
 def unassign_node(
-    user_code: str, payload: AssignNodeRequest
+    user_code: str, payload: AssignNodeRequest, request: Request
 ) -> Dict[str, Union[bool, str]]:
     with get_connection() as conn:
         user_row = conn.execute(
@@ -1580,6 +1846,15 @@ def unassign_node(
         conn.execute(
             "DELETE FROM user_nodes WHERE user_code = ? AND node_code = ?",
             (user_code, payload.node_code),
+        )
+        write_audit_log(
+            conn,
+            action="user.unassign_node",
+            resource_type="user_node",
+            resource_id="{0}:{1}".format(user_code, payload.node_code),
+            detail={"ok": True},
+            actor=get_request_actor(request),
+            source_ip=get_source_ip_for_audit(request),
         )
         conn.commit()
 

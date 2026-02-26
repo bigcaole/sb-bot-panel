@@ -224,6 +224,7 @@ sudo bash scripts/admin/menu_admin.sh
 - HTTPS 证书状态 / 刷新
 - 迁移导出 / 迁移导入（导入走非交互模式）
 - 访问安全状态（检查节点来源 IP 白名单配置）
+- 操作日志（`/admin/audit`，查看最近审计记录）
 
 ## Bot 远程管理（节点服务器）
 
@@ -316,6 +317,8 @@ scp root@旧IP:/var/backups/sb-migrate/sb-migrate-xxxx.tar.gz root@新IP:/root/
 - `BOT_MENU_TTL=60`（可选，bot 菜单按钮自动清理秒数）
 - `BOT_NODE_MONITOR_INTERVAL=60`（可选，节点在线检测周期秒数）
 - `BOT_NODE_OFFLINE_THRESHOLD=120`（可选，判定离线阈值秒数）
+- `CONTROLLER_HTTP_TIMEOUT=10`（可选，bot 调 controller 超时秒数）
+- `BOT_ACTOR_LABEL=sb-bot`（可选，bot 调 controller 时用于审计的操作者标识）
 - `BOT_LOG_VIEW_COOLDOWN=1`（可选，日志翻页冷却秒数，防止触发 Telegram 限流）
 - `BOT_LOG_VIEW_MAX_PAGES=100`（可选，日志查看最大页数，超出后请用服务器命令查看全量）
 - `TRUST_X_FORWARDED_FOR=0`（默认不信任 XFF）

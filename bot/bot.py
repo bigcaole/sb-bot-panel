@@ -7,6 +7,7 @@ import asyncio
 import shlex
 import subprocess
 from datetime import datetime
+from typing import Optional
 from urllib.parse import urlparse
 
 import httpx
@@ -33,6 +34,15 @@ CONTROLLER_URL = os.getenv("CONTROLLER_URL", "http://127.0.0.1:8080").rstrip("/"
 if not CONTROLLER_URL:
     CONTROLLER_URL = "http://127.0.0.1:8080"
 CONTROLLER_AUTH_TOKEN = os.getenv("AUTH_TOKEN", "").strip()
+BOT_ACTOR_LABEL = os.getenv("BOT_ACTOR_LABEL", "sb-bot").strip() or "sb-bot"
+try:
+    CONTROLLER_HTTP_TIMEOUT_SECONDS = float(
+        os.getenv("CONTROLLER_HTTP_TIMEOUT", "10").strip() or "10"
+    )
+except ValueError:
+    CONTROLLER_HTTP_TIMEOUT_SECONDS = 10.0
+if CONTROLLER_HTTP_TIMEOUT_SECONDS <= 0:
+    CONTROLLER_HTTP_TIMEOUT_SECONDS = 10.0
 _parsed_controller_url = urlparse(CONTROLLER_URL)
 if _parsed_controller_url.port:
     CONTROLLER_PORT_HINT = int(_parsed_controller_url.port)
@@ -133,6 +143,8 @@ NODE_OPS_ALLOWED_KEYS = {
     "auth_token",
     "node_code",
 }
+
+_controller_http_client: Optional[httpx.AsyncClient] = None
 
 ADMIN_PROJECT_DIR = os.getenv("SB_PANEL_DIR", "/root/sb-bot-panel").strip() or "/root/sb-bot-panel"
 ADMIN_ENV_FILE = os.path.join(ADMIN_PROJECT_DIR, ".env")
@@ -1101,6 +1113,17 @@ def build_back_keyboard(callback_data: str) -> InlineKeyboardMarkup:
     )
 
 
+def build_backup_audit_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("刷新", callback_data="action:backup_audit"),
+                InlineKeyboardButton("返回", callback_data="menu:backup"),
+            ]
+        ]
+    )
+
+
 def build_query_user_picker_keyboard(users: list) -> InlineKeyboardMarkup:
     rows = []
     for user in users:
@@ -1156,6 +1179,47 @@ def localize_controller_error(error_message: str) -> str:
         "agent_ip must be a valid IPv4/IPv6 address": "节点来源IP格式无效，请填写正确的IP地址",
     }
     return mapping.get(error_message, error_message)
+
+
+def format_admin_audit_text(items: list, line_limit: int = 50, char_limit: int = 3600) -> str:
+    if not items:
+        return "操作日志（最近记录）：\n（暂无记录）"
+    lines = ["操作日志（最近记录）："]
+    count = 0
+    for item in items:
+        if count >= line_limit:
+            break
+        try:
+            created_at = int(item.get("created_at", 0) or 0)
+        except (TypeError, ValueError):
+            created_at = 0
+        time_text = (
+            datetime.fromtimestamp(created_at).strftime("%Y-%m-%d %H:%M:%S")
+            if created_at > 0
+            else "-"
+        )
+        action = str(item.get("action", "-"))
+        resource_type = str(item.get("resource_type", "")).strip()
+        resource_id = str(item.get("resource_id", "")).strip()
+        target_text = resource_type if resource_type else "-"
+        if resource_id:
+            target_text = f"{target_text}:{resource_id}"
+        actor = str(item.get("actor", "")).strip() or "unknown"
+        source_ip = str(item.get("source_ip", "")).strip() or "-"
+        detail = str(item.get("detail", "")).strip()
+        if len(detail) > 180:
+            detail = detail[:180] + "..."
+        lines.append(
+            f"{time_text} | {action}\n"
+            f"对象：{target_text}\n"
+            f"操作者：{actor} | 来源IP：{source_ip}\n"
+            f"详情：{detail if detail else '-'}"
+        )
+        count += 1
+    text = "\n\n".join(lines)
+    if len(text) > char_limit:
+        text = text[:char_limit] + "\n\n...（日志较多，已截断）"
+    return text
 
 
 def get_maintain_log_unit(target: str) -> str:
@@ -1653,9 +1717,17 @@ async def controller_request(
     headers = {}
     if CONTROLLER_AUTH_TOKEN:
         headers["Authorization"] = f"Bearer {CONTROLLER_AUTH_TOKEN}"
+    headers["X-Actor"] = BOT_ACTOR_LABEL
+    headers["User-Agent"] = "sb-bot-panel-bot/1.0"
+
+    global _controller_http_client
+    if _controller_http_client is None or _controller_http_client.is_closed:
+        _controller_http_client = httpx.AsyncClient(
+            timeout=CONTROLLER_HTTP_TIMEOUT_SECONDS,
+            limits=httpx.Limits(max_connections=30, max_keepalive_connections=20),
+        )
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.request(method, url, json=payload, headers=headers)
+        response = await _controller_http_client.request(method, url, json=payload, headers=headers)
     except httpx.HTTPError as exc:
         return None, f"无法连接控制器接口（{exc}）", 0
 
@@ -1671,6 +1743,14 @@ async def controller_request(
         return response.json(), "", response.status_code
     except ValueError:
         return None, "", response.status_code
+
+
+async def close_controller_http_client(application: Application) -> None:
+    del application
+    global _controller_http_client
+    if _controller_http_client is not None and not _controller_http_client.is_closed:
+        await _controller_http_client.aclose()
+    _controller_http_client = None
 
 
 async def render_nodes_list(
@@ -4658,9 +4738,17 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
 
     if callback_data == "action:backup_audit":
+        audit_rows, error_message, _ = await controller_request("GET", "/admin/audit?limit=50")
+        if error_message:
+            await query.edit_message_text(
+                f"获取操作日志失败：{localize_controller_error(error_message)}",
+                reply_markup=build_back_keyboard("menu:backup"),
+            )
+            return
+        text = format_admin_audit_text(audit_rows if isinstance(audit_rows, list) else [])
         await query.edit_message_text(
-            "【操作日志】尚未实现（需要落库审计表或接入日志系统）。",
-            reply_markup=build_back_keyboard("menu:backup"),
+            text,
+            reply_markup=build_backup_audit_keyboard(),
         )
         return
 
@@ -4994,7 +5082,13 @@ def main() -> None:
     if not token:
         raise RuntimeError("BOT_TOKEN environment variable is not set.")
 
-    application = Application.builder().token(token).post_init(configure_command_menu).build()
+    application = (
+        Application.builder()
+        .token(token)
+        .post_init(configure_command_menu)
+        .post_shutdown(close_controller_http_client)
+        .build()
+    )
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("menu", menu))
     application.add_handler(CommandHandler("whoami", whoami))
