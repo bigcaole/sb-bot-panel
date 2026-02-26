@@ -1,0 +1,177 @@
+import tempfile
+import time
+import unittest
+from pathlib import Path
+
+from fastapi.testclient import TestClient
+
+from controller import app as app_module
+from controller import db as db_module
+from controller import routers_admin as admin_router_module
+from controller import routers_sub as sub_router_module
+from controller import security as security_module
+
+
+class ControllerSmokeTestCase(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self._old_db_path = db_module.DB_PATH
+        db_module.DB_PATH = Path(self._tmpdir.name) / "app.db"
+
+        self._old_values = {
+            "app.AUTH_TOKEN": app_module.AUTH_TOKEN,
+            "app.API_RATE_LIMIT_ENABLED": app_module.API_RATE_LIMIT_ENABLED,
+            "security.AUTH_TOKEN": security_module.AUTH_TOKEN,
+            "security.API_RATE_LIMIT_ENABLED": security_module.API_RATE_LIMIT_ENABLED,
+            "routers_sub.SUB_LINK_SIGN_KEY": sub_router_module.SUB_LINK_SIGN_KEY,
+            "routers_sub.SUB_LINK_REQUIRE_SIGNATURE": sub_router_module.SUB_LINK_REQUIRE_SIGNATURE,
+            "routers_admin.AUTH_TOKEN": admin_router_module.AUTH_TOKEN,
+            "routers_admin.SUB_LINK_SIGN_KEY": admin_router_module.SUB_LINK_SIGN_KEY,
+            "routers_admin.SUB_LINK_REQUIRE_SIGNATURE": admin_router_module.SUB_LINK_REQUIRE_SIGNATURE,
+            "routers_admin.SUB_LINK_DEFAULT_TTL_SECONDS": admin_router_module.SUB_LINK_DEFAULT_TTL_SECONDS,
+        }
+
+        app_module.AUTH_TOKEN = "test-token"
+        app_module.API_RATE_LIMIT_ENABLED = False
+        security_module.AUTH_TOKEN = "test-token"
+        security_module.API_RATE_LIMIT_ENABLED = False
+        sub_router_module.SUB_LINK_SIGN_KEY = "sign-key"
+        sub_router_module.SUB_LINK_REQUIRE_SIGNATURE = True
+        admin_router_module.AUTH_TOKEN = "test-token"
+        admin_router_module.SUB_LINK_SIGN_KEY = "sign-key"
+        admin_router_module.SUB_LINK_REQUIRE_SIGNATURE = True
+        admin_router_module.SUB_LINK_DEFAULT_TTL_SECONDS = 600
+
+        db_module.init_db()
+        now_ts = int(time.time())
+        with db_module.get_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO users(
+                    user_code, display_name, status, created_at, expire_at, grace_days,
+                    speed_mbps, limit_mode, mark, vless_uuid, tuic_secret, tuic_port, note
+                )
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "u1001",
+                    "Alice",
+                    "active",
+                    now_ts,
+                    now_ts + 86400,
+                    3,
+                    20,
+                    "tc",
+                    1001,
+                    "00000000-0000-4000-8000-000000000001",
+                    "tuic-secret-1",
+                    20010,
+                    "",
+                ),
+            )
+            conn.execute(
+                """
+                INSERT INTO nodes(
+                    node_code, region, host, reality_server_name, tuic_server_name, tuic_listen_port,
+                    monitor_enabled, last_seen_at, reality_public_key, reality_short_id,
+                    tuic_port_start, tuic_port_end, enabled, supports_reality, supports_tuic, note
+                )
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "JP1",
+                    "JP",
+                    "jp1.example.com",
+                    "www.cloudflare.com",
+                    "jp1.example.com",
+                    8443,
+                    1,
+                    now_ts,
+                    "pubkey",
+                    "1a2b3c4d",
+                    20010,
+                    20019,
+                    1,
+                    1,
+                    1,
+                    "",
+                ),
+            )
+            conn.execute(
+                """
+                INSERT INTO user_nodes(user_code, node_code, tuic_port, created_at)
+                VALUES(?, ?, ?, ?)
+                """,
+                ("u1001", "JP1", 20010, now_ts),
+            )
+            conn.commit()
+
+    def tearDown(self) -> None:
+        app_module.AUTH_TOKEN = self._old_values["app.AUTH_TOKEN"]
+        app_module.API_RATE_LIMIT_ENABLED = self._old_values["app.API_RATE_LIMIT_ENABLED"]
+        security_module.AUTH_TOKEN = self._old_values["security.AUTH_TOKEN"]
+        security_module.API_RATE_LIMIT_ENABLED = self._old_values["security.API_RATE_LIMIT_ENABLED"]
+        sub_router_module.SUB_LINK_SIGN_KEY = self._old_values["routers_sub.SUB_LINK_SIGN_KEY"]
+        sub_router_module.SUB_LINK_REQUIRE_SIGNATURE = self._old_values[
+            "routers_sub.SUB_LINK_REQUIRE_SIGNATURE"
+        ]
+        admin_router_module.AUTH_TOKEN = self._old_values["routers_admin.AUTH_TOKEN"]
+        admin_router_module.SUB_LINK_SIGN_KEY = self._old_values["routers_admin.SUB_LINK_SIGN_KEY"]
+        admin_router_module.SUB_LINK_REQUIRE_SIGNATURE = self._old_values[
+            "routers_admin.SUB_LINK_REQUIRE_SIGNATURE"
+        ]
+        admin_router_module.SUB_LINK_DEFAULT_TTL_SECONDS = self._old_values[
+            "routers_admin.SUB_LINK_DEFAULT_TTL_SECONDS"
+        ]
+        db_module.DB_PATH = self._old_db_path
+        self._tmpdir.cleanup()
+
+    def _auth_header(self) -> dict:
+        return {"Authorization": "Bearer test-token"}
+
+    def test_health_and_auth_smoke(self) -> None:
+        with TestClient(app_module.app) as client:
+            health_resp = client.get("/health")
+            self.assertEqual(200, health_resp.status_code)
+            self.assertEqual({"ok": True}, health_resp.json())
+
+            unauthorized_nodes = client.get("/nodes")
+            self.assertEqual(401, unauthorized_nodes.status_code)
+
+            authorized_nodes = client.get("/nodes", headers=self._auth_header())
+            self.assertEqual(200, authorized_nodes.status_code)
+            nodes = authorized_nodes.json()
+            self.assertEqual("JP1", nodes[0]["node_code"])
+
+            users_resp = client.get("/users", headers=self._auth_header())
+            self.assertEqual(200, users_resp.status_code)
+            self.assertEqual("u1001", users_resp.json()[0]["user_code"])
+
+            admin_sec = client.get("/admin/security/status", headers=self._auth_header())
+            self.assertEqual(200, admin_sec.status_code)
+            self.assertTrue(bool(admin_sec.json().get("auth_enabled")))
+
+    def test_subscription_sign_and_access_smoke(self) -> None:
+        with TestClient(app_module.app) as client:
+            direct = client.get("/sub/links/u1001")
+            self.assertEqual(403, direct.status_code)
+
+            sign_resp = client.get(
+                "/admin/sub/sign/u1001",
+                headers=self._auth_header(),
+            )
+            self.assertEqual(200, sign_resp.status_code)
+            signed = sign_resp.json()
+            self.assertTrue(bool(signed.get("signed")))
+
+            signed_links_url = str(signed["links_url"])
+            signed_path = signed_links_url.replace("http://testserver", "")
+            signed_resp = client.get(signed_path)
+            self.assertEqual(200, signed_resp.status_code)
+            body = signed_resp.text
+            self.assertIn("vless://", body)
+            self.assertIn("tuic://", body)
+
+
+if __name__ == "__main__":
+    unittest.main()
