@@ -13,6 +13,7 @@ fi
 INSTALL_SCRIPT="${PROJECT_DIR}/scripts/admin/install_admin.sh"
 EXPORT_SCRIPT="${PROJECT_DIR}/scripts/admin/sb_migrate_export.sh"
 IMPORT_SCRIPT="${PROJECT_DIR}/scripts/admin/sb_migrate_import.sh"
+SMOKE_SCRIPT="${PROJECT_DIR}/scripts/admin/smoke_test.sh"
 
 msg() { echo -e "\033[1;32m[信息]\033[0m $*"; }
 warn() { echo -e "\033[1;33m[警告]\033[0m $*"; }
@@ -66,8 +67,9 @@ show_menu() {
 10. HTTPS 证书刷新（重载 Caddy）
 11. 迁移：导出迁移包
 12. 迁移：导入迁移包
-13. 卸载
-14. 退出
+13. 一键验收自检（语法/单测/API）
+14. 卸载
+15. 退出
 ========================================
 EOF
 }
@@ -189,7 +191,7 @@ main() {
 
   while true; do
     show_menu
-    read -r -p "请输入选项 [1-14]: " action
+    read -r -p "请输入选项 [1-15]: " action
     case "$action" in
       1)
         install_or_update
@@ -253,15 +255,23 @@ main() {
         pause
         ;;
       13)
-        do_uninstall
+        if [[ -f "$SMOKE_SCRIPT" ]]; then
+          bash "$SMOKE_SCRIPT" --require-api
+        else
+          err "未找到验收脚本: $SMOKE_SCRIPT"
+        fi
         pause
         ;;
       14)
+        do_uninstall
+        pause
+        ;;
+      15)
         msg "已退出。"
         exit 0
         ;;
       *)
-        warn "无效选项，请输入 1-14。"
+        warn "无效选项，请输入 1-15。"
         pause
         ;;
     esac

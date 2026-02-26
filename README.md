@@ -264,8 +264,20 @@ sb-admin
 10. HTTPS 证书刷新（重载 Caddy）
 11. 迁移：导出迁移包
 12. 迁移：导入迁移包
-13. 卸载
-14. 退出
+13. 一键验收自检（语法/单测/API）
+14. 卸载
+15. 退出
+
+统一验收命令（管理服务器）：
+
+```bash
+bash /root/sb-bot-panel/scripts/admin/smoke_test.sh --require-api
+```
+
+说明：
+
+- 默认会读取 `.env` 中的 `CONTROLLER_PORT` / `AUTH_TOKEN`
+- 检查项：Python 语法、`tests/` 单元测试、controller API 鉴权冒烟
 
 ## 迁移导出/导入（管理服务器）
 
