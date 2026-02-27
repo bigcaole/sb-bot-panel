@@ -75,6 +75,12 @@ ask_yes_no() {
 }
 
 install_menu_shortcuts() {
+  # Cleanup legacy shortcut from old versions to avoid confusing entrypoint.
+  if [[ -f /usr/local/bin/sb-bot-panel ]] && grep -q "sb-node-main-shortcut" /usr/local/bin/sb-bot-panel 2>/dev/null; then
+    rm -f /usr/local/bin/sb-bot-panel
+    msg "已清理历史快捷命令：/usr/local/bin/sb-bot-panel"
+  fi
+
   cat >/usr/local/bin/sb-node <<EOF
 #!/usr/bin/env bash
 exec bash "${ROOT_DIR}/scripts/menu.sh" "\$@"

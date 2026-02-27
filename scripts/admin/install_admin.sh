@@ -331,6 +331,12 @@ ensure_python_311_runtime() {
 
 install_admin_menu_commands() {
   msg "安装菜单快捷命令..."
+  # Cleanup legacy shortcut from old versions to avoid confusing entrypoint.
+  if [[ -f /usr/local/bin/sb-bot-panel ]] && grep -q "sb-bot-panel-main-shortcut" /usr/local/bin/sb-bot-panel 2>/dev/null; then
+    rm -f /usr/local/bin/sb-bot-panel
+    msg "已清理历史快捷命令：/usr/local/bin/sb-bot-panel"
+  fi
+
   cat >/usr/local/bin/sb-admin <<EOF
 #!/usr/bin/env bash
 exec bash "${PROJECT_DIR}/scripts/admin/menu_admin.sh" "\$@"

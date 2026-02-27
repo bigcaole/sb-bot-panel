@@ -89,6 +89,8 @@ sudo bash scripts/install.sh --sync-only
 sb-node
 ```
 
+说明：历史版本可能残留 `sb-bot-panel` 快捷命令，最新安装脚本会自动清理，仅保留 `sb-node`。
+
 ## 域名证书前置条件（TUIC）
 
 启用 TUIC 前请确保：
@@ -262,6 +264,8 @@ sudo bash scripts/admin/menu_admin.sh
 ```bash
 sb-admin
 ```
+
+说明：历史版本可能残留 `sb-bot-panel` 快捷命令，最新安装脚本会自动清理，仅保留 `sb-admin`。
 
 如果系统里没有现成的 `s-ui` 命令冲突，脚本也会自动创建 `s-ui` 作为同一菜单入口。
 
