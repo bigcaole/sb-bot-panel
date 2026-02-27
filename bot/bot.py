@@ -1397,12 +1397,26 @@ def build_security_events_keyboard(include_local: bool, top_ips: list) -> Inline
                 ),
             ]
         )
-    rows.append([InlineKeyboardButton("查看封禁列表", callback_data=f"sb:bl:{mode_flag}")])
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    f"封7d {button_ip}",
+                    callback_data=f"sb:bi:604800:{mode_flag}:{token}",
+                ),
+                InlineKeyboardButton(
+                    f"永久 {button_ip}",
+                    callback_data=f"sb:bi:0:{mode_flag}:{token}",
+                ),
+            ]
+        )
+    rows.append([InlineKeyboardButton("查看封禁列表", callback_data=f"sb:bl:{mode_flag}:1")])
     rows.append([InlineKeyboardButton("返回", callback_data="menu:maintain")])
     return InlineKeyboardMarkup(rows)
 
 
-def build_security_blocklist_keyboard(include_local: bool, blocked_ips: list) -> InlineKeyboardMarkup:
+def build_security_blocklist_keyboard(
+    include_local: bool, blocked_ips: list, page: int, total_pages: int
+) -> InlineKeyboardMarkup:
     mode_flag = "1" if include_local else "0"
     rows = []
     for source_ip in blocked_ips[:8]:
@@ -1415,10 +1429,29 @@ def build_security_blocklist_keyboard(include_local: bool, blocked_ips: list) ->
                 )
             ]
         )
+    nav_row = []
+    if page > 1:
+        nav_row.append(
+            InlineKeyboardButton("上一页", callback_data=f"sb:bl:{mode_flag}:{page - 1}")
+        )
+    if page < total_pages:
+        nav_row.append(
+            InlineKeyboardButton("下一页", callback_data=f"sb:bl:{mode_flag}:{page + 1}")
+        )
+    if nav_row:
+        rows.append(nav_row)
     rows.append(
         [
-            InlineKeyboardButton("刷新列表", callback_data=f"sb:bl:{mode_flag}"),
+            InlineKeyboardButton("刷新列表", callback_data=f"sb:bl:{mode_flag}:{page}"),
             InlineKeyboardButton("返回安全事件", callback_data=security_events_mode_callback(include_local)),
+        ]
+    )
+    rows.append(
+        [
+            InlineKeyboardButton(
+                f"第 {page}/{total_pages} 页",
+                callback_data=f"sb:bl:{mode_flag}:{page}",
+            )
         ]
     )
     rows.append([InlineKeyboardButton("返回维护菜单", callback_data="menu:maintain")])
@@ -3123,7 +3156,7 @@ async def run_admin_security_events_action(query, include_local: bool) -> None:
     )
 
 
-async def run_admin_security_block_list_action(query, include_local: bool) -> None:
+async def run_admin_security_block_list_action(query, include_local: bool, page: int = 1) -> None:
     result, error_message, _ = await controller_request("GET", "/admin/security/blocked_ips")
     if error_message:
         await query.edit_message_text(
@@ -3146,6 +3179,9 @@ async def run_admin_security_block_list_action(query, include_local: bool) -> No
     if not isinstance(cleanup_failed, list):
         cleanup_failed = []
 
+    if page < 1:
+        page = 1
+
     lines = [
         "已封禁来源IP列表",
         f"当前数量：{int(result.get('count', 0) or 0)}",
@@ -3160,7 +3196,16 @@ async def run_admin_security_block_list_action(query, include_local: bool) -> No
     lines.append("封禁项：")
     blocked_ips = []
     if items:
-        for item in items[:10]:
+        page_size = 8
+        total_pages = (len(items) + page_size - 1) // page_size
+        if total_pages <= 0:
+            total_pages = 1
+        if page > total_pages:
+            page = total_pages
+        start = (page - 1) * page_size
+        end = start + page_size
+        page_items = items[start:end]
+        for item in page_items:
             source_ip = str(item.get("source_ip", "")).strip()
             if not source_ip:
                 continue
@@ -3171,12 +3216,17 @@ async def run_admin_security_block_list_action(query, include_local: bool) -> No
             else:
                 expire_text = "永久"
             lines.append(f"- {source_ip} | 到期：{expire_text}")
+        lines.append("")
+        lines.append(f"分页：第 {page}/{total_pages} 页（每页 {page_size} 条）")
     else:
         lines.append("- （暂无）")
+        total_pages = 1
 
     await query.edit_message_text(
         "\n".join(lines),
-        reply_markup=build_security_blocklist_keyboard(include_local, blocked_ips),
+        reply_markup=build_security_blocklist_keyboard(
+            include_local, blocked_ips, page=page, total_pages=total_pages
+        ),
     )
 
 
@@ -3208,6 +3258,15 @@ async def run_admin_security_block_ip_action(
         )
         return
 
+    if int(duration_seconds) == 0:
+        duration_text = "永久"
+    elif int(duration_seconds) % 86400 == 0:
+        duration_text = f"{int(duration_seconds) // 86400} 天"
+    elif int(duration_seconds) % 3600 == 0:
+        duration_text = f"{int(duration_seconds) // 3600} 小时"
+    else:
+        duration_text = f"{int(duration_seconds)} 秒"
+
     expire_at = int(result.get("expire_at", 0) or 0)
     expire_text = (
         datetime.fromtimestamp(expire_at).strftime("%Y-%m-%d %H:%M:%S")
@@ -3218,11 +3277,11 @@ async def run_admin_security_block_ip_action(
         "封禁成功\n\n"
         f"IP：{source_ip}\n"
         f"作用端口：{int(result.get('controller_port', CONTROLLER_PORT_HINT) or CONTROLLER_PORT_HINT)}\n"
-        f"封禁时长：{int(duration_seconds)} 秒\n"
+        f"封禁时长：{duration_text}\n"
         f"到期时间：{expire_text}",
         reply_markup=InlineKeyboardMarkup(
             [
-                [InlineKeyboardButton("查看封禁列表", callback_data=f"sb:bl:{1 if include_local else 0}")],
+                [InlineKeyboardButton("查看封禁列表", callback_data=f"sb:bl:{1 if include_local else 0}:1")],
                 [InlineKeyboardButton("返回安全事件", callback_data=security_events_mode_callback(include_local))],
             ]
         ),
@@ -3238,7 +3297,7 @@ async def run_admin_security_unblock_ip_action(query, include_local: bool, sourc
     if error_message:
         await query.edit_message_text(
             f"解封失败：{localize_controller_error(error_message)}",
-            reply_markup=build_back_keyboard(f"sb:bl:{1 if include_local else 0}"),
+            reply_markup=build_back_keyboard(f"sb:bl:{1 if include_local else 0}:1"),
         )
         return
     removed_rules = 0
@@ -3250,7 +3309,7 @@ async def run_admin_security_unblock_ip_action(query, include_local: bool, sourc
         f"删除规则数：{removed_rules}",
         reply_markup=InlineKeyboardMarkup(
             [
-                [InlineKeyboardButton("返回封禁列表", callback_data=f"sb:bl:{1 if include_local else 0}")],
+                [InlineKeyboardButton("返回封禁列表", callback_data=f"sb:bl:{1 if include_local else 0}:1")],
                 [InlineKeyboardButton("返回安全事件", callback_data=security_events_mode_callback(include_local))],
             ]
         ),
@@ -5773,9 +5832,23 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
 
     if callback_data.startswith("sb:bl:"):
-        parts = callback_data.split(":", maxsplit=2)
-        include_local = len(parts) == 3 and parts[2] == "1"
-        await run_admin_security_block_list_action(query, include_local=include_local)
+        parts = callback_data.split(":")
+        if len(parts) < 3:
+            await query.edit_message_text(
+                "封禁列表请求参数无效。",
+                reply_markup=build_back_keyboard("menu:maintain"),
+            )
+            return
+        include_local = parts[2] == "1"
+        page = 1
+        if len(parts) >= 4:
+            try:
+                page = int(parts[3])
+            except ValueError:
+                page = 1
+        await run_admin_security_block_list_action(
+            query, include_local=include_local, page=page
+        )
         return
 
     if callback_data.startswith("sb:bi:"):
