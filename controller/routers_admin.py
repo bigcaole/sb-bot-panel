@@ -1,3 +1,4 @@
+import ipaddress
 import shutil
 import tarfile
 import tempfile
@@ -30,6 +31,7 @@ from controller.security import (
 )
 from controller.settings import (
     BACKUP_RETENTION_COUNT,
+    CONTROLLER_PORT_WHITELIST_ITEMS,
     MIGRATE_RETENTION_COUNT,
     NODE_TASK_MAX_PENDING_PER_NODE,
     NODE_MONITOR_OFFLINE_THRESHOLD_SECONDS,
@@ -130,6 +132,8 @@ def build_security_status_payload() -> Dict[str, Union[bool, int, List[str]]]:
     return {
         "auth_enabled": bool(auth_tokens),
         "auth_token_count": len(auth_tokens),
+        "controller_port_whitelist": CONTROLLER_PORT_WHITELIST_ITEMS,
+        "controller_port_whitelist_count": len(CONTROLLER_PORT_WHITELIST_ITEMS),
         "trust_x_forwarded_for": TRUST_X_FORWARDED_FOR,
         "trusted_proxy_ips": sorted(TRUSTED_PROXY_IPS),
         "sub_link_sign_enabled": bool(SUB_LINK_SIGN_KEY),
@@ -641,6 +645,15 @@ def get_node_access_status(
 
     locked_nodes = []
     unlocked_nodes = []
+    whitelist_networks = []
+    whitelist_invalid = []
+    for item in CONTROLLER_PORT_WHITELIST_ITEMS:
+        try:
+            whitelist_networks.append(ipaddress.ip_network(str(item), strict=False))
+        except ValueError:
+            whitelist_invalid.append(str(item))
+
+    whitelist_missing_nodes = []
     for row in rows:
         node_code = str(row["node_code"])
         agent_ip = str(row["agent_ip"] or "").strip()
@@ -651,6 +664,18 @@ def get_node_access_status(
         }
         if agent_ip:
             locked_nodes.append(item)
+            if int(row["enabled"] or 0) == 1:
+                try:
+                    agent_ip_obj = ipaddress.ip_address(agent_ip)
+                    covered = any(agent_ip_obj in network for network in whitelist_networks)
+                    if not covered:
+                        whitelist_missing_nodes.append(
+                            {"node_code": node_code, "agent_ip": agent_ip}
+                        )
+                except ValueError:
+                    whitelist_missing_nodes.append(
+                        {"node_code": node_code, "agent_ip": agent_ip}
+                    )
         else:
             unlocked_nodes.append(item)
 
@@ -660,6 +685,10 @@ def get_node_access_status(
         "unlocked_nodes": len(unlocked_nodes),
         "locked_items": locked_nodes,
         "unlocked_items": unlocked_nodes,
+        "controller_port_whitelist": CONTROLLER_PORT_WHITELIST_ITEMS,
+        "whitelist_invalid_items": whitelist_invalid,
+        "whitelist_missing_nodes": whitelist_missing_nodes,
+        "whitelist_missing_count": len(whitelist_missing_nodes),
         "hint": "建议每个节点设置 agent_ip，并在防火墙中只放行节点IP到 controller 端口。",
     }
 

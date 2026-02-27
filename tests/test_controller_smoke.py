@@ -157,6 +157,7 @@ class ControllerSmokeTestCase(unittest.TestCase):
             self.assertEqual(200, admin_sec.status_code)
             self.assertTrue(bool(admin_sec.json().get("auth_enabled")))
             self.assertIn("security_events_exclude_local", admin_sec.json())
+            self.assertIn("controller_port_whitelist_count", admin_sec.json())
 
             overview_resp = client.get("/admin/overview", headers=self._auth_header())
             self.assertEqual(200, overview_resp.status_code)
@@ -192,6 +193,12 @@ class ControllerSmokeTestCase(unittest.TestCase):
             self.assertIn("since", sec_payload)
             self.assertIn("unauthorized", sec_payload)
             self.assertIn("top_unauthorized_ips", sec_payload)
+
+            node_access = client.get("/admin/node_access/status", headers=self._auth_header())
+            self.assertEqual(200, node_access.status_code)
+            node_access_payload = node_access.json()
+            self.assertIn("controller_port_whitelist", node_access_payload)
+            self.assertIn("whitelist_missing_nodes", node_access_payload)
 
     def test_subscription_sign_and_access_smoke(self) -> None:
         with TestClient(app_module.app) as client:

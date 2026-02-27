@@ -2782,17 +2782,42 @@ async def run_admin_node_access_status_action(query, back_menu_callback: str) ->
     unlocked_nodes = int(result.get("unlocked_nodes", 0) or 0)
     locked_items = result.get("locked_items", [])
     unlocked_items = result.get("unlocked_items", [])
+    whitelist_items = result.get("controller_port_whitelist", [])
+    whitelist_invalid_items = result.get("whitelist_invalid_items", [])
+    whitelist_missing_nodes = result.get("whitelist_missing_nodes", [])
+    whitelist_missing_count = int(result.get("whitelist_missing_count", 0) or 0)
 
     lines = [
         "节点访问安全状态",
         f"总节点数：{total_nodes}",
         f"已锁定来源IP：{locked_nodes}",
         f"未锁定来源IP：{unlocked_nodes}",
+        f"白名单缺口：{whitelist_missing_count}",
+    ]
+    if isinstance(whitelist_items, list) and whitelist_items:
+        lines.append("controller端口白名单：{0}".format(", ".join(str(x) for x in whitelist_items[:20])))
+    else:
+        lines.append("controller端口白名单：（空）")
+    if isinstance(whitelist_invalid_items, list) and whitelist_invalid_items:
+        lines.append("白名单格式异常项：{0}".format(", ".join(str(x) for x in whitelist_invalid_items[:10])))
+    lines.extend(
+        [
         "",
         "已锁定节点：",
-    ]
+        ]
+    )
     if isinstance(locked_items, list) and locked_items:
         for item in locked_items[:20]:
+            node_code = str(item.get("node_code", ""))
+            agent_ip = str(item.get("agent_ip", ""))
+            lines.append(f"- {node_code} -> {agent_ip}")
+    else:
+        lines.append("- （暂无）")
+
+    lines.append("")
+    lines.append("白名单未覆盖节点（已启用且有 agent_ip）：")
+    if isinstance(whitelist_missing_nodes, list) and whitelist_missing_nodes:
+        for item in whitelist_missing_nodes[:20]:
             node_code = str(item.get("node_code", ""))
             agent_ip = str(item.get("agent_ip", ""))
             lines.append(f"- {node_code} -> {agent_ip}")
@@ -2823,6 +2848,11 @@ async def run_admin_node_access_status_action(query, back_menu_callback: str) ->
         )
         lines.append("全局安全状态：")
         lines.append(f"- 接口鉴权：{auth_enabled}")
+        lines.append(
+            "- controller白名单数量：{0}".format(
+                int(security_result.get("controller_port_whitelist_count", 0) or 0)
+            )
+        )
         lines.append(f"- 订阅签名：{sign_enabled}（{sign_required}）")
         lines.append(f"- 轻量限流：{rate_limit_enabled}")
         warnings = security_result.get("warnings", [])

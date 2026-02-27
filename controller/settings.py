@@ -14,6 +14,16 @@ def _get_bool_env(name: str, default: bool) -> bool:
     return raw in ("1", "true", "yes", "on")
 
 
+def _get_csv_env(name: str) -> list:
+    values = []
+    raw = os.getenv(name, "")
+    for item in str(raw).split(","):
+        value = str(item or "").strip()
+        if value:
+            values.append(value)
+    return values
+
+
 NODE_TASK_RUNNING_TIMEOUT_SECONDS = int(_get_int_env("NODE_TASK_RUNNING_TIMEOUT", 120))
 if NODE_TASK_RUNNING_TIMEOUT_SECONDS < 30:
     NODE_TASK_RUNNING_TIMEOUT_SECONDS = 30
@@ -62,3 +72,6 @@ if NODE_MONITOR_OFFLINE_THRESHOLD_SECONDS < 30:
 
 # 默认过滤本机/测试来源（127.0.0.1/testclient）以便更准确观察真实公网扫描趋势。
 SECURITY_EVENTS_EXCLUDE_LOCAL = _get_bool_env("SECURITY_EVENTS_EXCLUDE_LOCAL", True)
+
+# 管理端 8080 放行白名单（可为空，来源于 .env）
+CONTROLLER_PORT_WHITELIST_ITEMS = _get_csv_env("CONTROLLER_PORT_WHITELIST")
