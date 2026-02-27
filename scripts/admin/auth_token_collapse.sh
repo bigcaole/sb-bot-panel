@@ -4,6 +4,7 @@ set -euo pipefail
 PROJECT_DIR="${PROJECT_DIR:-/root/sb-bot-panel}"
 ENV_FILE="${PROJECT_DIR}/.env"
 AUTO_YES=0
+SCRIPT_ACTOR="token-collapse"
 
 msg() { echo -e "\033[1;32m[信息]\033[0m $*"; }
 warn() { echo -e "\033[1;33m[警告]\033[0m $*"; }
@@ -62,6 +63,51 @@ parse_primary_token() {
     fi
   done
   echo ""
+}
+
+sync_node_tokens_after_collapse() {
+  local controller_port="$1"
+  local token="$2"
+  local response=""
+  local body=""
+  local http_code=""
+  local selected=""
+  local created=""
+  local deduplicated=""
+  local failed=""
+
+  if [[ -z "$token" ]]; then
+    warn "自动同步节点 token 已跳过：收敛后 token 为空。"
+    return
+  fi
+
+  response="$(
+    curl -sS --max-time 15 -X POST \
+      "http://127.0.0.1:${controller_port}/admin/auth/sync_node_tokens?include_disabled=1&force_new=1" \
+      -H "Authorization: Bearer ${token}" \
+      -H "X-Actor: ${SCRIPT_ACTOR}" \
+      -H "Content-Type: application/json" \
+      -w $'\n%{http_code}' 2>/dev/null || true
+  )"
+  http_code="${response##*$'\n'}"
+  body="${response%$'\n'*}"
+  if [[ "$http_code" != "200" ]]; then
+    warn "收敛后自动同步节点 token 失败（HTTP ${http_code:-unknown}）。可在 sb-admin 菜单手动同步。"
+    if [[ -n "$body" ]]; then
+      warn "返回：${body}"
+    fi
+    return
+  fi
+
+  if command -v jq >/dev/null 2>&1; then
+    selected="$(echo "$body" | jq -r '.selected // 0' 2>/dev/null || echo "0")"
+    created="$(echo "$body" | jq -r '.created // 0' 2>/dev/null || echo "0")"
+    deduplicated="$(echo "$body" | jq -r '.deduplicated // 0' 2>/dev/null || echo "0")"
+    failed="$(echo "$body" | jq -r '.failed // 0' 2>/dev/null || echo "0")"
+    msg "收敛后已自动同步节点 token：目标=${selected} 新建=${created} 去重=${deduplicated} 失败=${failed}"
+  else
+    msg "收敛后已自动触发节点 token 同步。"
+  fi
 }
 
 main() {
@@ -123,6 +169,7 @@ main() {
 
   if wait_for_controller_ready "$controller_port" 30; then
     msg "收敛完成：controller 已就绪（127.0.0.1:${controller_port}）。"
+    sync_node_tokens_after_collapse "$controller_port" "$primary_token"
   else
     err "controller 启动超时，请检查日志：journalctl -u sb-controller -n 120 --no-pager"
     exit 1
