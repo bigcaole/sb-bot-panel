@@ -225,6 +225,11 @@ run_api_checks() {
       FAIL_API=1
       record_fail "管理接口校验异常：带 token 调用 /admin/security/maintenance_cleanup 期望 200，实际 ${code}"
     fi
+    code="$(http_code "${api_url}/admin/security/auto_block/run" -X POST -H "Authorization: Bearer ${auth_token}")"
+    if [[ "$code" != "200" ]]; then
+      FAIL_API=1
+      record_fail "管理接口校验异常：带 token 调用 /admin/security/auto_block/run 期望 200，实际 ${code}"
+    fi
     code="$(http_code "${api_url}/admin/db/integrity" -H "Authorization: Bearer ${auth_token}")"
     if [[ "$code" != "200" ]]; then
       FAIL_API=1
@@ -250,6 +255,11 @@ run_api_checks() {
     if [[ "$code" != "200" ]]; then
       FAIL_API=1
       record_fail "AUTH_TOKEN 为空时 /admin/security/maintenance_cleanup 应可访问，期望 200，实际 ${code}"
+    fi
+    code="$(http_code "${api_url}/admin/security/auto_block/run" -X POST)"
+    if [[ "$code" != "200" ]]; then
+      FAIL_API=1
+      record_fail "AUTH_TOKEN 为空时 /admin/security/auto_block/run 应可访问，期望 200，实际 ${code}"
     fi
   fi
 

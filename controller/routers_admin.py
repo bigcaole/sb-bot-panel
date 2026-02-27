@@ -46,6 +46,12 @@ from controller.settings import (
     MIGRATE_RETENTION_COUNT,
     NODE_TASK_MAX_PENDING_PER_NODE,
     NODE_MONITOR_OFFLINE_THRESHOLD_SECONDS,
+    SECURITY_AUTO_BLOCK_DURATION_SECONDS,
+    SECURITY_AUTO_BLOCK_ENABLED,
+    SECURITY_AUTO_BLOCK_INTERVAL_SECONDS,
+    SECURITY_AUTO_BLOCK_MAX_PER_INTERVAL,
+    SECURITY_AUTO_BLOCK_THRESHOLD,
+    SECURITY_AUTO_BLOCK_WINDOW_SECONDS,
     SECURITY_BLOCK_CLEANUP_INTERVAL_SECONDS,
     SECURITY_EVENTS_EXCLUDE_LOCAL,
     SUB_LINK_DEFAULT_TTL_SECONDS,
@@ -157,6 +163,8 @@ def build_security_status_payload() -> Dict[str, Union[bool, int, List[str]]]:
         warnings.append("未授权审计采样已关闭（高扫描场景下 audit_logs 增长会更快）")
     if AUDIT_LOG_RETENTION_DAYS < 7:
         warnings.append("审计日志保留天数过短（小于 7 天）")
+    if SECURITY_AUTO_BLOCK_ENABLED:
+        warnings.append("自动封禁已启用（请确认阈值与白名单策略，避免误封）")
 
     return {
         "auth_enabled": bool(auth_tokens),
@@ -177,6 +185,12 @@ def build_security_status_payload() -> Dict[str, Union[bool, int, List[str]]]:
         "audit_log_cleanup_interval_seconds": AUDIT_LOG_CLEANUP_INTERVAL_SECONDS,
         "audit_log_cleanup_batch_size": AUDIT_LOG_CLEANUP_BATCH_SIZE,
         "security_block_cleanup_interval_seconds": SECURITY_BLOCK_CLEANUP_INTERVAL_SECONDS,
+        "security_auto_block_enabled": bool(SECURITY_AUTO_BLOCK_ENABLED),
+        "security_auto_block_interval_seconds": int(SECURITY_AUTO_BLOCK_INTERVAL_SECONDS),
+        "security_auto_block_window_seconds": int(SECURITY_AUTO_BLOCK_WINDOW_SECONDS),
+        "security_auto_block_threshold": int(SECURITY_AUTO_BLOCK_THRESHOLD),
+        "security_auto_block_duration_seconds": int(SECURITY_AUTO_BLOCK_DURATION_SECONDS),
+        "security_auto_block_max_per_interval": int(SECURITY_AUTO_BLOCK_MAX_PER_INTERVAL),
         "blocked_ip_count": active_block_count,
         "security_events_exclude_local": bool(SECURITY_EVENTS_EXCLUDE_LOCAL),
         "node_task_max_pending_per_node": NODE_TASK_MAX_PENDING_PER_NODE,
@@ -453,6 +467,136 @@ def run_security_maintenance_cleanup(conn, now_ts: int) -> Dict[str, Union[int, 
         "audit_cleanup_batch_size": int(AUDIT_LOG_CLEANUP_BATCH_SIZE),
         "block_cleanup_rounds": int(block_cleanup_rounds),
         "audit_cleanup_rounds": int(audit_cleanup_rounds),
+    }
+
+
+def run_security_auto_block_once(conn, now_ts: int) -> Dict[str, Union[int, List[str], bool]]:
+    if not SECURITY_AUTO_BLOCK_ENABLED:
+        return {
+            "enabled": False,
+            "blocked_count": 0,
+            "blocked_items": [],
+            "failed_items": [],
+            "skipped_items": [],
+            "window_seconds": int(SECURITY_AUTO_BLOCK_WINDOW_SECONDS),
+            "threshold": int(SECURITY_AUTO_BLOCK_THRESHOLD),
+            "duration_seconds": int(SECURITY_AUTO_BLOCK_DURATION_SECONDS),
+            "max_per_interval": int(SECURITY_AUTO_BLOCK_MAX_PER_INTERVAL),
+        }
+
+    snapshot = build_unauthorized_events_snapshot(
+        now_ts=int(now_ts),
+        window_seconds=int(SECURITY_AUTO_BLOCK_WINDOW_SECONDS),
+        top_limit=max(20, int(SECURITY_AUTO_BLOCK_MAX_PER_INTERVAL) * 20),
+        include_local=False,
+    )
+    top_rows = snapshot.get("top_unauthorized_ips", [])
+    if not isinstance(top_rows, list):
+        top_rows = []
+
+    active_rows = conn.execute(
+        """
+        SELECT source_ip
+        FROM security_ip_blocks
+        WHERE expire_at = 0 OR expire_at > ?
+        """,
+        (int(now_ts),),
+    ).fetchall()
+    active_ip_set = set()
+    for row in active_rows:
+        value = str(row["source_ip"] or "").strip()
+        if value:
+            active_ip_set.add(value)
+
+    protected_ip_set = set(get_protected_source_ips(conn, request_source_ip=""))
+    blocked_items: List[str] = []
+    failed_items: List[str] = []
+    skipped_items: List[str] = []
+    max_blocks = int(SECURITY_AUTO_BLOCK_MAX_PER_INTERVAL)
+
+    for item in top_rows:
+        if len(blocked_items) >= max_blocks:
+            break
+        if not isinstance(item, dict):
+            continue
+        source_ip = str(item.get("source_ip", "")).strip()
+        try:
+            hit_count = int(item.get("count", 0) or 0)
+        except (TypeError, ValueError):
+            hit_count = 0
+        if not source_ip:
+            continue
+        if hit_count < int(SECURITY_AUTO_BLOCK_THRESHOLD):
+            continue
+        try:
+            ip_obj = ipaddress.ip_address(source_ip)
+        except ValueError:
+            skipped_items.append("{0}:invalid".format(source_ip))
+            continue
+        if not ip_obj.is_global:
+            skipped_items.append("{0}:non_global".format(source_ip))
+            continue
+        if source_ip in protected_ip_set:
+            skipped_items.append("{0}:protected".format(source_ip))
+            continue
+        if source_ip in active_ip_set:
+            skipped_items.append("{0}:already_blocked".format(source_ip))
+            continue
+
+        duration_seconds = int(SECURITY_AUTO_BLOCK_DURATION_SECONDS)
+        expire_at = 0 if duration_seconds == 0 else int(now_ts + duration_seconds)
+        try:
+            apply_ufw_ip_block(source_ip)
+            conn.execute(
+                """
+                INSERT INTO security_ip_blocks(source_ip, created_at, expire_at, reason, operator)
+                VALUES(?, ?, ?, ?, ?)
+                ON CONFLICT(source_ip) DO UPDATE SET
+                    created_at=excluded.created_at,
+                    expire_at=excluded.expire_at,
+                    reason=excluded.reason,
+                    operator=excluded.operator
+                """,
+                (
+                    source_ip,
+                    int(now_ts),
+                    int(expire_at),
+                    "auto-security-events",
+                    "system:auto-block",
+                ),
+            )
+            write_audit_log(
+                conn,
+                action="admin.security.auto_block",
+                resource_type="ip",
+                resource_id=source_ip,
+                detail={
+                    "count": int(hit_count),
+                    "window_seconds": int(SECURITY_AUTO_BLOCK_WINDOW_SECONDS),
+                    "threshold": int(SECURITY_AUTO_BLOCK_THRESHOLD),
+                    "duration_seconds": int(duration_seconds),
+                    "expire_at": int(expire_at),
+                    "controller_port": int(CONTROLLER_PORT),
+                },
+                actor="system:auto-block",
+                source_ip="",
+                created_at=int(now_ts),
+            )
+            blocked_items.append(source_ip)
+            active_ip_set.add(source_ip)
+        except HTTPException:
+            failed_items.append(source_ip)
+
+    return {
+        "enabled": True,
+        "blocked_count": int(len(blocked_items)),
+        "blocked_items": blocked_items,
+        "failed_items": failed_items,
+        "skipped_items": skipped_items[:50],
+        "window_seconds": int(SECURITY_AUTO_BLOCK_WINDOW_SECONDS),
+        "threshold": int(SECURITY_AUTO_BLOCK_THRESHOLD),
+        "duration_seconds": int(SECURITY_AUTO_BLOCK_DURATION_SECONDS),
+        "max_per_interval": int(max_blocks),
     }
 
 
@@ -1245,6 +1389,61 @@ def run_admin_security_maintenance_cleanup(
         "audit_cleanup_batch_size": int(cleanup_result.get("audit_cleanup_batch_size", 0) or 0),
         "block_cleanup_rounds": int(cleanup_result.get("block_cleanup_rounds", 0) or 0),
         "audit_cleanup_rounds": int(cleanup_result.get("audit_cleanup_rounds", 0) or 0),
+        "created_at": int(now_ts),
+    }
+
+
+@router.post(
+    "/admin/security/auto_block/run",
+    summary="Run security auto block check once",
+    description=(
+        "AUTH_TOKEN 为空时不校验；非空时需要请求头 Authorization: Bearer <AUTH_TOKEN>。"
+        "按安全事件阈值执行一次自动封禁检查。"
+    ),
+    response_model=None,
+)
+def run_admin_security_auto_block_once(
+    request: Request,
+    authorization: Optional[str] = Header(default=None, alias="Authorization"),
+) -> Union[Dict[str, Union[bool, int, List[str]]], JSONResponse]:
+    auth_error = verify_admin_authorization(authorization)
+    if auth_error is not None:
+        return auth_error
+
+    now_ts = int(time.time())
+    with get_connection() as conn:
+        result = run_security_auto_block_once(conn, now_ts=now_ts)
+        write_audit_log(
+            conn,
+            action="admin.security.auto_block_run",
+            resource_type="security",
+            resource_id="manual",
+            detail={
+                "enabled": bool(result.get("enabled")),
+                "blocked_count": int(result.get("blocked_count", 0) or 0),
+                "failed_count": len(result.get("failed_items", []))
+                if isinstance(result.get("failed_items"), list)
+                else 0,
+                "window_seconds": int(result.get("window_seconds", 0) or 0),
+                "threshold": int(result.get("threshold", 0) or 0),
+            },
+            actor=get_request_actor(request),
+            source_ip=get_source_ip_for_audit(request),
+            created_at=now_ts,
+        )
+        conn.commit()
+
+    return {
+        "ok": True,
+        "enabled": bool(result.get("enabled")),
+        "blocked_count": int(result.get("blocked_count", 0) or 0),
+        "blocked_items": result.get("blocked_items", []),
+        "failed_items": result.get("failed_items", []),
+        "skipped_items": result.get("skipped_items", []),
+        "window_seconds": int(result.get("window_seconds", 0) or 0),
+        "threshold": int(result.get("threshold", 0) or 0),
+        "duration_seconds": int(result.get("duration_seconds", 0) or 0),
+        "max_per_interval": int(result.get("max_per_interval", 0) or 0),
         "created_at": int(now_ts),
     }
 

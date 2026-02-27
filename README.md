@@ -451,7 +451,12 @@ scp root@旧IP:/var/backups/sb-migrate/sb-migrate-xxxx.tar.gz root@新IP:/root/
   - `GET /admin/security/events?window_seconds=3600&top=5` 可按窗口查看未授权来源统计（适合观察加固后的实时效果）
   - 可选参数：`include_local=1`（临时包含本机测试来源）
   - `POST /admin/security/maintenance_cleanup` 可手动触发一次“过期封禁 + 审计日志保留”清理（bot 安全事件页也可一键触发）
+  - `POST /admin/security/auto_block/run` 可手动执行一次“自动封禁阈值检查”（bot 安全事件页也可触发）
   - `GET /admin/node_access/status` 会返回 `whitelist_missing_nodes`，用于检查节点 `agent_ip` 是否已被 controller 端口白名单覆盖
+- 自动封禁策略（默认关闭）：
+  - `SECURITY_AUTO_BLOCK_ENABLED=1` 开启后，controller 会按窗口阈值自动封禁高频未授权来源
+  - 关键参数：`SECURITY_AUTO_BLOCK_WINDOW_SECONDS`、`SECURITY_AUTO_BLOCK_THRESHOLD`、`SECURITY_AUTO_BLOCK_DURATION_SECONDS`、`SECURITY_AUTO_BLOCK_MAX_PER_INTERVAL`
+  - 建议先完成 `agent_ip + CONTROLLER_PORT_WHITELIST` 收敛，再启用自动封禁
 - 数据库迁移检查：
   - `POST /admin/db/export` 生成逻辑导出快照（json.gz）
   - `POST /admin/db/verify_export` 校验快照并可选对比当前数据库

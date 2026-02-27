@@ -166,6 +166,12 @@ class ControllerSmokeTestCase(unittest.TestCase):
             self.assertIn("audit_log_retention_days", admin_sec.json())
             self.assertIn("audit_log_cleanup_interval_seconds", admin_sec.json())
             self.assertIn("audit_log_cleanup_batch_size", admin_sec.json())
+            self.assertIn("security_auto_block_enabled", admin_sec.json())
+            self.assertIn("security_auto_block_interval_seconds", admin_sec.json())
+            self.assertIn("security_auto_block_window_seconds", admin_sec.json())
+            self.assertIn("security_auto_block_threshold", admin_sec.json())
+            self.assertIn("security_auto_block_duration_seconds", admin_sec.json())
+            self.assertIn("security_auto_block_max_per_interval", admin_sec.json())
 
             overview_resp = client.get("/admin/overview", headers=self._auth_header())
             self.assertEqual(200, overview_resp.status_code)
@@ -221,6 +227,16 @@ class ControllerSmokeTestCase(unittest.TestCase):
             self.assertIn("cleaned_expired_blocks", cleanup_payload)
             self.assertIn("cleaned_audit_logs", cleanup_payload)
             self.assertIn("active_blocked_ips", cleanup_payload)
+
+            auto_block_resp = client.post(
+                "/admin/security/auto_block/run",
+                headers=self._auth_header(),
+            )
+            self.assertEqual(200, auto_block_resp.status_code)
+            auto_block_payload = auto_block_resp.json()
+            self.assertTrue(bool(auto_block_payload.get("ok")))
+            self.assertIn("enabled", auto_block_payload)
+            self.assertIn("blocked_count", auto_block_payload)
 
     def test_subscription_sign_and_access_smoke(self) -> None:
         with TestClient(app_module.app) as client:

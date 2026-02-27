@@ -334,6 +334,7 @@ PRIVILEGED_CALLBACK_PREFIXES = {
     "sb:ba:": ROLE_SUPER,
     "sb:bu:": ROLE_SUPER,
     "sb:mc:": ROLE_SUPER,
+    "sb:ab:": ROLE_SUPER,
 }
 
 MUTATION_CALLBACK_EXACT = {
@@ -366,6 +367,7 @@ MUTATION_CALLBACK_PREFIXES = (
     "sb:ba:",
     "sb:bu:",
     "sb:mc:",
+    "sb:ab:",
 )
 MAINTAIN_ALLOWED_ENV_KEYS = [
     "CONTROLLER_PORT",
@@ -400,6 +402,12 @@ MAINTAIN_ALLOWED_ENV_KEYS = [
     "SECURITY_EVENTS_EXCLUDE_LOCAL",
     "UNAUTHORIZED_AUDIT_SAMPLE_SECONDS",
     "SECURITY_BLOCK_CLEANUP_INTERVAL_SECONDS",
+    "SECURITY_AUTO_BLOCK_ENABLED",
+    "SECURITY_AUTO_BLOCK_INTERVAL_SECONDS",
+    "SECURITY_AUTO_BLOCK_WINDOW_SECONDS",
+    "SECURITY_AUTO_BLOCK_THRESHOLD",
+    "SECURITY_AUTO_BLOCK_DURATION_SECONDS",
+    "SECURITY_AUTO_BLOCK_MAX_PER_INTERVAL",
     "AUDIT_LOG_RETENTION_DAYS",
     "AUDIT_LOG_CLEANUP_INTERVAL_SECONDS",
     "AUDIT_LOG_CLEANUP_BATCH_SIZE",
@@ -1401,6 +1409,7 @@ def build_security_events_keyboard(include_local: bool, top_ips: list) -> Inline
             ]
         )
     rows.append([InlineKeyboardButton("手动安全清理", callback_data=f"sb:mc:{mode_flag}")])
+    rows.append([InlineKeyboardButton("执行自动封禁检查", callback_data=f"sb:ab:{mode_flag}")])
     rows.append([InlineKeyboardButton("查看封禁列表", callback_data=f"sb:bl:{mode_flag}:1")])
     rows.append([InlineKeyboardButton("返回", callback_data="menu:maintain")])
     return InlineKeyboardMarkup(rows)
@@ -3096,10 +3105,12 @@ async def run_admin_security_events_action(query, include_local: bool) -> None:
     token_count_text = "-"
     auth_enabled_text = "-"
     sample_text = "-"
+    auto_block_text = "-"
     if status_error:
         token_count_text = "读取失败"
         auth_enabled_text = "读取失败"
         sample_text = "读取失败"
+        auto_block_text = "读取失败"
     elif isinstance(status_result, dict):
         auth_enabled = bool(status_result.get("auth_enabled"))
         auth_enabled_text = "已启用" if auth_enabled else "未启用"
@@ -3112,6 +3123,17 @@ async def run_admin_security_events_action(query, include_local: bool) -> None:
             sample_text = "未启用（0 秒）"
         else:
             sample_text = "未启用"
+        auto_block_enabled = bool(status_result.get("security_auto_block_enabled"))
+        auto_block_window = int(status_result.get("security_auto_block_window_seconds", 0) or 0)
+        auto_block_threshold = int(status_result.get("security_auto_block_threshold", 0) or 0)
+        auto_block_duration = int(status_result.get("security_auto_block_duration_seconds", 0) or 0)
+        auto_block_text = (
+            "已启用（窗口 {0}s / 阈值 {1} / 封禁 {2}s）".format(
+                auto_block_window, auto_block_threshold, auto_block_duration
+            )
+            if auto_block_enabled
+            else "未启用"
+        )
 
     unlocked_enabled_nodes = 0
     whitelist_missing_count = 0
@@ -3147,6 +3169,7 @@ async def run_admin_security_events_action(query, include_local: bool) -> None:
         f"鉴权状态：{auth_enabled_text}",
         f"AUTH_TOKEN 数量：{token_count_text}",
         f"未授权审计采样：{sample_text}",
+        f"自动封禁策略：{auto_block_text}",
         f"访问收敛：{access_text}",
         "",
         "来源 TOP5：",
@@ -3369,6 +3392,69 @@ async def run_admin_security_maintenance_cleanup_action(query, include_local: bo
     ]
     if failed_items:
         lines.append("清理失败IP：{0}".format(", ".join(str(x) for x in failed_items[:5])))
+
+    await query.edit_message_text(
+        "\n".join(lines),
+        reply_markup=InlineKeyboardMarkup(
+            [
+                [InlineKeyboardButton("返回安全事件", callback_data=security_events_mode_callback(include_local))],
+                [InlineKeyboardButton("查看封禁列表", callback_data=f"sb:bl:{1 if include_local else 0}:1")],
+                [InlineKeyboardButton("返回维护菜单", callback_data="menu:maintain")],
+            ]
+        ),
+    )
+
+
+async def run_admin_security_auto_block_action(query, include_local: bool) -> None:
+    result, error_message, _ = await controller_request("POST", "/admin/security/auto_block/run")
+    if error_message:
+        await query.edit_message_text(
+            f"自动封禁检查失败：{localize_controller_error(error_message)}",
+            reply_markup=build_back_keyboard(security_events_mode_callback(include_local)),
+        )
+        return
+    if not isinstance(result, dict):
+        await query.edit_message_text(
+            "自动封禁检查返回异常。",
+            reply_markup=build_back_keyboard(security_events_mode_callback(include_local)),
+        )
+        return
+
+    enabled = bool(result.get("enabled"))
+    blocked_count = int(result.get("blocked_count", 0) or 0)
+    window_seconds = int(result.get("window_seconds", 0) or 0)
+    threshold = int(result.get("threshold", 0) or 0)
+    duration_seconds = int(result.get("duration_seconds", 0) or 0)
+    blocked_items = result.get("blocked_items", [])
+    failed_items = result.get("failed_items", [])
+    if not isinstance(blocked_items, list):
+        blocked_items = []
+    if not isinstance(failed_items, list):
+        failed_items = []
+
+    if duration_seconds == 0:
+        duration_text = "永久"
+    elif duration_seconds % 86400 == 0:
+        duration_text = "{0} 天".format(duration_seconds // 86400)
+    elif duration_seconds % 3600 == 0:
+        duration_text = "{0} 小时".format(duration_seconds // 3600)
+    else:
+        duration_text = "{0} 秒".format(duration_seconds)
+
+    lines = [
+        "自动封禁检查完成",
+        "",
+        f"策略开关：{'已启用' if enabled else '未启用'}",
+        f"策略参数：窗口 {window_seconds}s / 阈值 {threshold} / 封禁 {duration_text}",
+        f"本次新增封禁：{blocked_count}",
+    ]
+    if blocked_items:
+        lines.append("新增封禁IP：{0}".format(", ".join(str(x) for x in blocked_items[:8])))
+    if failed_items:
+        lines.append("封禁失败IP：{0}".format(", ".join(str(x) for x in failed_items[:5])))
+    if not enabled:
+        lines.append("")
+        lines.append("提示：当前 SECURITY_AUTO_BLOCK_ENABLED=0，仅执行状态检查未封禁。")
 
     await query.edit_message_text(
         "\n".join(lines),
@@ -5907,6 +5993,20 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             return
         include_local = parts[2] == "1"
         await run_admin_security_maintenance_cleanup_action(
+            query, include_local=include_local
+        )
+        return
+
+    if callback_data.startswith("sb:ab:"):
+        parts = callback_data.split(":", maxsplit=2)
+        if len(parts) != 3:
+            await query.edit_message_text(
+                "自动封禁参数无效。",
+                reply_markup=build_back_keyboard("menu:maintain"),
+            )
+            return
+        include_local = parts[2] == "1"
+        await run_admin_security_auto_block_action(
             query, include_local=include_local
         )
         return

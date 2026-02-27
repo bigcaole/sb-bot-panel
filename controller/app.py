@@ -10,7 +10,11 @@ from controller.audit import (
     write_audit_log,
 )
 from controller.db import get_connection, init_db
-from controller.routers_admin import cleanup_expired_ip_blocks_once, router as admin_router
+from controller.routers_admin import (
+    cleanup_expired_ip_blocks_once,
+    run_security_auto_block_once,
+    router as admin_router,
+)
 from controller.routers_misc import router as misc_router
 from controller.routers_nodes import router as nodes_router
 from controller.routers_sub import router as sub_router
@@ -19,6 +23,8 @@ from controller.settings import (
     AUDIT_LOG_CLEANUP_BATCH_SIZE,
     AUDIT_LOG_CLEANUP_INTERVAL_SECONDS,
     AUDIT_LOG_RETENTION_DAYS,
+    SECURITY_AUTO_BLOCK_ENABLED,
+    SECURITY_AUTO_BLOCK_INTERVAL_SECONDS,
     SECURITY_BLOCK_CLEANUP_INTERVAL_SECONDS,
 )
 from controller.security import (
@@ -37,12 +43,14 @@ from controller.security import (
 app = FastAPI()
 _SECURITY_BLOCK_CLEANUP_LAST_AT = 0
 _AUDIT_LOG_CLEANUP_LAST_AT = 0
+_SECURITY_AUTO_BLOCK_LAST_AT = 0
 
 
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
     global _SECURITY_BLOCK_CLEANUP_LAST_AT
     global _AUDIT_LOG_CLEANUP_LAST_AT
+    global _SECURITY_AUTO_BLOCK_LAST_AT
     now_ts = int(time.time())
     if now_ts - int(_SECURITY_BLOCK_CLEANUP_LAST_AT) >= SECURITY_BLOCK_CLEANUP_INTERVAL_SECONDS:
         try:
@@ -63,6 +71,17 @@ async def auth_middleware(request: Request, call_next):
         except Exception:
             pass
         _AUDIT_LOG_CLEANUP_LAST_AT = now_ts
+    if (
+        SECURITY_AUTO_BLOCK_ENABLED
+        and now_ts - int(_SECURITY_AUTO_BLOCK_LAST_AT) >= SECURITY_AUTO_BLOCK_INTERVAL_SECONDS
+    ):
+        try:
+            with get_connection() as conn:
+                run_security_auto_block_once(conn, now_ts=now_ts)
+                conn.commit()
+        except Exception:
+            pass
+        _SECURITY_AUTO_BLOCK_LAST_AT = now_ts
 
     if not AUTH_TOKEN:
         return await call_next(request)
