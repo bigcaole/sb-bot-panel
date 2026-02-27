@@ -134,6 +134,10 @@ def build_unauthorized_events_snapshot(
 def build_security_status_payload() -> Dict[str, Union[bool, int, List[str]]]:
     auth_tokens = get_auth_tokens()
     now_ts = int(time.time())
+    protected_invalid_items = get_invalid_ip_or_cidr_items(SECURITY_BLOCK_PROTECTED_IPS_ITEMS)
+    protected_effective_count = max(
+        0, int(len(SECURITY_BLOCK_PROTECTED_IPS_ITEMS) - len(protected_invalid_items))
+    )
     with get_connection() as conn:
         active_block_count = int(
             conn.execute(
@@ -171,6 +175,8 @@ def build_security_status_payload() -> Dict[str, Union[bool, int, List[str]]]:
         not SECURITY_BLOCK_PROTECTED_IPS_ITEMS
     ):
         warnings.append("自动封禁已启用，但未配置 SECURITY_BLOCK_PROTECTED_IPS（建议至少加入运维来源）")
+    if protected_invalid_items:
+        warnings.append("SECURITY_BLOCK_PROTECTED_IPS 含无效项（已忽略），请修正格式")
 
     return {
         "auth_enabled": bool(auth_tokens),
@@ -193,6 +199,9 @@ def build_security_status_payload() -> Dict[str, Union[bool, int, List[str]]]:
         "security_block_cleanup_interval_seconds": SECURITY_BLOCK_CLEANUP_INTERVAL_SECONDS,
         "security_block_protected_ips": SECURITY_BLOCK_PROTECTED_IPS_ITEMS,
         "security_block_protected_ips_count": len(SECURITY_BLOCK_PROTECTED_IPS_ITEMS),
+        "security_block_protected_ips_effective_count": int(protected_effective_count),
+        "security_block_protected_ips_invalid": protected_invalid_items,
+        "security_block_protected_ips_invalid_count": len(protected_invalid_items),
         "security_auto_block_enabled": bool(SECURITY_AUTO_BLOCK_ENABLED),
         "security_auto_block_interval_seconds": int(SECURITY_AUTO_BLOCK_INTERVAL_SECONDS),
         "security_auto_block_window_seconds": int(SECURITY_AUTO_BLOCK_WINDOW_SECONDS),
@@ -204,6 +213,28 @@ def build_security_status_payload() -> Dict[str, Union[bool, int, List[str]]]:
         "node_task_max_pending_per_node": NODE_TASK_MAX_PENDING_PER_NODE,
         "warnings": warnings,
     }
+
+
+def get_invalid_ip_or_cidr_items(items: List[str]) -> List[str]:
+    invalid_items: List[str] = []
+    seen = set()
+    for raw in items:
+        value = str(raw or "").strip()
+        if not value:
+            continue
+        try:
+            ipaddress.ip_address(value)
+            continue
+        except ValueError:
+            pass
+        try:
+            ipaddress.ip_network(value, strict=False)
+            continue
+        except ValueError:
+            if value not in seen:
+                invalid_items.append(value)
+                seen.add(value)
+    return invalid_items
 
 
 def normalize_source_ip(value: str) -> str:

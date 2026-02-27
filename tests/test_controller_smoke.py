@@ -204,6 +204,9 @@ class ControllerSmokeTestCase(unittest.TestCase):
             self.assertIn("security_auto_block_max_per_interval", admin_sec.json())
             self.assertIn("security_block_protected_ips", admin_sec.json())
             self.assertIn("security_block_protected_ips_count", admin_sec.json())
+            self.assertIn("security_block_protected_ips_effective_count", admin_sec.json())
+            self.assertIn("security_block_protected_ips_invalid", admin_sec.json())
+            self.assertIn("security_block_protected_ips_invalid_count", admin_sec.json())
 
             overview_resp = client.get("/admin/overview", headers=self._auth_header())
             self.assertEqual(200, overview_resp.status_code)
@@ -336,6 +339,16 @@ class ControllerSmokeTestCase(unittest.TestCase):
                 json={"source_ip": "203.0.113.5", "duration_seconds": 3600, "reason": "protected"},
             )
             self.assertEqual(400, protected_cidr_resp.status_code)
+
+            admin_router_module.SECURITY_BLOCK_PROTECTED_IPS_ITEMS = ["bad-ip", "198.51.100.0/24"]
+            sec_resp = client.get("/admin/security/status", headers=self._auth_header())
+            self.assertEqual(200, sec_resp.status_code)
+            sec_data = sec_resp.json()
+            self.assertEqual(1, int(sec_data.get("security_block_protected_ips_invalid_count", 0) or 0))
+            warnings = sec_data.get("warnings", [])
+            self.assertTrue(
+                any("SECURITY_BLOCK_PROTECTED_IPS 含无效项" in str(item) for item in warnings)
+            )
 
             list_resp = client.get("/admin/security/blocked_ips", headers=self._auth_header())
             self.assertEqual(200, list_resp.status_code)
