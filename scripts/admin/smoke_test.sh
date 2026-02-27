@@ -33,11 +33,57 @@ first_auth_token() {
   local raw="${1:-}"
   raw="${raw//$'\n'/}"
   raw="${raw//$'\r'/}"
+  raw="$(echo "$raw" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
   if [[ "$raw" == *","* ]]; then
-    echo "${raw%%,*}"
+    echo "$(echo "${raw%%,*}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
   else
     echo "$raw"
   fi
+}
+
+pick_working_auth_token() {
+  local api_url="$1"
+  local raw="$2"
+  local trimmed=""
+  local code=""
+  local -a candidates=()
+  local -a raw_items=()
+  local item
+
+  raw="${raw//$'\n'/}"
+  raw="${raw//$'\r'/}"
+  if [[ -z "$raw" ]]; then
+    echo ""
+    return 0
+  fi
+
+  IFS=',' read -r -a raw_items <<<"$raw"
+  for item in "${raw_items[@]}"; do
+    trimmed="$(echo "$item" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    [[ -z "$trimmed" ]] && continue
+    candidates+=("$trimmed")
+  done
+  if (( ${#candidates[@]} == 0 )); then
+    echo ""
+    return 0
+  fi
+  if (( ${#candidates[@]} == 1 )); then
+    echo "${candidates[0]}"
+    return 0
+  fi
+
+  for item in "${candidates[@]}"; do
+    code="$(curl -sS -o /dev/null -w "%{http_code}" \
+      -H "Authorization: Bearer ${item}" \
+      "${api_url}/admin/security/status" || true)"
+    if [[ "$code" == "200" ]]; then
+      echo "$item"
+      return 0
+    fi
+  done
+
+  echo "${candidates[0]}"
+  return 1
 }
 
 usage() {
@@ -168,11 +214,16 @@ run_api_checks() {
   local api_url="${API_BASE_URL:-http://127.0.0.1:${controller_port}}"
   local auth_token_raw="${AUTH_TOKEN:-}"
   local auth_token
-  auth_token="$(first_auth_token "$auth_token_raw")"
+  auth_token="$(pick_working_auth_token "$api_url" "$auth_token_raw")" || {
+    record_warn "检测到 AUTH_TOKEN 多 token 过渡模式，但未探测到可用 token，已回退使用第一个 token。"
+  }
+  if [[ -z "$auth_token" ]]; then
+    auth_token="$(first_auth_token "$auth_token_raw")"
+  fi
   auth_token="${auth_token#"${auth_token%%[![:space:]]*}"}"
   auth_token="${auth_token%"${auth_token##*[![:space:]]}"}"
   if [[ -n "$auth_token_raw" && "$auth_token_raw" == *","* ]]; then
-    record_warn "检测到 AUTH_TOKEN 多 token 过渡模式，验收默认使用第一个 token。"
+    record_warn "检测到 AUTH_TOKEN 多 token 过渡模式，验收会自动优先选取可用 token。"
   fi
   local require_node_lock="${SMOKE_REQUIRE_NODE_LOCK:-0}"
   local code
