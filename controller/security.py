@@ -1,6 +1,7 @@
 import hmac
 import ipaddress
 import os
+import re
 from threading import Lock
 from typing import Dict, Optional, Set, Tuple
 
@@ -45,6 +46,30 @@ if API_RATE_LIMIT_MAX_REQUESTS < 1:
 _RATE_LIMIT_LOCK = Lock()
 _RATE_LIMIT_STATE: Dict[str, Tuple[int, int]] = {}
 _RATE_LIMIT_LAST_CLEANUP_AT = 0
+RATE_LIMIT_STATIC_SEGMENTS: Set[str] = {
+    "create",
+    "set_speed",
+    "set_status",
+    "assign_node",
+    "unassign_node",
+    "stats",
+    "sync",
+    "tasks",
+    "next",
+    "report",
+    "health",
+    "admin",
+    "db",
+    "integrity",
+    "verify_export",
+    "export",
+    "migrate",
+    "security",
+    "overview",
+    "node_access",
+    "status",
+    "audit",
+}
 
 
 def verify_admin_authorization(authorization: Optional[str]) -> Optional[JSONResponse]:
@@ -68,14 +93,42 @@ def is_auth_exempt_path(path: str) -> bool:
     return False
 
 
+def build_rate_limit_path_key(path: str) -> str:
+    normalized = str(path or "").strip()
+    if not normalized:
+        normalized = "/"
+    if normalized == "/":
+        return normalized
+
+    segments = [seg for seg in normalized.split("/") if seg]
+    if not segments:
+        return "/"
+
+    if segments[0] not in ("users", "nodes"):
+        return "/" + "/".join(segments)
+
+    normalized_segments = [segments[0]]
+    for index, seg in enumerate(segments[1:], start=1):
+        value = str(seg or "").strip()
+        if value in RATE_LIMIT_STATIC_SEGMENTS:
+            normalized_segments.append(value)
+            continue
+        if index == 1:
+            normalized_segments.append("*")
+            continue
+        if re.match(r"^[0-9]+$", value):
+            normalized_segments.append("*")
+            continue
+        normalized_segments.append("*")
+    return "/" + "/".join(normalized_segments)
+
+
 def get_rate_limit_identity(request: Request) -> str:
-    request_ip = ""
-    if request.client and request.client.host:
-        request_ip = str(request.client.host).strip()
+    request_ip = get_request_ip(request)
     if not request_ip:
         request_ip = "unknown"
-    path = str(request.url.path or "/")
-    return "{0}:{1}".format(request_ip, path)
+    path_key = build_rate_limit_path_key(str(request.url.path or "/"))
+    return "{0}:{1}".format(request_ip, path_key)
 
 
 def is_rate_limit_target_path(path: str) -> bool:

@@ -50,6 +50,21 @@ class SecurityTestCase(unittest.TestCase):
         limited, retry_after = security.check_and_consume_rate_limit("ip:/nodes", 111)
         self.assertEqual((limited, retry_after), (False, 0))
 
+    def test_build_rate_limit_path_key(self) -> None:
+        self.assertEqual("/nodes/*", security.build_rate_limit_path_key("/nodes/JP1"))
+        self.assertEqual(
+            "/nodes/*/tasks/*/report",
+            security.build_rate_limit_path_key("/nodes/JP1/tasks/123/report"),
+        )
+        self.assertEqual(
+            "/users/*/set_speed",
+            security.build_rate_limit_path_key("/users/u1001/set_speed"),
+        )
+        self.assertEqual(
+            "/admin/security/status",
+            security.build_rate_limit_path_key("/admin/security/status"),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
