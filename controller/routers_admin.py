@@ -1,4 +1,5 @@
 import ipaddress
+import re
 import subprocess
 import shutil
 import tarfile
@@ -404,10 +405,69 @@ def apply_ufw_ip_block(source_ip: str) -> Dict[str, Union[bool, str]]:
     )
 
 
+def find_ufw_block_rule_numbers(source_ip: str) -> List[int]:
+    code, stdout, stderr = run_ufw_command(["ufw", "status", "numbered"])
+    if code == 127:
+        raise HTTPException(status_code=503, detail="ufw is not available on controller host")
+    if code != 0:
+        # 状态读取失败时返回空列表，调用方会走兼容删除逻辑。
+        _ = stderr
+        return []
+    source_ip_lower = str(source_ip or "").strip().lower()
+    if not source_ip_lower:
+        return []
+    port_marker = "{0}/tcp".format(int(CONTROLLER_PORT))
+    result: List[int] = []
+    for raw_line in str(stdout or "").splitlines():
+        line = str(raw_line or "").strip()
+        if not line:
+            continue
+        line_lower = line.lower()
+        if "deny" not in line_lower:
+            continue
+        if source_ip_lower not in line_lower:
+            continue
+        if port_marker not in line_lower:
+            continue
+        matched = re.match(r"^\[\s*([0-9]+)\]", line)
+        if not matched:
+            continue
+        try:
+            result.append(int(matched.group(1)))
+        except (TypeError, ValueError):
+            continue
+    result.sort(reverse=True)
+    return result
+
+
 def remove_ufw_ip_block(source_ip: str) -> Dict[str, Union[int, str]]:
+    rule_numbers = find_ufw_block_rule_numbers(source_ip)
+    if rule_numbers:
+        removed_by_number = 0
+        last_output = ""
+        for rule_no in rule_numbers:
+            code, stdout, stderr = run_ufw_command(
+                ["ufw", "--force", "delete", str(int(rule_no))]
+            )
+            merged = "{0}\n{1}".format(stdout, stderr).strip()
+            last_output = merged
+            if code == 127:
+                raise HTTPException(status_code=503, detail="ufw is not available on controller host")
+            if code == 0:
+                removed_by_number += 1
+                continue
+            merged_lower = merged.lower()
+            if "non-existent" in merged_lower or "not found" in merged_lower:
+                continue
+            raise HTTPException(
+                status_code=500,
+                detail="ufw delete failed: {0}".format((stderr or stdout or "unknown error").strip()),
+            )
+        return {"removed": int(removed_by_number), "result": last_output}
+
     removed = 0
     last_output = ""
-    for _ in range(6):
+    for _ in range(128):
         should_continue = False
         handled = False
         for args in build_ufw_delete_arg_sets(source_ip):
