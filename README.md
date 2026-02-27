@@ -323,7 +323,7 @@ sb-admin
 11. 迁移：导入迁移包
 12. 一键验收自检（语法/单测/API）
 13. 数据库一致性校验（迁移前建议）
-14. 同步节点默认参数（auth/url/poll）
+14. 节点同步（默认参数 / Token）
 15. 安全加固向导（token 轮换 + 8080 收敛）
 16. 收敛 AUTH_TOKEN（新旧双token -> 单token）
 17. 手动安全清理（过期封禁 + 审计日志）
@@ -334,7 +334,11 @@ sb-admin
 21. 卸载
 22. 退出
 
-说明：执行 `安全加固向导` 并轮换 `AUTH_TOKEN` 后，脚本会自动触发一次节点 token 同步任务（`/admin/auth/sync_node_tokens`，默认包含禁用节点并强制新建），降低节点鉴权不同步风险。
+说明：菜单 `14` 支持两类同步：  
+1) 默认参数同步（`/admin/nodes/sync_agent_defaults`）  
+2) 节点 Token 同步（`/admin/auth/sync_node_tokens`）  
+用于节点参数或 token 快速对齐。  
+执行 `安全加固向导` 并轮换 `AUTH_TOKEN` 后，脚本也会自动触发一次节点 token 同步（默认包含禁用节点并强制新建），降低节点鉴权不同步风险。
 同样地，执行 `收敛 AUTH_TOKEN` 后也会自动触发一次节点 token 同步任务，进一步降低节点掉线风险。
 当 `AUTH_TOKEN` 本身已是单值（No-Op）时，脚本也会尝试执行一次节点 token 对齐同步。
 执行 `安全加固向导` 时，脚本会提示并可自动把“当前 SSH 来源 IP”加入 `CONTROLLER_PORT_WHITELIST` 与 `SECURITY_BLOCK_PROTECTED_IPS`，减少误封与误锁风险。
