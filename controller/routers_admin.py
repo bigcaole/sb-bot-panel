@@ -30,6 +30,7 @@ from controller.security import (
 from controller.settings import (
     BACKUP_RETENTION_COUNT,
     MIGRATE_RETENTION_COUNT,
+    NODE_MONITOR_OFFLINE_THRESHOLD_SECONDS,
     SUB_LINK_DEFAULT_TTL_SECONDS,
     SUB_LINK_REQUIRE_SIGNATURE,
     SUB_LINK_SIGN_KEY,
@@ -38,7 +39,6 @@ from controller.subscription import build_signed_subscription_urls
 
 
 router = APIRouter(tags=["admin"])
-OVERVIEW_NODE_OFFLINE_THRESHOLD_SECONDS = 120
 
 
 def build_security_status_payload() -> Dict[str, Union[bool, int, List[str]]]:
@@ -117,7 +117,7 @@ def build_admin_overview_payload(now_ts: int) -> Dict[str, Union[int, Dict, List
             last_seen_at = 0
         is_online = (
             last_seen_at > 0
-            and (now_ts - last_seen_at) <= OVERVIEW_NODE_OFFLINE_THRESHOLD_SECONDS
+            and (now_ts - last_seen_at) <= NODE_MONITOR_OFFLINE_THRESHOLD_SECONDS
         )
         if is_online:
             monitor_online += 1
@@ -154,7 +154,7 @@ def build_admin_overview_payload(now_ts: int) -> Dict[str, Union[int, Dict, List
             "bindings": bindings_total,
         },
         "monitor": {
-            "threshold_seconds": OVERVIEW_NODE_OFFLINE_THRESHOLD_SECONDS,
+            "threshold_seconds": NODE_MONITOR_OFFLINE_THRESHOLD_SECONDS,
             "enabled_nodes": monitor_enabled_count,
             "online_nodes": monitor_online,
             "offline_nodes": monitor_offline,

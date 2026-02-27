@@ -58,7 +58,7 @@ def verify_admin_authorization(authorization: Optional[str]) -> Optional[JSONRes
 
 def is_auth_exempt_path(path: str) -> bool:
     normalized = str(path or "").strip() or "/"
-    if normalized in ("/health", "/openapi.json", "/docs", "/redoc"):
+    if normalized in ("/health", "/openapi.json", "/docs", "/redoc", "/favicon.ico", "/robots.txt"):
         return True
     if normalized.startswith("/docs/") or normalized.startswith("/redoc/"):
         return True

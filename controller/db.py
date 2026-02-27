@@ -152,14 +152,38 @@ def init_db() -> None:
         )
         conn.execute(
             """
+            CREATE INDEX IF NOT EXISTS idx_node_tasks_status_updated_at
+            ON node_tasks(status, updated_at DESC, id DESC)
+            """
+        )
+        conn.execute(
+            """
             CREATE INDEX IF NOT EXISTS idx_user_nodes_node_code
             ON user_nodes(node_code)
             """
         )
         conn.execute(
             """
+            CREATE INDEX IF NOT EXISTS idx_users_status_expire_at
+            ON users(status, expire_at)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_nodes_monitor_last_seen
+            ON nodes(monitor_enabled, last_seen_at)
+            """
+        )
+        conn.execute(
+            """
             CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at
             ON audit_logs(created_at DESC)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_audit_logs_action_created_at
+            ON audit_logs(action, created_at DESC)
             """
         )
         conn.commit()

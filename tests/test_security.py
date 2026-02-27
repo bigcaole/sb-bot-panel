@@ -21,6 +21,7 @@ class SecurityTestCase(unittest.TestCase):
     def test_is_auth_exempt_path(self) -> None:
         self.assertTrue(security.is_auth_exempt_path("/health"))
         self.assertTrue(security.is_auth_exempt_path("/docs"))
+        self.assertTrue(security.is_auth_exempt_path("/favicon.ico"))
         self.assertTrue(security.is_auth_exempt_path("/sub/links/u1001"))
         self.assertFalse(security.is_auth_exempt_path("/nodes"))
 
