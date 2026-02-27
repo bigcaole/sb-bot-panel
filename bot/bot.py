@@ -72,6 +72,14 @@ except ValueError:
 if LOG_VIEW_COOLDOWN_SECONDS < 0:
     LOG_VIEW_COOLDOWN_SECONDS = 0.0
 try:
+    MUTATION_COOLDOWN_SECONDS = float(
+        os.getenv("BOT_MUTATION_COOLDOWN", "1").strip() or "1"
+    )
+except ValueError:
+    MUTATION_COOLDOWN_SECONDS = 1.0
+if MUTATION_COOLDOWN_SECONDS < 0:
+    MUTATION_COOLDOWN_SECONDS = 0.0
+try:
     LOG_VIEW_MAX_PAGES = int(os.getenv("BOT_LOG_VIEW_MAX_PAGES", "100").strip() or "100")
 except ValueError:
     LOG_VIEW_MAX_PAGES = 100
@@ -83,6 +91,7 @@ NODE_MONITOR_STATE_KEY = "node_monitor_state"
 KNOWN_CHAT_IDS_KEY = "known_chat_ids"
 MAIN_MENU_MESSAGE_IDS_KEY = "main_menu_message_ids"
 LOG_VIEW_LAST_ACTION_AT_KEY = "maintain_log_last_action_at"
+MUTATION_LAST_ACTION_MAP_KEY = "mutation_last_action_map"
 try:
     NODE_MONITOR_INTERVAL_SECONDS = int(
         os.getenv("BOT_NODE_MONITOR_INTERVAL", "60").strip() or "60"
@@ -304,6 +313,34 @@ PRIVILEGED_CALLBACK_PREFIXES = {
     "maintain:logs:": ROLE_OPERATOR,
     "maintain:logsdate:": ROLE_OPERATOR,
 }
+
+MUTATION_CALLBACK_EXACT = {
+    "wizard:create_confirm",
+    "wizard:nodes_create_confirm",
+    "action:backup_now",
+    "action:maintain_backup",
+    "action:maintain_smoke",
+    "action:maintain_update",
+    "action:maintain_controller_start",
+    "action:maintain_controller_stop",
+    "action:maintain_https_reload",
+    "action:maintain_migrate_export",
+    "action:maintain_migrate_import",
+}
+
+MUTATION_CALLBACK_PREFIXES = (
+    "userdelete:apply:",
+    "usertoggle:apply:",
+    "userspeed:apply:",
+    "usernodes:assign_apply:",
+    "usernodes:unassign_apply:",
+    "node:toggle:",
+    "node:monitor_toggle:",
+    "node:delete:",
+    "node:apply_edit:",
+    "node:reality_apply:",
+    "nodeops:run:",
+)
 MAINTAIN_ALLOWED_ENV_KEYS = [
     "CONTROLLER_PORT",
     "CONTROLLER_URL",
@@ -323,6 +360,7 @@ MAINTAIN_ALLOWED_ENV_KEYS = [
     "BOT_NODE_MONITOR_INTERVAL",
     "BOT_NODE_OFFLINE_THRESHOLD",
     "BOT_LOG_VIEW_COOLDOWN",
+    "BOT_MUTATION_COOLDOWN",
     "BOT_LOG_VIEW_MAX_PAGES",
     "CONTROLLER_HTTP_TIMEOUT",
     "BOT_ACTOR_LABEL",
@@ -1551,6 +1589,97 @@ def mark_log_view_action(context: ContextTypes.DEFAULT_TYPE, now_ts: float = 0.0
     context.user_data[LOG_VIEW_LAST_ACTION_AT_KEY] = now_ts
 
 
+def is_mutation_callback(callback_data: str) -> bool:
+    if callback_data in MUTATION_CALLBACK_EXACT:
+        return True
+    for prefix in MUTATION_CALLBACK_PREFIXES:
+        if callback_data.startswith(prefix):
+            return True
+    return False
+
+
+def build_mutation_action_key(update: Update, callback_data: str) -> str:
+    chat_id = 0
+    user_id = 0
+    if update.effective_chat:
+        chat_id = int(update.effective_chat.id)
+    if update.effective_user:
+        user_id = int(update.effective_user.id)
+    return "{0}:{1}:{2}".format(chat_id, user_id, callback_data)
+
+
+def get_mutation_cooldown_remaining(
+    context: ContextTypes.DEFAULT_TYPE,
+    action_key: str,
+    now_ts: float = 0.0,
+) -> float:
+    if MUTATION_COOLDOWN_SECONDS <= 0:
+        return 0.0
+    if now_ts <= 0:
+        now_ts = time.time()
+    state_map = context.application.bot_data.get(MUTATION_LAST_ACTION_MAP_KEY, {})
+    if not isinstance(state_map, dict):
+        state_map = {}
+    try:
+        last_ts = float(state_map.get(action_key, 0.0) or 0.0)
+    except (TypeError, ValueError):
+        last_ts = 0.0
+    delta = now_ts - last_ts
+    remaining = MUTATION_COOLDOWN_SECONDS - delta
+    return remaining if remaining > 0 else 0.0
+
+
+def mark_mutation_action(
+    context: ContextTypes.DEFAULT_TYPE,
+    action_key: str,
+    now_ts: float = 0.0,
+) -> None:
+    if now_ts <= 0:
+        now_ts = time.time()
+    state_map = context.application.bot_data.setdefault(MUTATION_LAST_ACTION_MAP_KEY, {})
+    if not isinstance(state_map, dict):
+        state_map = {}
+        context.application.bot_data[MUTATION_LAST_ACTION_MAP_KEY] = state_map
+    state_map[action_key] = now_ts
+
+    if len(state_map) > 2000:
+        expire_before = now_ts - max(MUTATION_COOLDOWN_SECONDS * 5, 60.0)
+        stale_keys = []
+        for key, value in state_map.items():
+            try:
+                ts = float(value)
+            except (TypeError, ValueError):
+                ts = 0.0
+            if ts <= expire_before:
+                stale_keys.append(key)
+        for key in stale_keys:
+            state_map.pop(key, None)
+
+
+async def enforce_mutation_cooldown(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    callback_data: str,
+) -> bool:
+    if not is_mutation_callback(callback_data):
+        return True
+    now_ts = time.time()
+    action_key = build_mutation_action_key(update, callback_data)
+    remaining = get_mutation_cooldown_remaining(context, action_key, now_ts=now_ts)
+    if remaining <= 0:
+        mark_mutation_action(context, action_key, now_ts=now_ts)
+        return True
+
+    query = update.callback_query
+    if query:
+        wait_seconds = "{0:.1f}".format(remaining)
+        try:
+            await query.answer(f"操作过快，请 {wait_seconds} 秒后重试", show_alert=False)
+        except BadRequest:
+            pass
+    return False
+
+
 def pop_user_speed_pending(
     context: ContextTypes.DEFAULT_TYPE, user_code: str = ""
 ) -> None:
@@ -2768,11 +2897,13 @@ async def maintain_config_input(
             if not updates[key].isdigit():
                 await update.message.reply_text("{0} 必须为整数。".format(key))
                 return MAINTAIN_CONFIG_INPUT
-    if "BOT_LOG_VIEW_COOLDOWN" in updates:
+    for key in ("BOT_LOG_VIEW_COOLDOWN", "BOT_MUTATION_COOLDOWN"):
+        if key not in updates:
+            continue
         try:
-            float(updates["BOT_LOG_VIEW_COOLDOWN"])
+            float(updates[key])
         except ValueError:
-            await update.message.reply_text("BOT_LOG_VIEW_COOLDOWN 必须为数字。")
+            await update.message.reply_text("{0} 必须为数字。".format(key))
             return MAINTAIN_CONFIG_INPUT
     if "CONTROLLER_HTTP_TIMEOUT" in updates:
         try:
@@ -3186,9 +3317,11 @@ async def create_user_confirm(
         return CREATE_CONFIRM
     if not await ensure_admin_callback(update, ROLE_OPERATOR):
         return ConversationHandler.END
+    callback_data = query.data or ""
+    if not await enforce_mutation_cooldown(update, context, callback_data):
+        return CREATE_CONFIRM
 
     await query.answer()
-    callback_data = query.data or ""
     user = query.from_user.username or query.from_user.id
     logger.info("button_click user=%s data=%s", user, callback_data)
 
@@ -3475,9 +3608,11 @@ async def nodes_create_confirm(
         return NODE_CREATE_CONFIRM
     if not await ensure_admin_callback(update, ROLE_OPERATOR):
         return ConversationHandler.END
+    callback_data = query.data or ""
+    if not await enforce_mutation_cooldown(update, context, callback_data):
+        return NODE_CREATE_CONFIRM
 
     await query.answer()
-    callback_data = query.data or ""
     user = query.from_user.username or query.from_user.id
     logger.info("button_click user=%s data=%s", user, callback_data)
 
@@ -3787,9 +3922,11 @@ async def apply_user_speed_callback(
         return ConversationHandler.END
     if not await ensure_admin_callback(update, ROLE_OPERATOR):
         return ConversationHandler.END
+    callback_data = query.data or ""
+    if not await enforce_mutation_cooldown(update, context, callback_data):
+        return USER_SPEED_CONFIRM
 
     await query.answer()
-    callback_data = query.data or ""
     user = query.from_user.username or query.from_user.id
     logger.info("button_click user=%s data=%s", user, callback_data)
 
@@ -4216,9 +4353,11 @@ async def apply_node_edit_callback(
         return ConversationHandler.END
     if not await ensure_admin_callback(update, ROLE_OPERATOR):
         return ConversationHandler.END
+    callback_data = query.data or ""
+    if not await enforce_mutation_cooldown(update, context, callback_data):
+        return NODE_EDIT_CONFIRM
     await query.answer()
 
-    callback_data = query.data or ""
     user = query.from_user.username or query.from_user.id
     logger.info("button_click user=%s data=%s", user, callback_data)
 
@@ -4415,9 +4554,11 @@ async def apply_node_reality_callback(
         return ConversationHandler.END
     if not await ensure_admin_callback(update, ROLE_OPERATOR):
         return ConversationHandler.END
+    callback_data = query.data or ""
+    if not await enforce_mutation_cooldown(update, context, callback_data):
+        return NODE_REALITY_CONFIRM
     await query.answer()
 
-    callback_data = query.data or ""
     user = query.from_user.username or query.from_user.id
     logger.info("button_click user=%s data=%s", user, callback_data)
 
@@ -4512,6 +4653,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await deny_non_admin(update)
         else:
             await deny_insufficient_role(update, required_role)
+        return
+
+    if not await enforce_mutation_cooldown(update, context, callback_data):
         return
 
     if callback_data.startswith("maintain:logsdate:"):

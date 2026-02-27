@@ -45,6 +45,7 @@ MIGRATE_RETENTION_COUNT="20"
 BOT_MENU_TTL="60"
 BOT_NODE_MONITOR_INTERVAL="60"
 BOT_NODE_OFFLINE_THRESHOLD="120"
+BOT_MUTATION_COOLDOWN="1"
 TRUST_X_FORWARDED_FOR="0"
 TRUSTED_PROXY_IPS="127.0.0.1,::1"
 NODE_TASK_RUNNING_TIMEOUT="120"
@@ -317,7 +318,7 @@ has_env_key() {
 }
 
 load_existing_env_defaults() {
-  local old_port old_url old_public_url old_panel_base old_enable_https old_https_domain old_https_email old_auth old_bot old_admin old_view_admin old_ops_admin old_super_admin old_migrate old_backup_retention old_migrate_retention old_menu_ttl old_monitor_interval old_offline_threshold old_trust_xff old_trusted_proxy_ips old_task_timeout old_task_retention old_sub_link_sign_key old_sub_link_require old_sub_link_ttl old_rate_limit_enabled old_rate_limit_window old_rate_limit_max old_controller_http_timeout old_bot_actor_label
+  local old_port old_url old_public_url old_panel_base old_enable_https old_https_domain old_https_email old_auth old_bot old_admin old_view_admin old_ops_admin old_super_admin old_migrate old_backup_retention old_migrate_retention old_menu_ttl old_monitor_interval old_offline_threshold old_mutation_cooldown old_trust_xff old_trusted_proxy_ips old_task_timeout old_task_retention old_sub_link_sign_key old_sub_link_require old_sub_link_ttl old_rate_limit_enabled old_rate_limit_window old_rate_limit_max old_controller_http_timeout old_bot_actor_label
   old_port="$(get_env_value "CONTROLLER_PORT")"
   old_url="$(get_env_value "CONTROLLER_URL")"
   old_public_url="$(get_env_value "CONTROLLER_PUBLIC_URL")"
@@ -337,6 +338,7 @@ load_existing_env_defaults() {
   old_menu_ttl="$(get_env_value "BOT_MENU_TTL")"
   old_monitor_interval="$(get_env_value "BOT_NODE_MONITOR_INTERVAL")"
   old_offline_threshold="$(get_env_value "BOT_NODE_OFFLINE_THRESHOLD")"
+  old_mutation_cooldown="$(get_env_value "BOT_MUTATION_COOLDOWN")"
   old_trust_xff="$(get_env_value "TRUST_X_FORWARDED_FOR")"
   old_trusted_proxy_ips="$(get_env_value "TRUSTED_PROXY_IPS")"
   old_task_timeout="$(get_env_value "NODE_TASK_RUNNING_TIMEOUT")"
@@ -373,6 +375,7 @@ load_existing_env_defaults() {
   BOT_MENU_TTL="${old_menu_ttl:-60}"
   BOT_NODE_MONITOR_INTERVAL="${old_monitor_interval:-60}"
   BOT_NODE_OFFLINE_THRESHOLD="${old_offline_threshold:-120}"
+  BOT_MUTATION_COOLDOWN="${old_mutation_cooldown:-1}"
   TRUST_X_FORWARDED_FOR="${old_trust_xff:-0}"
   TRUSTED_PROXY_IPS="${old_trusted_proxy_ips:-127.0.0.1,::1}"
   NODE_TASK_RUNNING_TIMEOUT="${old_task_timeout:-120}"
@@ -427,6 +430,9 @@ normalize_loaded_values() {
   if [[ -z "$BOT_ACTOR_LABEL" ]]; then
     BOT_ACTOR_LABEL="sb-bot"
   fi
+  if ! [[ "$BOT_MUTATION_COOLDOWN" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+    BOT_MUTATION_COOLDOWN="1"
+  fi
   CONTROLLER_URL="$(normalize_input_url "$CONTROLLER_URL" "http")"
   if [[ -n "$CONTROLLER_PUBLIC_URL" ]]; then
     local public_scheme
@@ -476,6 +482,7 @@ prompt_env_config() {
   echo "  - BOT_MENU_TTL：bot 菜单按钮自动清理秒数"
   echo "  - BOT_NODE_MONITOR_INTERVAL：节点在线检测周期秒数"
   echo "  - BOT_NODE_OFFLINE_THRESHOLD：节点离线判定阈值秒数"
+  echo "  - BOT_MUTATION_COOLDOWN：bot 写操作按钮防抖秒数（防止重复点击）"
   echo "  - TRUST_X_FORWARDED_FOR/TRUSTED_PROXY_IPS：仅在受控反代场景下才启用 XFF"
   echo "  - NODE_TASK_*：节点任务超时与历史清理参数"
   echo ""
@@ -622,6 +629,13 @@ prompt_env_config() {
     BOT_NODE_OFFLINE_THRESHOLD="120"
   fi
 
+  read -r -p "BOT_MUTATION_COOLDOWN（写操作防抖秒数） [${BOT_MUTATION_COOLDOWN}]: " input_mutation_cooldown
+  BOT_MUTATION_COOLDOWN="${input_mutation_cooldown:-$BOT_MUTATION_COOLDOWN}"
+  if ! [[ "$BOT_MUTATION_COOLDOWN" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+    warn "BOT_MUTATION_COOLDOWN 无效，回退为 1"
+    BOT_MUTATION_COOLDOWN="1"
+  fi
+
   echo ""
   msg "UFW/端口放行说明："
   echo "  - 需要放行 ${CONTROLLER_PORT}/tcp（节点 agent 直连 controller 时使用）"
@@ -691,6 +705,9 @@ BOT_NODE_MONITOR_INTERVAL=${BOT_NODE_MONITOR_INTERVAL}
 
 # 节点离线判定阈值秒数
 BOT_NODE_OFFLINE_THRESHOLD=${BOT_NODE_OFFLINE_THRESHOLD}
+
+# bot 写操作按钮防抖秒数（防重复提交）
+BOT_MUTATION_COOLDOWN=${BOT_MUTATION_COOLDOWN}
 
 # 是否信任 X-Forwarded-For（仅受控反代场景建议开启）
 TRUST_X_FORWARDED_FOR=${TRUST_X_FORWARDED_FOR}
@@ -958,6 +975,7 @@ run_self_checks() {
   check_env_key "API_RATE_LIMIT_MAX_REQUESTS"
   check_env_key "CONTROLLER_HTTP_TIMEOUT"
   check_env_key "BOT_ACTOR_LABEL"
+  check_env_key "BOT_MUTATION_COOLDOWN"
   if [[ -z "$AUTH_TOKEN" ]]; then
     check_warn "AUTH_TOKEN 为空（controller 接口不鉴权，建议仅内网或配防火墙来源限制）"
   elif [[ "$AUTH_TOKEN" == "devtoken123" || ${#AUTH_TOKEN} -lt 16 ]]; then
@@ -1071,6 +1089,7 @@ show_summary() {
   echo "BOT_MENU_TTL: ${BOT_MENU_TTL}"
   echo "BOT_NODE_MONITOR_INTERVAL: ${BOT_NODE_MONITOR_INTERVAL}"
   echo "BOT_NODE_OFFLINE_THRESHOLD: ${BOT_NODE_OFFLINE_THRESHOLD}"
+  echo "BOT_MUTATION_COOLDOWN: ${BOT_MUTATION_COOLDOWN}"
   echo "TRUST_X_FORWARDED_FOR: ${TRUST_X_FORWARDED_FOR}"
   echo "NODE_TASK_RUNNING_TIMEOUT: ${NODE_TASK_RUNNING_TIMEOUT}"
   echo "NODE_TASK_RETENTION_SECONDS: ${NODE_TASK_RETENTION_SECONDS}"

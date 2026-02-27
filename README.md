@@ -385,6 +385,7 @@ scp root@旧IP:/var/backups/sb-migrate/sb-migrate-xxxx.tar.gz root@新IP:/root/
 - `CONTROLLER_HTTP_TIMEOUT=10`（可选，bot 调 controller 超时秒数）
 - `BOT_ACTOR_LABEL=sb-bot`（可选，bot 调 controller 时用于审计的操作者标识）
 - `BOT_LOG_VIEW_COOLDOWN=1`（可选，日志翻页冷却秒数，防止触发 Telegram 限流）
+- `BOT_MUTATION_COOLDOWN=1`（可选，写操作按钮防抖秒数，防止重复点击重复执行）
 - `BOT_LOG_VIEW_MAX_PAGES=100`（可选，日志查看最大页数，超出后请用服务器命令查看全量）
 - `TRUST_X_FORWARDED_FOR=0`（默认不信任 XFF）
 - `TRUSTED_PROXY_IPS=127.0.0.1,::1`（仅当启用 XFF 信任时生效）
