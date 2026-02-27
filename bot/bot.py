@@ -224,22 +224,50 @@ SUBMENUS = {
     "maintain": {
         "title": "管理服务器",
         "buttons": [
-            ("⬆️ 安装/更新（本管理服务器）", "action:maintain_update"),
-            ("⚙️ 配置向导", "action:maintain_config"),
+            ("🧭 服务运维", "menu:maintain_ops"),
+            ("🛡 安全访问", "menu:maintain_security"),
+            ("🔐 证书与备份", "menu:maintain_cert"),
+            ("📦 迁移与配置", "menu:maintain_data"),
+            ("⬅️ 返回主菜单", "menu:main"),
+        ],
+    },
+    "maintain_ops": {
+        "title": "管理服务器 / 服务运维",
+        "buttons": [
+            ("📈 状态查看", "action:maintain_status"),
+            ("📜 查看日志", "action:maintain_logs"),
+            ("✅ 一键验收自检", "action:maintain_smoke"),
             ("▶️ 启动controller", "action:maintain_controller_start"),
             ("⏹ 停止controller", "action:maintain_controller_stop"),
-            ("📈 状态查看", "action:maintain_status"),
+            ("⬅️ 返回管理服务器", "menu:maintain"),
+        ],
+    },
+    "maintain_security": {
+        "title": "管理服务器 / 安全访问",
+        "buttons": [
             ("🛡 安全事件(1h)", "action:maintain_security_events"),
-            ("📜 查看日志", "action:maintain_logs"),
+            ("🧱 访问安全", "action:maintain_acl_status"),
+            ("🔑 收敛AUTH_TOKEN", "action:maintain_token_collapse"),
+            ("⬅️ 返回管理服务器", "menu:maintain"),
+        ],
+    },
+    "maintain_cert": {
+        "title": "管理服务器 / 证书与备份",
+        "buttons": [
             ("🔐 HTTPS证书状态", "action:maintain_https_status"),
             ("♻️ HTTPS证书刷新", "action:maintain_https_reload"),
             ("💾 立即备份", "action:maintain_backup"),
-            ("✅ 一键验收自检", "action:maintain_smoke"),
+            ("⬅️ 返回管理服务器", "menu:maintain"),
+        ],
+    },
+    "maintain_data": {
+        "title": "管理服务器 / 迁移与配置",
+        "buttons": [
+            ("⬆️ 安装/更新（本管理服务器）", "action:maintain_update"),
+            ("⚙️ 配置向导", "action:maintain_config"),
             ("📦 生成迁移包", "action:maintain_migrate_export"),
             ("📥 迁移导入", "action:maintain_migrate_import"),
-            ("🧱 访问安全", "action:maintain_acl_status"),
-            ("🔑 收敛AUTH_TOKEN", "action:maintain_token_collapse"),
-            ("⬅️ 返回主菜单", "menu:main"),
+            ("⬅️ 返回管理服务器", "menu:maintain"),
         ],
     },
 }
