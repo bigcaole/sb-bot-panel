@@ -448,6 +448,7 @@ scp root@旧IP:/var/backups/sb-migrate/sb-migrate-xxxx.tar.gz root@新IP:/root/
   - `GET /admin/security/status` 可查看当前鉴权、订阅签名、XFF 信任、限流等配置状态与告警提示
   - `GET /admin/security/events?window_seconds=3600&top=5` 可按窗口查看未授权来源统计（适合观察加固后的实时效果）
   - 可选参数：`include_local=1`（临时包含本机测试来源）
+  - `POST /admin/security/maintenance_cleanup` 可手动触发一次“过期封禁 + 审计日志保留”清理（bot 安全事件页也可一键触发）
   - `GET /admin/node_access/status` 会返回 `whitelist_missing_nodes`，用于检查节点 `agent_ip` 是否已被 controller 端口白名单覆盖
 - 数据库迁移检查：
   - `POST /admin/db/export` 生成逻辑导出快照（json.gz）

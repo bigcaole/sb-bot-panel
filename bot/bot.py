@@ -333,6 +333,7 @@ PRIVILEGED_CALLBACK_PREFIXES = {
     "sb:bd:": ROLE_SUPER,
     "sb:ba:": ROLE_SUPER,
     "sb:bu:": ROLE_SUPER,
+    "sb:mc:": ROLE_SUPER,
 }
 
 MUTATION_CALLBACK_EXACT = {
@@ -364,6 +365,7 @@ MUTATION_CALLBACK_PREFIXES = (
     "nodeops:run:",
     "sb:ba:",
     "sb:bu:",
+    "sb:mc:",
 )
 MAINTAIN_ALLOWED_ENV_KEYS = [
     "CONTROLLER_PORT",
@@ -1398,6 +1400,7 @@ def build_security_events_keyboard(include_local: bool, top_ips: list) -> Inline
                 ),
             ]
         )
+    rows.append([InlineKeyboardButton("手动安全清理", callback_data=f"sb:mc:{mode_flag}")])
     rows.append([InlineKeyboardButton("查看封禁列表", callback_data=f"sb:bl:{mode_flag}:1")])
     rows.append([InlineKeyboardButton("返回", callback_data="menu:maintain")])
     return InlineKeyboardMarkup(rows)
@@ -3320,6 +3323,60 @@ async def run_admin_security_unblock_ip_action(query, include_local: bool, sourc
             [
                 [InlineKeyboardButton("返回封禁列表", callback_data=f"sb:bl:{1 if include_local else 0}:1")],
                 [InlineKeyboardButton("返回安全事件", callback_data=security_events_mode_callback(include_local))],
+            ]
+        ),
+    )
+
+
+async def run_admin_security_maintenance_cleanup_action(query, include_local: bool) -> None:
+    result, error_message, _ = await controller_request("POST", "/admin/security/maintenance_cleanup")
+    if error_message:
+        await query.edit_message_text(
+            f"手动清理失败：{localize_controller_error(error_message)}",
+            reply_markup=build_back_keyboard(security_events_mode_callback(include_local)),
+        )
+        return
+    if not isinstance(result, dict):
+        await query.edit_message_text(
+            "手动清理返回异常。",
+            reply_markup=build_back_keyboard(security_events_mode_callback(include_local)),
+        )
+        return
+
+    cleaned_blocks = int(result.get("cleaned_expired_blocks", 0) or 0)
+    cleaned_audit_logs = int(result.get("cleaned_audit_logs", 0) or 0)
+    active_blocked_ips = int(result.get("active_blocked_ips", 0) or 0)
+    retention_days = int(result.get("audit_retention_days", 0) or 0)
+    batch_size = int(result.get("audit_cleanup_batch_size", 0) or 0)
+    failed_items = result.get("cleanup_failed_blocks", [])
+    if not isinstance(failed_items, list):
+        failed_items = []
+    created_at = int(result.get("created_at", 0) or 0)
+    created_text = (
+        datetime.fromtimestamp(created_at).strftime("%Y-%m-%d %H:%M:%S")
+        if created_at > 0
+        else "-"
+    )
+
+    lines = [
+        "手动安全清理完成",
+        "",
+        f"过期封禁释放：{cleaned_blocks}",
+        f"当前封禁数量：{active_blocked_ips}",
+        f"审计日志清理：{cleaned_audit_logs}",
+        f"审计保留策略：{retention_days} 天（单批 {batch_size} 条）",
+        f"执行时间：{created_text}",
+    ]
+    if failed_items:
+        lines.append("清理失败IP：{0}".format(", ".join(str(x) for x in failed_items[:5])))
+
+    await query.edit_message_text(
+        "\n".join(lines),
+        reply_markup=InlineKeyboardMarkup(
+            [
+                [InlineKeyboardButton("返回安全事件", callback_data=security_events_mode_callback(include_local))],
+                [InlineKeyboardButton("查看封禁列表", callback_data=f"sb:bl:{1 if include_local else 0}:1")],
+                [InlineKeyboardButton("返回维护菜单", callback_data="menu:maintain")],
             ]
         ),
     )
@@ -5837,6 +5894,20 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             f"controller /health：{health_text}\n\n"
             f"{overview_text}",
             reply_markup=build_back_keyboard("menu:maintain"),
+        )
+        return
+
+    if callback_data.startswith("sb:mc:"):
+        parts = callback_data.split(":", maxsplit=2)
+        if len(parts) != 3:
+            await query.edit_message_text(
+                "手动清理参数无效。",
+                reply_markup=build_back_keyboard("menu:maintain"),
+            )
+            return
+        include_local = parts[2] == "1"
+        await run_admin_security_maintenance_cleanup_action(
+            query, include_local=include_local
         )
         return
 

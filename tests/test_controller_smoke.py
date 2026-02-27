@@ -211,6 +211,17 @@ class ControllerSmokeTestCase(unittest.TestCase):
             self.assertIn("locked_enabled_nodes", node_access_payload)
             self.assertIn("unlocked_enabled_nodes", node_access_payload)
 
+            cleanup_resp = client.post(
+                "/admin/security/maintenance_cleanup",
+                headers=self._auth_header(),
+            )
+            self.assertEqual(200, cleanup_resp.status_code)
+            cleanup_payload = cleanup_resp.json()
+            self.assertTrue(bool(cleanup_payload.get("ok")))
+            self.assertIn("cleaned_expired_blocks", cleanup_payload)
+            self.assertIn("cleaned_audit_logs", cleanup_payload)
+            self.assertIn("active_blocked_ips", cleanup_payload)
+
     def test_subscription_sign_and_access_smoke(self) -> None:
         with TestClient(app_module.app) as client:
             direct = client.get("/sub/links/u1001")

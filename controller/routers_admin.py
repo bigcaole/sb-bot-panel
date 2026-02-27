@@ -10,7 +10,12 @@ from typing import Dict, List, Optional, Tuple, Union
 from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from controller.audit import get_request_actor, get_source_ip_for_audit, write_audit_log
+from controller.audit import (
+    cleanup_old_audit_logs,
+    get_request_actor,
+    get_source_ip_for_audit,
+    write_audit_log,
+)
 from controller.db import BASE_DIR, get_connection
 from controller.db_migration import (
     compare_snapshot_with_live,
@@ -389,6 +394,66 @@ def cleanup_expired_ip_blocks_once(now_ts: int) -> Dict[str, Union[int, List[str
         result = cleanup_expired_ip_blocks(conn, now_ts=int(now_ts))
         conn.commit()
     return result
+
+
+def run_security_maintenance_cleanup(conn, now_ts: int) -> Dict[str, Union[int, List[str]]]:
+    total_released_blocks = 0
+    failed_block_items = set()
+    block_cleanup_rounds = 0
+    for _ in range(20):
+        block_cleanup_rounds += 1
+        block_report = cleanup_expired_ip_blocks(conn, now_ts=int(now_ts))
+        released = int(block_report.get("released", 0) or 0)
+        total_released_blocks += released
+        failed = block_report.get("failed", [])
+        if isinstance(failed, list):
+            for item in failed[:200]:
+                value = str(item or "").strip()
+                if value:
+                    failed_block_items.add(value)
+        if released <= 0:
+            break
+
+    total_removed_audit_logs = 0
+    audit_cleanup_rounds = 0
+    for _ in range(20):
+        audit_cleanup_rounds += 1
+        removed = int(
+            cleanup_old_audit_logs(
+                conn,
+                now_ts=int(now_ts),
+                retention_days=AUDIT_LOG_RETENTION_DAYS,
+                batch_size=AUDIT_LOG_CLEANUP_BATCH_SIZE,
+            )
+            or 0
+        )
+        if removed <= 0:
+            break
+        total_removed_audit_logs += removed
+        if removed < AUDIT_LOG_CLEANUP_BATCH_SIZE:
+            break
+
+    active_block_count = int(
+        conn.execute(
+            """
+            SELECT COUNT(*) AS c
+            FROM security_ip_blocks
+            WHERE expire_at = 0 OR expire_at > ?
+            """,
+            (int(now_ts),),
+        ).fetchone()["c"]
+        or 0
+    )
+    return {
+        "cleaned_expired_blocks": int(total_released_blocks),
+        "cleanup_failed_blocks": sorted(failed_block_items),
+        "cleaned_audit_logs": int(total_removed_audit_logs),
+        "active_blocked_ips": int(active_block_count),
+        "audit_retention_days": int(AUDIT_LOG_RETENTION_DAYS),
+        "audit_cleanup_batch_size": int(AUDIT_LOG_CLEANUP_BATCH_SIZE),
+        "block_cleanup_rounds": int(block_cleanup_rounds),
+        "audit_cleanup_rounds": int(audit_cleanup_rounds),
+    }
 
 
 def build_admin_overview_payload(now_ts: int) -> Dict[str, Union[int, Dict, List]]:
@@ -1130,6 +1195,57 @@ def unblock_security_source_ip(
         "ok": True,
         "source_ip": source_ip,
         "removed_rules": int(remove_result.get("removed", 0) or 0),
+    }
+
+
+@router.post(
+    "/admin/security/maintenance_cleanup",
+    summary="Run manual security maintenance cleanup",
+    description=(
+        "AUTH_TOKEN 为空时不校验；非空时需要请求头 Authorization: Bearer <AUTH_TOKEN>。"
+        "执行过期封禁清理与审计日志保留清理。"
+    ),
+    response_model=None,
+)
+def run_admin_security_maintenance_cleanup(
+    request: Request,
+    authorization: Optional[str] = Header(default=None, alias="Authorization"),
+) -> Union[Dict[str, Union[bool, int, List[str]]], JSONResponse]:
+    auth_error = verify_admin_authorization(authorization)
+    if auth_error is not None:
+        return auth_error
+
+    now_ts = int(time.time())
+    with get_connection() as conn:
+        cleanup_result = run_security_maintenance_cleanup(conn, now_ts=now_ts)
+        write_audit_log(
+            conn,
+            action="admin.security.maintenance_cleanup",
+            resource_type="security",
+            resource_id="manual",
+            detail={
+                "cleaned_expired_blocks": int(cleanup_result.get("cleaned_expired_blocks", 0) or 0),
+                "cleaned_audit_logs": int(cleanup_result.get("cleaned_audit_logs", 0) or 0),
+                "cleanup_failed_blocks": cleanup_result.get("cleanup_failed_blocks", []),
+                "active_blocked_ips": int(cleanup_result.get("active_blocked_ips", 0) or 0),
+            },
+            actor=get_request_actor(request),
+            source_ip=get_source_ip_for_audit(request),
+            created_at=now_ts,
+        )
+        conn.commit()
+
+    return {
+        "ok": True,
+        "cleaned_expired_blocks": int(cleanup_result.get("cleaned_expired_blocks", 0) or 0),
+        "cleanup_failed_blocks": cleanup_result.get("cleanup_failed_blocks", []),
+        "cleaned_audit_logs": int(cleanup_result.get("cleaned_audit_logs", 0) or 0),
+        "active_blocked_ips": int(cleanup_result.get("active_blocked_ips", 0) or 0),
+        "audit_retention_days": int(cleanup_result.get("audit_retention_days", 0) or 0),
+        "audit_cleanup_batch_size": int(cleanup_result.get("audit_cleanup_batch_size", 0) or 0),
+        "block_cleanup_rounds": int(cleanup_result.get("block_cleanup_rounds", 0) or 0),
+        "audit_cleanup_rounds": int(cleanup_result.get("audit_cleanup_rounds", 0) or 0),
+        "created_at": int(now_ts),
     }
 
 
