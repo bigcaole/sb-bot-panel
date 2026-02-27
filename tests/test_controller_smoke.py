@@ -171,6 +171,9 @@ class ControllerSmokeTestCase(unittest.TestCase):
             self.assertIn("near_cap_threshold", overview_payload["tasks"])
             self.assertIn("near_cap_nodes", overview_payload["tasks"])
             self.assertIn("security", overview_payload)
+            self.assertIn("security_events", overview_payload)
+            self.assertIn("unauthorized_24h", overview_payload["security_events"])
+            self.assertIn("top_unauthorized_ips", overview_payload["security_events"])
 
             db_integrity = client.get("/admin/db/integrity", headers=self._auth_header())
             self.assertEqual(200, db_integrity.status_code)

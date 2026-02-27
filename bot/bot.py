@@ -1441,6 +1441,9 @@ def format_admin_overview_text(overview: dict) -> str:
     security = overview.get("security", {})
     if not isinstance(security, dict):
         security = {}
+    security_events = overview.get("security_events", {})
+    if not isinstance(security_events, dict):
+        security_events = {}
 
     offline_items = monitor.get("offline_items", [])
     if not isinstance(offline_items, list):
@@ -1486,6 +1489,21 @@ def format_admin_overview_text(overview: dict) -> str:
     warnings = security.get("warnings", [])
     if not isinstance(warnings, list):
         warnings = []
+    unauthorized_24h = int(security_events.get("unauthorized_24h", 0) or 0)
+    top_unauthorized_ips = security_events.get("top_unauthorized_ips", [])
+    if not isinstance(top_unauthorized_ips, list):
+        top_unauthorized_ips = []
+    top_unauthorized_parts = []
+    for item in top_unauthorized_ips[:3]:
+        if not isinstance(item, dict):
+            continue
+        source_ip = str(item.get("source_ip", "")).strip()
+        try:
+            count = int(item.get("count", 0) or 0)
+        except (TypeError, ValueError):
+            count = 0
+        if source_ip:
+            top_unauthorized_parts.append("{0}({1})".format(source_ip, count))
     queue_cap_per_node = int(tasks.get("queue_cap_per_node", 0) or 0)
     near_cap_threshold = int(tasks.get("near_cap_threshold", 0) or 0)
 
@@ -1518,6 +1536,7 @@ def format_admin_overview_text(overview: dict) -> str:
             near_cap_threshold,
         ),
         "安全告警：{0} 条".format(len(warnings)),
+        "未授权访问(24h)：{0}".format(unauthorized_24h),
     ]
 
     if offline_codes:
@@ -1526,6 +1545,8 @@ def format_admin_overview_text(overview: dict) -> str:
         lines.append("待执行节点（最多 5 个）：{0}".format(", ".join(pending_parts)))
     if near_cap_parts:
         lines.append("队列接近上限（最多 5 个）：{0}".format(", ".join(near_cap_parts)))
+    if top_unauthorized_parts:
+        lines.append("未授权来源TOP（最多 3 个）：{0}".format(", ".join(top_unauthorized_parts)))
     if warnings:
         lines.append("告警摘要：")
         for warning in warnings[:3]:

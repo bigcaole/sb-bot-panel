@@ -71,6 +71,7 @@ def build_security_status_payload() -> Dict[str, Union[bool, int, List[str]]]:
 
 
 def build_admin_overview_payload(now_ts: int) -> Dict[str, Union[int, Dict, List]]:
+    unauthorized_since = now_ts - 86400
     with get_connection() as conn:
         users_total = int(conn.execute("SELECT COUNT(*) AS c FROM users").fetchone()["c"] or 0)
         users_active = int(
@@ -110,6 +111,31 @@ def build_admin_overview_payload(now_ts: int) -> Dict[str, Union[int, Dict, List
             ORDER BY c DESC, node_code ASC
             LIMIT 10
             """
+        ).fetchall()
+        unauthorized_count_24h = int(
+            conn.execute(
+                """
+                SELECT COUNT(*) AS c
+                FROM audit_logs
+                WHERE action = 'auth.unauthorized' AND created_at >= ?
+                """,
+                (unauthorized_since,),
+            ).fetchone()["c"]
+            or 0
+        )
+        unauthorized_top_rows = conn.execute(
+            """
+            SELECT source_ip, COUNT(*) AS c
+            FROM audit_logs
+            WHERE action = 'auth.unauthorized'
+              AND created_at >= ?
+              AND source_ip IS NOT NULL
+              AND source_ip != ''
+            GROUP BY source_ip
+            ORDER BY c DESC, source_ip ASC
+            LIMIT 5
+            """,
+            (unauthorized_since,),
         ).fetchall()
 
     monitor_enabled_count = len(monitor_rows)
@@ -152,6 +178,11 @@ def build_admin_overview_payload(now_ts: int) -> Dict[str, Union[int, Dict, List
         pending_by_node.append(
             {"node_code": str(row["node_code"] or ""), "pending": int(row["c"] or 0)}
         )
+    unauthorized_top_ips: List[Dict[str, Union[str, int]]] = []
+    for row in unauthorized_top_rows:
+        unauthorized_top_ips.append(
+            {"source_ip": str(row["source_ip"] or ""), "count": int(row["c"] or 0)}
+        )
     queue_cap_per_node = int(NODE_TASK_MAX_PENDING_PER_NODE)
     near_cap_threshold = max(1, int((queue_cap_per_node * 8 + 9) / 10))
     near_cap_nodes: List[Dict[str, Union[str, int]]] = []
@@ -193,6 +224,10 @@ def build_admin_overview_payload(now_ts: int) -> Dict[str, Union[int, Dict, List
             "pending_by_node": pending_by_node,
         },
         "security": build_security_status_payload(),
+        "security_events": {
+            "unauthorized_24h": unauthorized_count_24h,
+            "top_unauthorized_ips": unauthorized_top_ips,
+        },
     }
 
 
