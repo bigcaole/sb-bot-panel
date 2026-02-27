@@ -80,6 +80,7 @@ class BotDispatchContractTestCase(unittest.TestCase):
             "action:maintain_status",
             "action:maintain_ops_audit",
             "action:maintain_smoke",
+            "action:maintain_sync_node_time",
             "action:maintain_security_events",
             "action:maintain_sub_policy",
             "action:maintain_log_archive",

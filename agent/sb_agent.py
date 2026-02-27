@@ -882,6 +882,38 @@ def apply_agent_config_patch(patch_payload: Dict[str, Any]) -> Tuple[bool, str]:
     return True, "已更新配置项: {0}".format(", ".join(changed_keys))
 
 
+def apply_time_sync_task(payload: Dict[str, Any]) -> Tuple[bool, str]:
+    target_ts = parse_int(payload.get("server_unix"), 0)
+    if target_ts <= 0:
+        return False, "sync_time payload invalid: server_unix required"
+
+    local_before = int(time.time())
+    drift_before = int(target_ts - local_before)
+    if abs(drift_before) <= 1:
+        return True, "时间已同步（偏差 {0}s）".format(drift_before)
+
+    if command_exists("timedatectl"):
+        run_command(["timedatectl", "set-ntp", "false"])
+
+    code, stdout, stderr = run_command(["date", "-u", "-s", "@{0}".format(target_ts)])
+    if code != 0:
+        return False, truncate_text(
+            "时间同步失败\nbefore_drift={0}s\nstdout:\n{1}\nstderr:\n{2}".format(
+                drift_before, stdout, stderr
+            ),
+            4000,
+        )
+
+    if command_exists("hwclock"):
+        run_command(["hwclock", "-w"])
+
+    local_after = int(time.time())
+    drift_after = int(target_ts - local_after)
+    return True, "时间同步完成：before_drift={0}s after_drift={1}s".format(
+        drift_before, drift_after
+    )
+
+
 def execute_node_task(config: AgentConfig, task: Dict[str, Any]) -> Tuple[str, str]:
     task_id = parse_int(task.get("id"), 0)
     task_type = str(task.get("task_type", "")).strip()
@@ -969,6 +1001,12 @@ def execute_node_task(config: AgentConfig, task: Dict[str, Any]) -> Tuple[str, s
 
     if task_type == "config_set":
         ok, msg = apply_agent_config_patch(payload)
+        if ok:
+            return "success", msg
+        return "failed", msg
+
+    if task_type == "sync_time":
+        ok, msg = apply_time_sync_task(payload)
         if ok:
             return "success", msg
         return "failed", msg

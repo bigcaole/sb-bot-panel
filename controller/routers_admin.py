@@ -88,9 +88,11 @@ def _normalize_controller_url(raw_url: str) -> str:
     return value.rstrip("/")
 
 
-def _enqueue_config_set_for_nodes(
+def _enqueue_task_for_nodes(
     request: Request,
-    config_payload: Dict[str, Union[int, str]],
+    task_type: str,
+    task_payload: Dict[str, Union[int, str]],
+    max_attempts: int,
     include_disabled_flag: bool,
     force_new_flag: bool,
     audit_action: str,
@@ -112,9 +114,9 @@ def _enqueue_config_set_for_nodes(
     failures: List[Dict[str, str]] = []
 
     payload = CreateNodeTaskRequest(
-        task_type="config_set",
-        payload=config_payload,
-        max_attempts=1,
+        task_type=task_type,
+        payload=task_payload,
+        max_attempts=max_attempts,
         force_new=force_new_flag,
     )
     for row in node_rows:
@@ -154,9 +156,10 @@ def _enqueue_config_set_for_nodes(
                 "created": created,
                 "deduplicated": deduplicated,
                 "failed": failed,
+                "task_type": task_type,
                 "include_disabled": include_disabled_flag,
                 "force_new": force_new_flag,
-                "payload_keys": sorted(list(config_payload.keys())),
+                "payload_keys": sorted(list(task_payload.keys())),
             },
             actor=get_request_actor(request),
             source_ip=get_source_ip_for_audit(request),
@@ -170,11 +173,30 @@ def _enqueue_config_set_for_nodes(
         "created": created,
         "deduplicated": deduplicated,
         "failed": failed,
+        "task_type": task_type,
         "include_disabled": include_disabled_flag,
         "force_new": force_new_flag,
-        "payload": config_payload,
+        "payload": task_payload,
         "failures": failures[:20],
     }
+
+
+def _enqueue_config_set_for_nodes(
+    request: Request,
+    config_payload: Dict[str, Union[int, str]],
+    include_disabled_flag: bool,
+    force_new_flag: bool,
+    audit_action: str,
+) -> Dict[str, Union[bool, int, str, List[Dict[str, str]]]]:
+    return _enqueue_task_for_nodes(
+        request=request,
+        task_type="config_set",
+        task_payload=config_payload,
+        max_attempts=1,
+        include_disabled_flag=include_disabled_flag,
+        force_new_flag=force_new_flag,
+        audit_action=audit_action,
+    )
 
 
 @router.post(
@@ -257,6 +279,44 @@ def sync_node_agent_defaults(
         force_new_flag=force_new_flag,
         audit_action="admin.nodes.sync_agent_defaults",
     )
+
+
+@router.post(
+    "/admin/nodes/sync_time",
+    summary="Enqueue node time-sync task",
+    description=(
+        "AUTH_TOKEN 为空时不校验；非空时需要请求头 Authorization: Bearer <AUTH_TOKEN>。"
+        "下发 sync_time 任务，节点会把系统时间校准到管理服务器当前时间。"
+    ),
+    response_model=None,
+)
+def sync_node_time(
+    request: Request,
+    include_disabled: int = 0,
+    force_new: int = 0,
+    authorization: Optional[str] = Header(default=None, alias="Authorization"),
+) -> Union[Dict[str, Union[bool, int, str, List[Dict[str, str]]]], JSONResponse]:
+    auth_error = verify_admin_authorization(authorization)
+    if auth_error is not None:
+        return auth_error
+
+    include_disabled_flag = int(include_disabled) == 1
+    force_new_flag = int(force_new) == 1
+    now_ts = int(time.time())
+    task_payload: Dict[str, Union[int, str]] = {
+        "server_unix": now_ts,
+    }
+    result = _enqueue_task_for_nodes(
+        request=request,
+        task_type="sync_time",
+        task_payload=task_payload,
+        max_attempts=1,
+        include_disabled_flag=include_disabled_flag,
+        force_new_flag=force_new_flag,
+        audit_action="admin.nodes.sync_time",
+    )
+    result["server_unix"] = now_ts
+    return result
 
 
 def build_unauthorized_events_snapshot(

@@ -467,15 +467,90 @@ run_sync_node_tokens() {
   fi
 }
 
+run_sync_node_time() {
+  local env_file="${PROJECT_DIR}/.env"
+  local auth_token_raw=""
+  local auth_token=""
+  local controller_port
+  local include_disabled="0"
+  local force_new="0"
+  local answer
+  local response
+  local body
+  local http_code
+
+  controller_port="$(get_controller_port)"
+  if [[ -f "$env_file" ]]; then
+    auth_token_raw="$(grep -E '^AUTH_TOKEN=' "$env_file" | tail -n1 | cut -d= -f2- || true)"
+  fi
+  auth_token="$(pick_working_auth_token "$controller_port" "$auth_token_raw")" || {
+    warn "AUTH_TOKEN 多值模式下未探测到可用 token，回退使用第一个 token。"
+  }
+  if [[ -z "$auth_token" ]]; then
+    auth_token="$(first_auth_token "$auth_token_raw")"
+  fi
+
+  read -r -p "是否包含已禁用节点？[y/N]: " answer
+  answer="${answer:-N}"
+  if [[ "$answer" =~ ^[Yy]$ ]]; then
+    include_disabled="1"
+  fi
+  read -r -p "是否强制新建任务（忽略去重）？[y/N]: " answer
+  answer="${answer:-N}"
+  if [[ "$answer" =~ ^[Yy]$ ]]; then
+    force_new="1"
+  fi
+
+  if [[ -n "$auth_token" ]]; then
+    response="$(
+      curl -sS --max-time 15 -X POST \
+        "http://127.0.0.1:${controller_port}/admin/nodes/sync_time?include_disabled=${include_disabled}&force_new=${force_new}" \
+        -H "Authorization: Bearer ${auth_token}" \
+        -H "X-Actor: ${ADMIN_SCRIPT_ACTOR}" \
+        -H "Content-Type: application/json" \
+        -w $'\n%{http_code}' 2>/dev/null || true
+    )"
+  else
+    response="$(
+      curl -sS --max-time 15 -X POST \
+        "http://127.0.0.1:${controller_port}/admin/nodes/sync_time?include_disabled=${include_disabled}&force_new=${force_new}" \
+        -H "X-Actor: ${ADMIN_SCRIPT_ACTOR}" \
+        -H "Content-Type: application/json" \
+        -w $'\n%{http_code}' 2>/dev/null || true
+    )"
+  fi
+
+  http_code="${response##*$'\n'}"
+  body="${response%$'\n'*}"
+  if [[ "$http_code" != "200" ]]; then
+    err "节点时间同步失败（HTTP ${http_code:-unknown}）。"
+    if [[ -n "$body" ]]; then
+      echo "$body"
+    fi
+    return 1
+  fi
+
+  msg "节点时间同步任务已下发。"
+  if command -v jq >/dev/null 2>&1; then
+    echo "$body" | jq
+  else
+    echo "$body"
+  fi
+}
+
 run_sync_menu() {
   echo "同步操作："
   echo "  1) 同步节点默认参数（auth/url/poll）"
   echo "  2) 仅同步节点 Token（auth）"
-  read -r -p "请选择 [1/2]（默认 1）: " sync_choice
+  echo "  3) 同步节点系统时间（以管理服务器为准）"
+  read -r -p "请选择 [1/2/3]（默认 1）: " sync_choice
   sync_choice="${sync_choice:-1}"
   case "$sync_choice" in
     2)
       run_sync_node_tokens
+      ;;
+    3)
+      run_sync_node_time
       ;;
     *)
       run_sync_node_defaults
@@ -751,7 +826,7 @@ show_menu() {
 11. 迁移：导入迁移包
 12. 一键验收自检（语法/单测/API）
 13. 数据库一致性校验（迁移前建议）
-14. 节点同步（默认参数 / Token）
+14. 节点同步（默认参数 / Token / 时间）
 15. 安全加固向导（token轮换 + 8080收敛）
 16. 收敛 AUTH_TOKEN（新旧双token -> 单token）
 17. 手动安全清理（过期封禁 + 审计日志）

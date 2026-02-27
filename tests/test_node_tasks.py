@@ -26,6 +26,10 @@ class NodeTasksValidationTestCase(unittest.TestCase):
         with self.assertRaises(HTTPException):
             node_tasks.validate_node_task_payload("config_set", {"bad_key": "x"})
 
+    def test_sync_time_payload_validation(self) -> None:
+        payload = node_tasks.validate_node_task_payload("sync_time", {"server_unix": 1772200000})
+        self.assertEqual({"server_unix": 1772200000}, payload)
+
     def test_payload_size_limit(self) -> None:
         oversized = "a" * (node_tasks.MAX_NODE_TASK_PAYLOAD_BYTES + 1)
         with self.assertRaises(HTTPException):

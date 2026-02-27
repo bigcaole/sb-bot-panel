@@ -284,6 +284,7 @@ SUBMENUS = {
             ("🧩 订阅安全预设", "action:maintain_sub_policy"),
             ("🔄 节点默认参数同步", "action:maintain_sync_node_defaults"),
             ("🔁 同步节点Token", "action:maintain_sync_node_tokens"),
+            ("🕒 同步节点时间", "action:maintain_sync_node_time"),
             ("🧱 访问安全", "action:maintain_acl_status"),
             ("🔑 收敛AUTH_TOKEN", "action:maintain_token_collapse"),
             ("⬅️ 返回管理服务器", "menu:maintain"),
@@ -369,6 +370,7 @@ PRIVILEGED_CALLBACK_EXACT = {
     "action:maintain_https_reload": ROLE_OPERATOR,
     "action:maintain_sync_node_defaults": ROLE_SUPER,
     "action:maintain_sync_node_tokens": ROLE_SUPER,
+    "action:maintain_sync_node_time": ROLE_SUPER,
     "action:user_delete": ROLE_SUPER,
     "action:node_ops": ROLE_SUPER,
     "action:maintain_update": ROLE_SUPER,
@@ -425,6 +427,7 @@ MUTATION_CALLBACK_EXACT = {
     "maintain:token_collapse:confirm",
     "action:maintain_sync_node_defaults",
     "action:maintain_sync_node_tokens",
+    "action:maintain_sync_node_time",
 }
 
 MUTATION_CALLBACK_PREFIXES = (
@@ -3509,6 +3512,65 @@ async def run_admin_sync_node_defaults_action(query) -> None:
     lines.append("")
     lines.append("说明：节点会在下一次轮询时应用。")
 
+    if isinstance(failures, list) and failures:
+        lines.append("")
+        lines.append("失败节点（最多 8 条）：")
+        for item in failures[:8]:
+            node_code = str(item.get("node_code", "")).strip() or "-"
+            err = str(item.get("error", "")).strip() or "unknown"
+            lines.append(f"- {node_code}: {err}")
+
+    await query.edit_message_text(
+        "\n".join(lines),
+        reply_markup=build_back_keyboard("menu:maintain"),
+    )
+
+
+async def run_admin_sync_node_time_action(query) -> None:
+    result, error_message, _ = await controller_request(
+        "POST",
+        "/admin/nodes/sync_time",
+    )
+    if error_message:
+        await query.edit_message_text(
+            "同步节点时间失败：{0}".format(localize_controller_error(error_message)),
+            reply_markup=build_back_keyboard("menu:maintain"),
+        )
+        return
+    if not isinstance(result, dict):
+        await query.edit_message_text(
+            "同步节点时间失败：返回格式异常。",
+            reply_markup=build_back_keyboard("menu:maintain"),
+        )
+        return
+
+    selected = int(result.get("selected", 0) or 0)
+    created = int(result.get("created", 0) or 0)
+    deduplicated = int(result.get("deduplicated", 0) or 0)
+    failed = int(result.get("failed", 0) or 0)
+    server_unix = int(result.get("server_unix", 0) or 0)
+    include_disabled = bool(result.get("include_disabled"))
+    force_new = bool(result.get("force_new"))
+    failures = result.get("failures", [])
+    server_time_text = (
+        datetime.fromtimestamp(server_unix).strftime("%Y-%m-%d %H:%M:%S")
+        if server_unix > 0
+        else "-"
+    )
+
+    lines = [
+        "节点时间同步任务下发完成",
+        "",
+        f"基准时间（管理服务器）：{server_time_text} ({server_unix})",
+        f"目标节点数：{selected}",
+        f"新建任务：{created}",
+        f"去重任务：{deduplicated}",
+        f"失败数：{failed}",
+        f"包含禁用节点：{'是' if include_disabled else '否'}",
+        f"强制新建任务：{'是' if force_new else '否'}",
+        "",
+        "说明：节点会执行 sync_time 任务，将系统时间校准到管理服务器时间。",
+    ]
     if isinstance(failures, list) and failures:
         lines.append("")
         lines.append("失败节点（最多 8 条）：")
@@ -6676,6 +6738,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     if callback_data == "action:maintain_sync_node_tokens":
         await run_admin_sync_node_tokens_action(query)
+        return
+
+    if callback_data == "action:maintain_sync_node_time":
+        await run_admin_sync_node_time_action(query)
         return
 
     if callback_data == "action:maintain_update":

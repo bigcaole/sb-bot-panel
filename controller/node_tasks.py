@@ -12,6 +12,7 @@ ALLOWED_NODE_TASK_TYPES = {
     "status_agent",
     "logs_singbox",
     "logs_agent",
+    "sync_time",
     "update_sync",
     "config_set",
 }
@@ -108,6 +109,17 @@ def validate_node_task_payload(task_type: str, payload_obj: Dict[str, Any]) -> D
         if not sanitized:
             raise HTTPException(status_code=400, detail="config_set payload required")
         return sanitized
+
+    if task_type == "sync_time":
+        if not payload_obj:
+            raise HTTPException(status_code=400, detail="sync_time payload required")
+        unknown_keys = [key for key in payload_obj.keys() if key != "server_unix"]
+        if unknown_keys:
+            raise HTTPException(status_code=400, detail="unsupported payload keys")
+        server_unix = _parse_int_payload(payload_obj.get("server_unix"), "server_unix")
+        if server_unix < 946684800 or server_unix > 4102444800:
+            raise HTTPException(status_code=400, detail="server_unix out of range")
+        return {"server_unix": server_unix}
 
     raise HTTPException(status_code=400, detail="unsupported task_type")
 

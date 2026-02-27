@@ -322,6 +322,22 @@ class ControllerSmokeTestCase(unittest.TestCase):
             self.assertIn("auth_token", payload_obj)
             self.assertIn("poll_interval", payload_obj)
 
+            sync_time_resp = client.post(
+                "/admin/nodes/sync_time",
+                headers=self._auth_header(),
+            )
+            self.assertEqual(200, sync_time_resp.status_code)
+            sync_time_payload = sync_time_resp.json()
+            self.assertTrue(bool(sync_time_payload.get("ok")))
+            self.assertEqual(1, int(sync_time_payload.get("selected", 0) or 0))
+            self.assertEqual("sync_time", str(sync_time_payload.get("task_type", "")))
+            self.assertIn("server_unix", sync_time_payload)
+            self.assertIn("payload", sync_time_payload)
+            self.assertEqual(
+                int(sync_time_payload.get("server_unix", 0) or 0),
+                int((sync_time_payload.get("payload") or {}).get("server_unix", 0) or 0),
+            )
+
             sec_events = client.get(
                 "/admin/security/events?window_seconds=3600&top=3",
                 headers=self._auth_header(),
