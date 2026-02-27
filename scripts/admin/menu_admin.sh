@@ -16,6 +16,7 @@ IMPORT_SCRIPT="${PROJECT_DIR}/scripts/admin/sb_migrate_import.sh"
 SMOKE_SCRIPT="${PROJECT_DIR}/scripts/admin/smoke_test.sh"
 DB_CHECK_SCRIPT="${PROJECT_DIR}/scripts/admin/db_consistency_check.sh"
 HARDEN_SCRIPT="${PROJECT_DIR}/scripts/admin/harden_security.sh"
+TOKEN_COLLAPSE_SCRIPT="${PROJECT_DIR}/scripts/admin/auth_token_collapse.sh"
 
 msg() { echo -e "\033[1;32m[信息]\033[0m $*"; }
 warn() { echo -e "\033[1;33m[警告]\033[0m $*"; }
@@ -102,8 +103,9 @@ show_menu() {
 13. 一键验收自检（语法/单测/API）
 14. 数据库一致性校验（迁移前建议）
 15. 安全加固向导（token轮换 + 8080收敛）
-16. 卸载
-17. 退出
+16. 收敛 AUTH_TOKEN（新旧双token -> 单token）
+17. 卸载
+18. 退出
 ========================================
 EOF
 }
@@ -225,7 +227,7 @@ main() {
 
   while true; do
     show_menu
-    read -r -p "请输入选项 [1-17]: " action
+    read -r -p "请输入选项 [1-18]: " action
     case "$action" in
       1)
         install_or_update
@@ -314,15 +316,23 @@ main() {
         pause
         ;;
       16)
-        do_uninstall
+        if [[ -f "$TOKEN_COLLAPSE_SCRIPT" ]]; then
+          bash "$TOKEN_COLLAPSE_SCRIPT"
+        else
+          err "未找到 token 收敛脚本: $TOKEN_COLLAPSE_SCRIPT"
+        fi
         pause
         ;;
       17)
+        do_uninstall
+        pause
+        ;;
+      18)
         msg "已退出。"
         exit 0
         ;;
       *)
-        warn "无效选项，请输入 1-17。"
+        warn "无效选项，请输入 1-18。"
         pause
         ;;
     esac

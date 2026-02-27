@@ -169,6 +169,9 @@ ADMIN_ENV_FILE = os.path.join(ADMIN_PROJECT_DIR, ".env")
 ADMIN_UPDATE_SCRIPT = os.path.join(ADMIN_PROJECT_DIR, "scripts/admin/install_admin.sh")
 ADMIN_IMPORT_SCRIPT = os.path.join(ADMIN_PROJECT_DIR, "scripts/admin/sb_migrate_import.sh")
 ADMIN_SMOKE_SCRIPT = os.path.join(ADMIN_PROJECT_DIR, "scripts/admin/smoke_test.sh")
+ADMIN_TOKEN_COLLAPSE_SCRIPT = os.path.join(
+    ADMIN_PROJECT_DIR, "scripts/admin/auth_token_collapse.sh"
+)
 
 
 SUBMENUS = {
@@ -226,6 +229,7 @@ SUBMENUS = {
             ("启动controller", "action:maintain_controller_start"),
             ("停止controller", "action:maintain_controller_stop"),
             ("状态查看", "action:maintain_status"),
+            ("安全事件(1h)", "action:maintain_security_events"),
             ("查看日志", "action:maintain_logs"),
             ("HTTPS证书状态", "action:maintain_https_status"),
             ("HTTPS证书刷新", "action:maintain_https_reload"),
@@ -234,6 +238,7 @@ SUBMENUS = {
             ("生成迁移包", "action:maintain_migrate_export"),
             ("迁移导入", "action:maintain_migrate_import"),
             ("访问安全", "action:maintain_acl_status"),
+            ("收敛AUTH_TOKEN", "action:maintain_token_collapse"),
             ("返回", "menu:main"),
         ],
     },
@@ -300,6 +305,8 @@ PRIVILEGED_CALLBACK_EXACT = {
     "action:maintain_controller_stop": ROLE_SUPER,
     "action:maintain_migrate_export": ROLE_SUPER,
     "action:maintain_migrate_import": ROLE_SUPER,
+    "action:maintain_token_collapse": ROLE_SUPER,
+    "maintain:token_collapse:confirm": ROLE_SUPER,
     "usernodes:manual_input": ROLE_OPERATOR,
     "wizard:create_confirm": ROLE_OPERATOR,
     "wizard:nodes_create_confirm": ROLE_OPERATOR,
@@ -335,6 +342,7 @@ MUTATION_CALLBACK_EXACT = {
     "action:maintain_https_reload",
     "action:maintain_migrate_export",
     "action:maintain_migrate_import",
+    "maintain:token_collapse:confirm",
 }
 
 MUTATION_CALLBACK_PREFIXES = (
@@ -578,6 +586,20 @@ def build_maintain_log_result_keyboard(
     rows.append([InlineKeyboardButton("返回服务选择", callback_data="action:maintain_logs")])
     rows.append([InlineKeyboardButton("返回维护菜单", callback_data="menu:maintain")])
     return InlineKeyboardMarkup(rows)
+
+
+def build_maintain_token_collapse_confirm_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "确认收敛为单token",
+                    callback_data="maintain:token_collapse:confirm",
+                ),
+                InlineKeyboardButton("取消", callback_data="menu:maintain"),
+            ]
+        ]
+    )
 
 
 def build_node_ops_picker_keyboard(nodes: list) -> InlineKeyboardMarkup:
@@ -5340,6 +5362,65 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         )
         return
 
+    if callback_data == "action:maintain_security_events":
+        events_result, events_error, _ = await controller_request(
+            "GET", "/admin/security/events?window_seconds=3600&top=5"
+        )
+        status_result, status_error, _ = await controller_request(
+            "GET", "/admin/security/status"
+        )
+        if events_error:
+            await query.edit_message_text(
+                "读取安全事件失败：{0}".format(localize_controller_error(events_error)),
+                reply_markup=build_back_keyboard("menu:maintain"),
+            )
+            return
+
+        unauthorized_count = 0
+        top_parts = []
+        if isinstance(events_result, dict):
+            try:
+                unauthorized_count = int(events_result.get("unauthorized", 0) or 0)
+            except (TypeError, ValueError):
+                unauthorized_count = 0
+            top_rows = events_result.get("top_unauthorized_ips", [])
+            if isinstance(top_rows, list):
+                for item in top_rows[:5]:
+                    if not isinstance(item, dict):
+                        continue
+                    source_ip = str(item.get("source_ip", "")).strip() or "-"
+                    try:
+                        hit_count = int(item.get("count", 0) or 0)
+                    except (TypeError, ValueError):
+                        hit_count = 0
+                    top_parts.append("{0}({1})".format(source_ip, hit_count))
+
+        token_count_text = "-"
+        auth_enabled_text = "-"
+        if status_error:
+            token_count_text = "读取失败"
+            auth_enabled_text = "读取失败"
+        elif isinstance(status_result, dict):
+            auth_enabled_text = "已启用" if bool(status_result.get("auth_enabled")) else "未启用"
+            token_count_text = str(int(status_result.get("auth_token_count", 0) or 0))
+
+        top_text = "，".join(top_parts) if top_parts else "（当前窗口无未授权来源）"
+        await query.edit_message_text(
+            "安全事件（近 1 小时）：\n"
+            "未授权请求数：{0}\n"
+            "来源 TOP5：{1}\n"
+            "鉴权状态：{2}\n"
+            "AUTH_TOKEN 数量：{3}\n\n"
+            "说明：24h 指标受历史数据影响，建议优先看 1h 趋势。".format(
+                unauthorized_count,
+                top_text,
+                auth_enabled_text,
+                token_count_text,
+            ),
+            reply_markup=build_back_keyboard("menu:maintain"),
+        )
+        return
+
     if callback_data == "action:maintain_https_status":
         active_code, active_out, active_err = await run_local_shell("systemctl is-active caddy", timeout=15)
         validate_code, validate_out, validate_err = await run_local_shell(
@@ -5395,6 +5476,32 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     if callback_data == "action:maintain_acl_status":
         await run_admin_node_access_status_action(query, "menu:maintain")
+        return
+
+    if callback_data == "action:maintain_token_collapse":
+        if not os.path.exists(ADMIN_TOKEN_COLLAPSE_SCRIPT):
+            await query.edit_message_text(
+                "未找到收敛脚本：{0}".format(ADMIN_TOKEN_COLLAPSE_SCRIPT),
+                reply_markup=build_back_keyboard("menu:maintain"),
+            )
+            return
+        await query.edit_message_text(
+            "准备收敛 AUTH_TOKEN（新,旧 -> 新）。\n"
+            "影响：controller/bot 会重启；若节点仍使用旧 token，会暂时无法同步。\n"
+            "请确认节点已更新到新 token 后再执行。",
+            reply_markup=build_maintain_token_collapse_confirm_keyboard(),
+        )
+        return
+
+    if callback_data == "maintain:token_collapse:confirm":
+        collapse_cmd = "bash {0} --yes".format(shlex.quote(ADMIN_TOKEN_COLLAPSE_SCRIPT))
+        log_path = launch_background_job(collapse_cmd, "maintain-token-collapse")
+        await query.edit_message_text(
+            "AUTH_TOKEN 收敛任务已启动（后台执行）。\n"
+            f"日志文件：{log_path}\n\n"
+            "执行完成后可在“安全事件(1h)”或“状态查看”中确认 token 数量是否变为 1。",
+            reply_markup=build_back_keyboard("menu:maintain"),
+        )
         return
 
     if callback_data == "action:backup_audit":

@@ -1,0 +1,132 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PROJECT_DIR="${PROJECT_DIR:-/root/sb-bot-panel}"
+ENV_FILE="${PROJECT_DIR}/.env"
+AUTO_YES=0
+
+msg() { echo -e "\033[1;32m[信息]\033[0m $*"; }
+warn() { echo -e "\033[1;33m[警告]\033[0m $*"; }
+err() { echo -e "\033[1;31m[错误]\033[0m $*" >&2; }
+
+require_root() {
+  if [[ "${EUID}" -ne 0 ]]; then
+    err "请使用 root 权限运行（sudo）。"
+    exit 1
+  fi
+}
+
+get_env_value() {
+  local key="$1"
+  if [[ ! -f "$ENV_FILE" ]]; then
+    echo ""
+    return
+  fi
+  grep -E "^${key}=" "$ENV_FILE" | head -n1 | cut -d= -f2- || true
+}
+
+set_env_value() {
+  local key="$1"
+  local value="$2"
+  local escaped
+  escaped="$(printf '%s' "$value" | sed 's/[&|]/\\&/g')"
+  if grep -qE "^${key}=" "$ENV_FILE"; then
+    sed -i "s|^${key}=.*|${key}=${escaped}|" "$ENV_FILE"
+  else
+    echo "${key}=${value}" >>"$ENV_FILE"
+  fi
+}
+
+wait_for_controller_ready() {
+  local controller_port="$1"
+  local timeout_seconds="${2:-30}"
+  local i
+  for i in $(seq 1 "$timeout_seconds"); do
+    if curl -fsSL --max-time 3 "http://127.0.0.1:${controller_port}/health" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+parse_primary_token() {
+  local raw="$1"
+  local item token
+  IFS=',' read -r -a items <<<"$raw"
+  for item in "${items[@]}"; do
+    token="$(echo "$item" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    if [[ -n "$token" ]]; then
+      echo "$token"
+      return
+    fi
+  done
+  echo ""
+}
+
+main() {
+  local arg
+  for arg in "$@"; do
+    case "$arg" in
+      --yes|-y)
+        AUTO_YES=1
+        ;;
+      *)
+        err "未知参数：$arg"
+        err "用法：bash scripts/admin/auth_token_collapse.sh [--yes]"
+        exit 1
+        ;;
+    esac
+  done
+
+  require_root
+  if [[ ! -f "$ENV_FILE" ]]; then
+    err "未找到环境文件：$ENV_FILE"
+    exit 1
+  fi
+
+  local auth_raw controller_port primary_token
+  auth_raw="$(get_env_value AUTH_TOKEN)"
+  controller_port="$(get_env_value CONTROLLER_PORT)"
+  controller_port="${controller_port:-8080}"
+  primary_token="$(parse_primary_token "$auth_raw")"
+
+  if [[ -z "$primary_token" ]]; then
+    warn "AUTH_TOKEN 为空，当前无需收敛。"
+    exit 0
+  fi
+
+  if [[ "$auth_raw" != *","* ]]; then
+    msg "AUTH_TOKEN 已是单值，无需收敛。"
+    exit 0
+  fi
+
+  if [[ "$AUTO_YES" -ne 1 ]]; then
+    echo "当前 AUTH_TOKEN 为多值过渡模式。"
+    echo "即将收敛为首个 token（其余旧 token 会移除）。"
+    read -r -p "确认继续？[y/N]: " confirm
+    confirm="${confirm:-N}"
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+      warn "已取消。"
+      exit 0
+    fi
+  fi
+
+  local backup_file
+  backup_file="${ENV_FILE}.bak-$(date +%Y%m%d-%H%M%S)"
+  cp "$ENV_FILE" "$backup_file"
+  set_env_value "AUTH_TOKEN" "$primary_token"
+
+  msg "已更新 AUTH_TOKEN 为单值，并备份旧 .env：$backup_file"
+  systemctl restart sb-controller
+  systemctl restart sb-bot
+
+  if wait_for_controller_ready "$controller_port" 30; then
+    msg "收敛完成：controller 已就绪（127.0.0.1:${controller_port}）。"
+  else
+    err "controller 启动超时，请检查日志：journalctl -u sb-controller -n 120 --no-pager"
+    exit 1
+  fi
+}
+
+main "$@"
