@@ -271,6 +271,7 @@ SUBMENUS = {
         "buttons": [
             ("🛡 安全事件(1h)", "action:maintain_security_events"),
             ("🧩 订阅安全预设", "action:maintain_sub_policy"),
+            ("🔄 节点默认参数同步", "action:maintain_sync_node_defaults"),
             ("🔁 同步节点Token", "action:maintain_sync_node_tokens"),
             ("🧱 访问安全", "action:maintain_acl_status"),
             ("🔑 收敛AUTH_TOKEN", "action:maintain_token_collapse"),
@@ -354,6 +355,7 @@ PRIVILEGED_CALLBACK_EXACT = {
     "action:maintain_sub_policy": ROLE_OPERATOR,
     "action:maintain_controller_start": ROLE_OPERATOR,
     "action:maintain_https_reload": ROLE_OPERATOR,
+    "action:maintain_sync_node_defaults": ROLE_SUPER,
     "action:maintain_sync_node_tokens": ROLE_SUPER,
     "action:user_delete": ROLE_SUPER,
     "action:node_ops": ROLE_SUPER,
@@ -409,6 +411,7 @@ MUTATION_CALLBACK_EXACT = {
     "action:maintain_migrate_export",
     "action:maintain_migrate_import",
     "maintain:token_collapse:confirm",
+    "action:maintain_sync_node_defaults",
     "action:maintain_sync_node_tokens",
 }
 
@@ -3381,6 +3384,67 @@ async def run_admin_sync_node_tokens_action(query) -> None:
         "",
         "说明：已为节点下发 config_set(auth_token=主 token) 任务，节点在下一次轮询时会应用。",
     ]
+    if isinstance(failures, list) and failures:
+        lines.append("")
+        lines.append("失败节点（最多 8 条）：")
+        for item in failures[:8]:
+            node_code = str(item.get("node_code", "")).strip() or "-"
+            err = str(item.get("error", "")).strip() or "unknown"
+            lines.append(f"- {node_code}: {err}")
+
+    await query.edit_message_text(
+        "\n".join(lines),
+        reply_markup=build_back_keyboard("menu:maintain"),
+    )
+
+
+async def run_admin_sync_node_defaults_action(query) -> None:
+    result, error_message, _ = await controller_request(
+        "POST",
+        "/admin/nodes/sync_agent_defaults",
+    )
+    if error_message:
+        await query.edit_message_text(
+            "同步节点默认参数失败：{0}".format(localize_controller_error(error_message)),
+            reply_markup=build_back_keyboard("menu:maintain"),
+        )
+        return
+    if not isinstance(result, dict):
+        await query.edit_message_text(
+            "同步节点默认参数失败：返回格式异常。",
+            reply_markup=build_back_keyboard("menu:maintain"),
+        )
+        return
+
+    selected = int(result.get("selected", 0) or 0)
+    created = int(result.get("created", 0) or 0)
+    deduplicated = int(result.get("deduplicated", 0) or 0)
+    failed = int(result.get("failed", 0) or 0)
+    payload_obj = result.get("payload", {})
+    failures = result.get("failures", [])
+
+    lines = [
+        "节点默认参数同步完成",
+        "",
+        f"目标节点数：{selected}",
+        f"新建任务：{created}",
+        f"去重任务：{deduplicated}",
+        f"失败数：{failed}",
+        "",
+        "下发参数：",
+    ]
+    if isinstance(payload_obj, dict) and payload_obj:
+        controller_url = str(payload_obj.get("controller_url", "")).strip()
+        poll_interval = str(payload_obj.get("poll_interval", "")).strip()
+        has_token = bool(str(payload_obj.get("auth_token", "")).strip())
+        lines.append(f"- controller_url：{controller_url or '未下发（管理端未配置 CONTROLLER_PUBLIC_URL）'}")
+        lines.append(f"- poll_interval：{poll_interval or '-'}")
+        lines.append(f"- auth_token：{'已下发主 token' if has_token else '未下发'}")
+    else:
+        lines.append("- （空）")
+    lines.append("")
+    lines.append("说明：节点会在下一次轮询时应用。")
+
     if isinstance(failures, list) and failures:
         lines.append("")
         lines.append("失败节点（最多 8 条）：")
@@ -6540,6 +6604,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     if callback_data == "action:maintain_log_archive":
         await run_admin_log_archive_action(query, "menu:maintain")
+        return
+
+    if callback_data == "action:maintain_sync_node_defaults":
+        await run_admin_sync_node_defaults_action(query)
         return
 
     if callback_data == "action:maintain_sync_node_tokens":

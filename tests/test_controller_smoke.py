@@ -258,6 +258,20 @@ class ControllerSmokeTestCase(unittest.TestCase):
             self.assertIn("created", sync_tokens_payload)
             self.assertIn("deduplicated", sync_tokens_payload)
 
+            sync_defaults_resp = client.post(
+                "/admin/nodes/sync_agent_defaults",
+                headers=self._auth_header(),
+            )
+            self.assertEqual(200, sync_defaults_resp.status_code)
+            sync_defaults_payload = sync_defaults_resp.json()
+            self.assertTrue(bool(sync_defaults_payload.get("ok")))
+            self.assertEqual(1, int(sync_defaults_payload.get("selected", 0) or 0))
+            self.assertIn("payload", sync_defaults_payload)
+            payload_obj = sync_defaults_payload.get("payload", {})
+            self.assertTrue(isinstance(payload_obj, dict))
+            self.assertIn("auth_token", payload_obj)
+            self.assertIn("poll_interval", payload_obj)
+
             sec_events = client.get(
                 "/admin/security/events?window_seconds=3600&top=3",
                 headers=self._auth_header(),

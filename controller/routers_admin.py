@@ -45,11 +45,13 @@ from controller.security import (
     verify_admin_authorization,
 )
 from controller.settings import (
+    AGENT_DEFAULT_POLL_INTERVAL,
     AUDIT_LOG_CLEANUP_BATCH_SIZE,
     AUDIT_LOG_CLEANUP_INTERVAL_SECONDS,
     AUDIT_LOG_RETENTION_DAYS,
     BACKUP_RETENTION_COUNT,
     CONTROLLER_PORT_WHITELIST_ITEMS,
+    CONTROLLER_PUBLIC_URL,
     CONTROLLER_PORT,
     MIGRATE_RETENTION_COUNT,
     NODE_TASK_MAX_PENDING_PER_NODE,
@@ -77,36 +79,22 @@ router = APIRouter(tags=["admin"])
 AUTH_TOKEN = SECURITY_AUTH_TOKEN
 
 
-@router.post(
-    "/admin/auth/sync_node_tokens",
-    summary="Enqueue config_set(auth_token) for nodes",
-    description=(
-        "AUTH_TOKEN 为空时不校验；非空时需要请求头 Authorization: Bearer <AUTH_TOKEN>。"
-        "使用当前主 token（AUTH_TOKEN 第一个）为节点下发 config_set(auth_token) 任务。"
-    ),
-    response_model=None,
-)
-def sync_node_auth_tokens(
+def _normalize_controller_url(raw_url: str) -> str:
+    value = str(raw_url or "").strip().rstrip("/")
+    if not value:
+        return ""
+    if not re.match(r"^https?://", value):
+        value = "http://{0}".format(value)
+    return value.rstrip("/")
+
+
+def _enqueue_config_set_for_nodes(
     request: Request,
-    include_disabled: int = 0,
-    force_new: int = 0,
-    authorization: Optional[str] = Header(default=None, alias="Authorization"),
-) -> Union[Dict[str, Union[bool, int, str, List[Dict[str, str]]]], JSONResponse]:
-    auth_error = verify_admin_authorization(authorization)
-    if auth_error is not None:
-        return auth_error
-
-    tokens = get_auth_tokens()
-    if not tokens:
-        raise HTTPException(status_code=400, detail="AUTH_TOKEN 未配置")
-    primary_token = str(tokens[0]).strip()
-    if not primary_token:
-        raise HTTPException(status_code=400, detail="AUTH_TOKEN 主 token 为空")
-
-    include_disabled_flag = int(include_disabled) == 1
-    force_new_flag = int(force_new) == 1
-    now_ts = int(time.time())
-
+    config_payload: Dict[str, Union[int, str]],
+    include_disabled_flag: bool,
+    force_new_flag: bool,
+    audit_action: str,
+) -> Dict[str, Union[bool, int, str, List[Dict[str, str]]]]:
     with get_connection() as conn:
         if include_disabled_flag:
             node_rows = conn.execute(
@@ -125,7 +113,7 @@ def sync_node_auth_tokens(
 
     payload = CreateNodeTaskRequest(
         task_type="config_set",
-        payload={"auth_token": primary_token},
+        payload=config_payload,
         max_attempts=1,
         force_new=force_new_flag,
     )
@@ -158,7 +146,7 @@ def sync_node_auth_tokens(
     with get_connection() as conn:
         write_audit_log(
             conn,
-            action="admin.auth.sync_node_tokens",
+            action=audit_action,
             resource_type="security",
             resource_id="nodes",
             detail={
@@ -168,10 +156,11 @@ def sync_node_auth_tokens(
                 "failed": failed,
                 "include_disabled": include_disabled_flag,
                 "force_new": force_new_flag,
+                "payload_keys": sorted(list(config_payload.keys())),
             },
             actor=get_request_actor(request),
             source_ip=get_source_ip_for_audit(request),
-            created_at=now_ts,
+            created_at=int(time.time()),
         )
         conn.commit()
 
@@ -183,8 +172,91 @@ def sync_node_auth_tokens(
         "failed": failed,
         "include_disabled": include_disabled_flag,
         "force_new": force_new_flag,
+        "payload": config_payload,
         "failures": failures[:20],
     }
+
+
+@router.post(
+    "/admin/auth/sync_node_tokens",
+    summary="Enqueue config_set(auth_token) for nodes",
+    description=(
+        "AUTH_TOKEN 为空时不校验；非空时需要请求头 Authorization: Bearer <AUTH_TOKEN>。"
+        "使用当前主 token（AUTH_TOKEN 第一个）为节点下发 config_set(auth_token) 任务。"
+    ),
+    response_model=None,
+)
+def sync_node_auth_tokens(
+    request: Request,
+    include_disabled: int = 0,
+    force_new: int = 0,
+    authorization: Optional[str] = Header(default=None, alias="Authorization"),
+) -> Union[Dict[str, Union[bool, int, str, List[Dict[str, str]]]], JSONResponse]:
+    auth_error = verify_admin_authorization(authorization)
+    if auth_error is not None:
+        return auth_error
+
+    tokens = get_auth_tokens()
+    if not tokens:
+        raise HTTPException(status_code=400, detail="AUTH_TOKEN 未配置")
+    primary_token = str(tokens[0]).strip()
+    if not primary_token:
+        raise HTTPException(status_code=400, detail="AUTH_TOKEN 主 token 为空")
+
+    include_disabled_flag = int(include_disabled) == 1
+    force_new_flag = int(force_new) == 1
+    return _enqueue_config_set_for_nodes(
+        request=request,
+        config_payload={"auth_token": primary_token},
+        include_disabled_flag=include_disabled_flag,
+        force_new_flag=force_new_flag,
+        audit_action="admin.auth.sync_node_tokens",
+    )
+
+
+@router.post(
+    "/admin/nodes/sync_agent_defaults",
+    summary="Enqueue default agent config sync for nodes",
+    description=(
+        "AUTH_TOKEN 为空时不校验；非空时需要请求头 Authorization: Bearer <AUTH_TOKEN>。"
+        "默认下发 auth_token + poll_interval，并在配置了 CONTROLLER_PUBLIC_URL 时额外下发 controller_url。"
+    ),
+    response_model=None,
+)
+def sync_node_agent_defaults(
+    request: Request,
+    include_disabled: int = 0,
+    force_new: int = 0,
+    authorization: Optional[str] = Header(default=None, alias="Authorization"),
+) -> Union[Dict[str, Union[bool, int, str, List[Dict[str, str]]]], JSONResponse]:
+    auth_error = verify_admin_authorization(authorization)
+    if auth_error is not None:
+        return auth_error
+
+    tokens = get_auth_tokens()
+    if not tokens:
+        raise HTTPException(status_code=400, detail="AUTH_TOKEN 未配置")
+    primary_token = str(tokens[0]).strip()
+    if not primary_token:
+        raise HTTPException(status_code=400, detail="AUTH_TOKEN 主 token 为空")
+
+    config_payload: Dict[str, Union[int, str]] = {
+        "auth_token": primary_token,
+        "poll_interval": int(AGENT_DEFAULT_POLL_INTERVAL),
+    }
+    normalized_public_url = _normalize_controller_url(CONTROLLER_PUBLIC_URL)
+    if normalized_public_url:
+        config_payload["controller_url"] = normalized_public_url
+
+    include_disabled_flag = int(include_disabled) == 1
+    force_new_flag = int(force_new) == 1
+    return _enqueue_config_set_for_nodes(
+        request=request,
+        config_payload=config_payload,
+        include_disabled_flag=include_disabled_flag,
+        force_new_flag=force_new_flag,
+        audit_action="admin.nodes.sync_agent_defaults",
+    )
 
 
 def build_unauthorized_events_snapshot(
