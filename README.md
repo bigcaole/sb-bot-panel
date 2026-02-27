@@ -244,10 +244,27 @@ sudo bash scripts/admin/menu_admin.sh
 - 启动/停止 controller
 - 状态查看（controller/bot/caddy）
 - 查看日志（controller/bot/caddy）
+- 日志归档（打包最近日志到服务器本地，支持保留策略）
 - HTTPS 证书状态 / 刷新
 - 迁移导出 / 迁移导入（导入走非交互模式）
 - 操作日志（`/admin/audit`，查看最近审计记录）
 - 访问安全（整合节点来源 IP 白名单状态 + 全局安全配置状态）
+- 订阅安全预设（签名+限流 / 仅签名 / 开放测试）
+- 任务幂等概览（24h 去重命中率，辅助观察重复下发）
+
+补充：
+
+- 可单独执行 bot 分发回归检查：
+
+```bash
+sudo bash scripts/admin/bot_regression_check.sh
+```
+
+- 日志归档脚本支持以下可选环境变量（写入 `.env`）：
+  - `LOG_ARCHIVE_WINDOW_HOURS`（默认 24）
+  - `LOG_ARCHIVE_RETENTION_COUNT`（默认 30）
+  - `LOG_ARCHIVE_DIR`（默认 `/var/backups/sb-controller/logs`）
+- 已知长期技术债（含 VLESS 按用户限速未解决）见：`/Users/cwzs/Documents/sb-bot-panel/docs/待办与技术债.md`
 
 ## Bot 远程管理（节点服务器）
 

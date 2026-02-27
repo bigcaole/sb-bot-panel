@@ -849,6 +849,11 @@ def build_admin_overview_payload(now_ts: int) -> Dict[str, Union[int, Dict, List
         window_seconds=3600,
         top_limit=3,
     )
+    node_task_idempotency_24h = get_node_task_idempotency_snapshot(
+        now_ts=now_ts,
+        window_seconds=86400,
+        top_limit=5,
+    )
     queue_cap_per_node = int(NODE_TASK_MAX_PENDING_PER_NODE)
     near_cap_threshold = max(1, int((queue_cap_per_node * 8 + 9) / 10))
     near_cap_nodes: List[Dict[str, Union[str, int]]] = []
@@ -888,6 +893,7 @@ def build_admin_overview_payload(now_ts: int) -> Dict[str, Union[int, Dict, List
             "near_cap_threshold": near_cap_threshold,
             "near_cap_nodes": near_cap_nodes,
             "pending_by_node": pending_by_node,
+            "idempotency_24h": node_task_idempotency_24h,
         },
         "security": build_security_status_payload(),
         "security_events": {
@@ -896,6 +902,123 @@ def build_admin_overview_payload(now_ts: int) -> Dict[str, Union[int, Dict, List
             "top_unauthorized_ips": unauthorized_24h_snapshot["top_unauthorized_ips"],
         },
     }
+
+
+def get_node_task_idempotency_snapshot(
+    now_ts: int, window_seconds: int = 86400, top_limit: int = 10
+) -> Dict[str, Union[int, float, List[Dict[str, Union[str, int, float]]]]]:
+    if window_seconds < 60:
+        window_seconds = 60
+    if window_seconds > 30 * 86400:
+        window_seconds = 30 * 86400
+    if top_limit < 1:
+        top_limit = 1
+    if top_limit > 20:
+        top_limit = 20
+    since_ts = int(now_ts - window_seconds)
+
+    with get_connection() as conn:
+        created_count = int(
+            conn.execute(
+                """
+                SELECT COUNT(*) AS c
+                FROM audit_logs
+                WHERE action = 'node.task.create' AND created_at >= ?
+                """,
+                (since_ts,),
+            ).fetchone()["c"]
+            or 0
+        )
+        deduplicated_count = int(
+            conn.execute(
+                """
+                SELECT COUNT(*) AS c
+                FROM audit_logs
+                WHERE action = 'node.task.deduplicated' AND created_at >= ?
+                """,
+                (since_ts,),
+            ).fetchone()["c"]
+            or 0
+        )
+        per_node_rows = conn.execute(
+            """
+            SELECT
+              json_extract(detail, '$.node_code') AS node_code,
+              action
+            FROM audit_logs
+            WHERE action IN ('node.task.create', 'node.task.deduplicated')
+              AND created_at >= ?
+            """,
+            (since_ts,),
+        ).fetchall()
+
+    per_node_counter: Dict[str, Dict[str, int]] = {}
+    for row in per_node_rows:
+        node_code = str(row["node_code"] or "").strip() or "unknown"
+        action = str(row["action"] or "").strip()
+        bucket = per_node_counter.setdefault(node_code, {"create": 0, "deduplicated": 0})
+        if action == "node.task.create":
+            bucket["create"] = int(bucket["create"] + 1)
+        elif action == "node.task.deduplicated":
+            bucket["deduplicated"] = int(bucket["deduplicated"] + 1)
+
+    by_node_items: List[Dict[str, Union[str, int, float]]] = []
+    for node_code, bucket in per_node_counter.items():
+        create_count = int(bucket.get("create", 0) or 0)
+        dedup_count = int(bucket.get("deduplicated", 0) or 0)
+        total_incoming = int(create_count + dedup_count)
+        dedup_ratio = float((dedup_count / total_incoming) if total_incoming > 0 else 0.0)
+        by_node_items.append(
+            {
+                "node_code": node_code,
+                "created": create_count,
+                "deduplicated": dedup_count,
+                "incoming_total": total_incoming,
+                "dedup_ratio": round(dedup_ratio, 4),
+            }
+        )
+    by_node_items.sort(
+        key=lambda item: (
+            -int(item.get("incoming_total", 0) or 0),
+            str(item.get("node_code", "")),
+        )
+    )
+
+    incoming_total = int(created_count + deduplicated_count)
+    dedup_ratio_total = float((deduplicated_count / incoming_total) if incoming_total > 0 else 0.0)
+    return {
+        "window_seconds": int(window_seconds),
+        "since": int(since_ts),
+        "incoming_total": incoming_total,
+        "created": int(created_count),
+        "deduplicated": int(deduplicated_count),
+        "dedup_ratio": round(dedup_ratio_total, 4),
+        "top_nodes": by_node_items[:top_limit],
+    }
+
+
+@router.get(
+    "/admin/node_tasks/idempotency",
+    summary="Node task idempotency snapshot",
+    description=(
+        "AUTH_TOKEN 为空时不校验；非空时需要请求头 Authorization: Bearer <AUTH_TOKEN>。"
+        "统计任务创建与去重命中情况，用于观察任务下发幂等性。"
+    ),
+    response_model=None,
+)
+def get_admin_node_task_idempotency(
+    window_seconds: int = 86400,
+    top: int = 10,
+    authorization: Optional[str] = Header(default=None, alias="Authorization"),
+) -> Union[Dict[str, Union[int, float, List[Dict[str, Union[str, int, float]]]]], JSONResponse]:
+    auth_error = verify_admin_authorization(authorization)
+    if auth_error is not None:
+        return auth_error
+    return get_node_task_idempotency_snapshot(
+        now_ts=int(time.time()),
+        window_seconds=int(window_seconds or 0),
+        top_limit=int(top or 0),
+    )
 
 
 def cleanup_archives_by_count(

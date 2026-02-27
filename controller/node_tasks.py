@@ -144,6 +144,7 @@ def build_task_row_dict(row: sqlite3.Row) -> Dict[str, Any]:
         "node_code": str(row["node_code"]),
         "task_type": str(row["task_type"]),
         "payload": parse_task_payload(row["payload_json"]),
+        "payload_hash": str(row["payload_hash"] or ""),
         "status": str(row["status"]),
         "attempts": attempts,
         "max_attempts": max_attempts,

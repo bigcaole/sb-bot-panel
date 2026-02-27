@@ -17,6 +17,7 @@ SMOKE_SCRIPT="${PROJECT_DIR}/scripts/admin/smoke_test.sh"
 DB_CHECK_SCRIPT="${PROJECT_DIR}/scripts/admin/db_consistency_check.sh"
 HARDEN_SCRIPT="${PROJECT_DIR}/scripts/admin/harden_security.sh"
 TOKEN_COLLAPSE_SCRIPT="${PROJECT_DIR}/scripts/admin/auth_token_collapse.sh"
+LOG_ARCHIVE_SCRIPT="${PROJECT_DIR}/scripts/admin/log_archive.sh"
 
 msg() { echo -e "\033[1;32m[信息]\033[0m $*"; }
 warn() { echo -e "\033[1;33m[警告]\033[0m $*"; }
@@ -477,7 +478,7 @@ show_menu() {
 4. 启动 bot
 5. 停止 bot
 6. 状态查看（controller/bot）
-7. 查看日志（controller/bot）
+7. 查看日志（controller/bot/归档）
 8. HTTPS 证书状态（Caddy）
 9. HTTPS 证书刷新（重载 Caddy）
 10. 迁移：导出迁移包
@@ -542,10 +543,16 @@ show_status() {
 
 show_logs() {
   local choice
-  read -r -p "查看哪个服务日志？1=controller 2=bot [1]: " choice
+  read -r -p "查看哪个服务日志？1=controller 2=bot 3=日志归档 [1]: " choice
   choice="${choice:-1}"
   if [[ "$choice" == "2" ]]; then
     journalctl -u sb-bot -n 200 --no-pager || true
+  elif [[ "$choice" == "3" ]]; then
+    if [[ -f "$LOG_ARCHIVE_SCRIPT" ]]; then
+      bash "$LOG_ARCHIVE_SCRIPT"
+    else
+      err "未找到日志归档脚本: $LOG_ARCHIVE_SCRIPT"
+    fi
   else
     journalctl -u sb-controller -n 200 --no-pager || true
   fi

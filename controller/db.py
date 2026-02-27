@@ -112,6 +112,7 @@ def init_db() -> None:
                 node_code TEXT NOT NULL,
                 task_type TEXT NOT NULL,
                 payload_json TEXT,
+                payload_hash TEXT,
                 status TEXT NOT NULL,
                 attempts INTEGER,
                 max_attempts INTEGER,
@@ -153,8 +154,11 @@ def init_db() -> None:
             conn.execute("ALTER TABLE node_tasks ADD COLUMN attempts INTEGER")
         if "max_attempts" not in node_task_column_names:
             conn.execute("ALTER TABLE node_tasks ADD COLUMN max_attempts INTEGER")
+        if "payload_hash" not in node_task_column_names:
+            conn.execute("ALTER TABLE node_tasks ADD COLUMN payload_hash TEXT")
         conn.execute("UPDATE node_tasks SET attempts = 0 WHERE attempts IS NULL")
         conn.execute("UPDATE node_tasks SET max_attempts = 1 WHERE max_attempts IS NULL")
+        conn.execute("UPDATE node_tasks SET payload_hash = '' WHERE payload_hash IS NULL")
         conn.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_node_tasks_node_status_id
@@ -165,6 +169,12 @@ def init_db() -> None:
             """
             CREATE INDEX IF NOT EXISTS idx_node_tasks_status_updated_at
             ON node_tasks(status, updated_at DESC, id DESC)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_node_tasks_node_status_hash
+            ON node_tasks(node_code, status, task_type, payload_hash, id)
             """
         )
         conn.execute(

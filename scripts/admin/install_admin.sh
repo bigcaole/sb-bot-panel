@@ -44,6 +44,9 @@ SUPER_ADMIN_CHAT_IDS=""
 MIGRATE_DIR="$MIGRATE_DIR_DEFAULT"
 BACKUP_RETENTION_COUNT="30"
 MIGRATE_RETENTION_COUNT="20"
+LOG_ARCHIVE_WINDOW_HOURS="24"
+LOG_ARCHIVE_RETENTION_COUNT="30"
+LOG_ARCHIVE_DIR="/var/backups/sb-controller/logs"
 BOT_MENU_TTL="60"
 BOT_NODE_MONITOR_INTERVAL="60"
 BOT_NODE_OFFLINE_THRESHOLD="120"
@@ -382,7 +385,7 @@ has_env_key() {
 }
 
 load_existing_env_defaults() {
-  local old_port old_port_whitelist old_url old_public_url old_panel_base old_enable_https old_https_domain old_https_email old_auth old_bot old_admin old_view_admin old_ops_admin old_super_admin old_migrate old_backup_retention old_migrate_retention old_menu_ttl old_monitor_interval old_offline_threshold old_mutation_cooldown old_trust_xff old_trusted_proxy_ips old_task_timeout old_task_retention old_task_max_pending old_sub_link_sign_key old_sub_link_require old_sub_link_ttl old_rate_limit_enabled old_rate_limit_window old_rate_limit_max old_security_events_exclude_local old_security_block_protected_ips old_security_auto_block_enabled old_security_auto_block_interval old_security_auto_block_window old_security_auto_block_threshold old_security_auto_block_duration old_security_auto_block_max old_controller_http_timeout old_bot_actor_label
+  local old_port old_port_whitelist old_url old_public_url old_panel_base old_enable_https old_https_domain old_https_email old_auth old_bot old_admin old_view_admin old_ops_admin old_super_admin old_migrate old_backup_retention old_migrate_retention old_log_archive_window old_log_archive_retention old_log_archive_dir old_menu_ttl old_monitor_interval old_offline_threshold old_mutation_cooldown old_trust_xff old_trusted_proxy_ips old_task_timeout old_task_retention old_task_max_pending old_sub_link_sign_key old_sub_link_require old_sub_link_ttl old_rate_limit_enabled old_rate_limit_window old_rate_limit_max old_security_events_exclude_local old_security_block_protected_ips old_security_auto_block_enabled old_security_auto_block_interval old_security_auto_block_window old_security_auto_block_threshold old_security_auto_block_duration old_security_auto_block_max old_controller_http_timeout old_bot_actor_label
   old_port="$(get_env_value "CONTROLLER_PORT")"
   old_port_whitelist="$(get_env_value "CONTROLLER_PORT_WHITELIST")"
   old_url="$(get_env_value "CONTROLLER_URL")"
@@ -400,6 +403,9 @@ load_existing_env_defaults() {
   old_migrate="$(get_env_value "MIGRATE_DIR")"
   old_backup_retention="$(get_env_value "BACKUP_RETENTION_COUNT")"
   old_migrate_retention="$(get_env_value "MIGRATE_RETENTION_COUNT")"
+  old_log_archive_window="$(get_env_value "LOG_ARCHIVE_WINDOW_HOURS")"
+  old_log_archive_retention="$(get_env_value "LOG_ARCHIVE_RETENTION_COUNT")"
+  old_log_archive_dir="$(get_env_value "LOG_ARCHIVE_DIR")"
   old_menu_ttl="$(get_env_value "BOT_MENU_TTL")"
   old_monitor_interval="$(get_env_value "BOT_NODE_MONITOR_INTERVAL")"
   old_offline_threshold="$(get_env_value "BOT_NODE_OFFLINE_THRESHOLD")"
@@ -447,6 +453,9 @@ load_existing_env_defaults() {
   MIGRATE_DIR="${old_migrate:-$MIGRATE_DIR_DEFAULT}"
   BACKUP_RETENTION_COUNT="${old_backup_retention:-30}"
   MIGRATE_RETENTION_COUNT="${old_migrate_retention:-20}"
+  LOG_ARCHIVE_WINDOW_HOURS="${old_log_archive_window:-24}"
+  LOG_ARCHIVE_RETENTION_COUNT="${old_log_archive_retention:-30}"
+  LOG_ARCHIVE_DIR="${old_log_archive_dir:-/var/backups/sb-controller/logs}"
   BOT_MENU_TTL="${old_menu_ttl:-60}"
   BOT_NODE_MONITOR_INTERVAL="${old_monitor_interval:-60}"
   BOT_NODE_OFFLINE_THRESHOLD="${old_offline_threshold:-120}"
@@ -534,6 +543,15 @@ normalize_loaded_values() {
   if ! [[ "$MIGRATE_RETENTION_COUNT" =~ ^[0-9]+$ ]] || (( MIGRATE_RETENTION_COUNT < 1 )); then
     MIGRATE_RETENTION_COUNT="20"
   fi
+  if ! [[ "$LOG_ARCHIVE_WINDOW_HOURS" =~ ^[0-9]+$ ]] || (( LOG_ARCHIVE_WINDOW_HOURS < 1 )); then
+    LOG_ARCHIVE_WINDOW_HOURS="24"
+  fi
+  if ! [[ "$LOG_ARCHIVE_RETENTION_COUNT" =~ ^[0-9]+$ ]] || (( LOG_ARCHIVE_RETENTION_COUNT < 1 )); then
+    LOG_ARCHIVE_RETENTION_COUNT="30"
+  fi
+  if [[ -z "$LOG_ARCHIVE_DIR" ]]; then
+    LOG_ARCHIVE_DIR="/var/backups/sb-controller/logs"
+  fi
   if ! [[ "$CONTROLLER_HTTP_TIMEOUT" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
     CONTROLLER_HTTP_TIMEOUT="10"
   fi
@@ -590,6 +608,7 @@ prompt_env_config() {
   echo "  - MIGRATE_DIR：迁移包/备份包输出目录"
   echo "  - BACKUP_RETENTION_COUNT：控制器备份保留数量（超出自动清理）"
   echo "  - MIGRATE_RETENTION_COUNT：迁移包保留数量（超出自动清理）"
+  echo "  - LOG_ARCHIVE_*：运维日志归档窗口/保留/目录"
   echo "  - BOT_MENU_TTL：bot 菜单按钮自动清理秒数"
   echo "  - BOT_NODE_MONITOR_INTERVAL：节点在线检测周期秒数"
   echo "  - BOT_NODE_OFFLINE_THRESHOLD：节点离线判定阈值秒数"
@@ -726,6 +745,26 @@ prompt_env_config() {
     MIGRATE_RETENTION_COUNT="20"
   fi
 
+  read -r -p "LOG_ARCHIVE_WINDOW_HOURS（日志归档窗口小时数） [${LOG_ARCHIVE_WINDOW_HOURS}]: " input_log_window
+  LOG_ARCHIVE_WINDOW_HOURS="${input_log_window:-$LOG_ARCHIVE_WINDOW_HOURS}"
+  if ! [[ "$LOG_ARCHIVE_WINDOW_HOURS" =~ ^[0-9]+$ ]] || (( LOG_ARCHIVE_WINDOW_HOURS < 1 )); then
+    warn "LOG_ARCHIVE_WINDOW_HOURS 无效，回退为 24"
+    LOG_ARCHIVE_WINDOW_HOURS="24"
+  fi
+
+  read -r -p "LOG_ARCHIVE_RETENTION_COUNT（日志归档保留数量） [${LOG_ARCHIVE_RETENTION_COUNT}]: " input_log_retention
+  LOG_ARCHIVE_RETENTION_COUNT="${input_log_retention:-$LOG_ARCHIVE_RETENTION_COUNT}"
+  if ! [[ "$LOG_ARCHIVE_RETENTION_COUNT" =~ ^[0-9]+$ ]] || (( LOG_ARCHIVE_RETENTION_COUNT < 1 )); then
+    warn "LOG_ARCHIVE_RETENTION_COUNT 无效，回退为 30"
+    LOG_ARCHIVE_RETENTION_COUNT="30"
+  fi
+
+  read -r -p "LOG_ARCHIVE_DIR（日志归档目录） [${LOG_ARCHIVE_DIR}]: " input_log_dir
+  LOG_ARCHIVE_DIR="${input_log_dir:-$LOG_ARCHIVE_DIR}"
+  if [[ -z "$LOG_ARCHIVE_DIR" ]]; then
+    LOG_ARCHIVE_DIR="/var/backups/sb-controller/logs"
+  fi
+
   read -r -p "BOT_MENU_TTL（bot 菜单自动清理秒数） [${BOT_MENU_TTL}]: " input_menu_ttl
   BOT_MENU_TTL="${input_menu_ttl:-$BOT_MENU_TTL}"
   if ! [[ "$BOT_MENU_TTL" =~ ^[0-9]+$ ]] || (( BOT_MENU_TTL < 5 )); then
@@ -822,6 +861,15 @@ BACKUP_RETENTION_COUNT=${BACKUP_RETENTION_COUNT}
 
 # 迁移包保留数量（超出自动清理）
 MIGRATE_RETENTION_COUNT=${MIGRATE_RETENTION_COUNT}
+
+# 日志归档窗口小时数
+LOG_ARCHIVE_WINDOW_HOURS=${LOG_ARCHIVE_WINDOW_HOURS}
+
+# 日志归档保留数量
+LOG_ARCHIVE_RETENTION_COUNT=${LOG_ARCHIVE_RETENTION_COUNT}
+
+# 日志归档目录
+LOG_ARCHIVE_DIR=${LOG_ARCHIVE_DIR}
 
 # Bot 菜单按钮自动清理秒数
 BOT_MENU_TTL=${BOT_MENU_TTL}
@@ -1139,6 +1187,9 @@ run_self_checks() {
   check_env_key "MIGRATE_DIR"
   check_env_key "BACKUP_RETENTION_COUNT"
   check_env_key "MIGRATE_RETENTION_COUNT"
+  check_env_key "LOG_ARCHIVE_WINDOW_HOURS"
+  check_env_key "LOG_ARCHIVE_RETENTION_COUNT"
+  check_env_key "LOG_ARCHIVE_DIR"
   check_env_key "TRUST_X_FORWARDED_FOR"
   check_env_key "TRUSTED_PROXY_IPS"
   check_env_key "NODE_TASK_RUNNING_TIMEOUT"
@@ -1285,6 +1336,9 @@ show_summary() {
   echo "MIGRATE_DIR: ${MIGRATE_DIR}"
   echo "BACKUP_RETENTION_COUNT: ${BACKUP_RETENTION_COUNT}"
   echo "MIGRATE_RETENTION_COUNT: ${MIGRATE_RETENTION_COUNT}"
+  echo "LOG_ARCHIVE_WINDOW_HOURS: ${LOG_ARCHIVE_WINDOW_HOURS}"
+  echo "LOG_ARCHIVE_RETENTION_COUNT: ${LOG_ARCHIVE_RETENTION_COUNT}"
+  echo "LOG_ARCHIVE_DIR: ${LOG_ARCHIVE_DIR}"
   echo "BOT_MENU_TTL: ${BOT_MENU_TTL}"
   echo "BOT_NODE_MONITOR_INTERVAL: ${BOT_NODE_MONITOR_INTERVAL}"
   echo "BOT_NODE_OFFLINE_THRESHOLD: ${BOT_NODE_OFFLINE_THRESHOLD}"

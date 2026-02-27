@@ -169,6 +169,7 @@ ADMIN_ENV_FILE = os.path.join(ADMIN_PROJECT_DIR, ".env")
 ADMIN_UPDATE_SCRIPT = os.path.join(ADMIN_PROJECT_DIR, "scripts/admin/install_admin.sh")
 ADMIN_IMPORT_SCRIPT = os.path.join(ADMIN_PROJECT_DIR, "scripts/admin/sb_migrate_import.sh")
 ADMIN_SMOKE_SCRIPT = os.path.join(ADMIN_PROJECT_DIR, "scripts/admin/smoke_test.sh")
+ADMIN_LOG_ARCHIVE_SCRIPT = os.path.join(ADMIN_PROJECT_DIR, "scripts/admin/log_archive.sh")
 ADMIN_TOKEN_COLLAPSE_SCRIPT = os.path.join(
     ADMIN_PROJECT_DIR, "scripts/admin/auth_token_collapse.sh"
 )
@@ -257,6 +258,7 @@ SUBMENUS = {
         "buttons": [
             ("📈 状态查看", "action:maintain_status"),
             ("📜 查看日志", "action:maintain_logs"),
+            ("🗂 日志归档", "action:maintain_log_archive"),
             ("✅ 一键验收自检", "action:maintain_smoke"),
             ("▶️ 启动controller", "action:maintain_controller_start"),
             ("⏹ 停止controller", "action:maintain_controller_stop"),
@@ -267,6 +269,7 @@ SUBMENUS = {
         "title": "管理服务器 / 安全访问",
         "buttons": [
             ("🛡 安全事件(1h)", "action:maintain_security_events"),
+            ("🧩 订阅安全预设", "action:maintain_sub_policy"),
             ("🧱 访问安全", "action:maintain_acl_status"),
             ("🔑 收敛AUTH_TOKEN", "action:maintain_token_collapse"),
             ("⬅️ 返回管理服务器", "menu:maintain"),
@@ -345,6 +348,8 @@ PRIVILEGED_CALLBACK_EXACT = {
     "action:nodes_create": ROLE_OPERATOR,
     "action:maintain_backup": ROLE_OPERATOR,
     "action:maintain_smoke": ROLE_OPERATOR,
+    "action:maintain_log_archive": ROLE_OPERATOR,
+    "action:maintain_sub_policy": ROLE_OPERATOR,
     "action:maintain_controller_start": ROLE_OPERATOR,
     "action:maintain_https_reload": ROLE_OPERATOR,
     "action:user_delete": ROLE_SUPER,
@@ -377,6 +382,7 @@ PRIVILEGED_CALLBACK_PREFIXES = {
     "nodeops:": ROLE_SUPER,
     "maintain:logs:": ROLE_OPERATOR,
     "maintain:logsdate:": ROLE_OPERATOR,
+    "maintain:subpolicy:": ROLE_SUPER,
     "sb:bl:": ROLE_OPERATOR,
     "sb:bi:": ROLE_SUPER,
     "sb:bd:": ROLE_SUPER,
@@ -392,6 +398,7 @@ MUTATION_CALLBACK_EXACT = {
     "action:backup_now",
     "action:maintain_backup",
     "action:maintain_smoke",
+    "action:maintain_log_archive",
     "action:maintain_update",
     "action:maintain_controller_start",
     "action:maintain_controller_stop",
@@ -417,6 +424,7 @@ MUTATION_CALLBACK_PREFIXES = (
     "sb:bu:",
     "sb:mc:",
     "sb:ab:",
+    "maintain:subpolicy:",
 )
 MAINTAIN_ALLOWED_ENV_KEYS = [
     "CONTROLLER_PORT",
@@ -434,6 +442,9 @@ MAINTAIN_ALLOWED_ENV_KEYS = [
     "HTTPS_DOMAIN",
     "HTTPS_ACME_EMAIL",
     "MIGRATE_DIR",
+    "LOG_ARCHIVE_WINDOW_HOURS",
+    "LOG_ARCHIVE_RETENTION_COUNT",
+    "LOG_ARCHIVE_DIR",
     "BOT_MENU_TTL",
     "BOT_NODE_MONITOR_INTERVAL",
     "BOT_NODE_OFFLINE_THRESHOLD",
@@ -1578,6 +1589,23 @@ def build_security_block_confirm_keyboard(include_local: bool, duration_seconds:
     )
 
 
+def build_sub_policy_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("🔒 推荐：签名+限流", callback_data="maintain:subpolicy:strict"),
+            ],
+            [
+                InlineKeyboardButton("🧾 仅签名", callback_data="maintain:subpolicy:signed"),
+                InlineKeyboardButton("🧪 开放测试", callback_data="maintain:subpolicy:open"),
+            ],
+            [
+                InlineKeyboardButton("返回维护菜单", callback_data="menu:maintain"),
+            ],
+        ]
+    )
+
+
 def build_backup_audit_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
@@ -1765,6 +1793,24 @@ def format_admin_overview_text(overview: dict) -> str:
         if node_code:
             near_cap_parts.append(f"{node_code}({pending_count})")
 
+    idempotency = tasks.get("idempotency_24h", {})
+    if not isinstance(idempotency, dict):
+        idempotency = {}
+    idempotency_created = int(idempotency.get("created", 0) or 0)
+    idempotency_deduplicated = int(idempotency.get("deduplicated", 0) or 0)
+    idempotency_ratio = float(idempotency.get("dedup_ratio", 0.0) or 0.0)
+    idempotency_parts = []
+    top_nodes = idempotency.get("top_nodes", [])
+    if isinstance(top_nodes, list):
+        for item in top_nodes[:3]:
+            if not isinstance(item, dict):
+                continue
+            node_code = str(item.get("node_code", "")).strip()
+            dedup_count = int(item.get("deduplicated", 0) or 0)
+            incoming_total = int(item.get("incoming_total", 0) or 0)
+            if node_code:
+                idempotency_parts.append(f"{node_code}({dedup_count}/{incoming_total})")
+
     warnings = security.get("warnings", [])
     if not isinstance(warnings, list):
         warnings = []
@@ -1816,6 +1862,11 @@ def format_admin_overview_text(overview: dict) -> str:
             queue_cap_per_node,
             near_cap_threshold,
         ),
+        "幂等统计(24h)：创建 {0} / 去重命中 {1} / 命中率 {2:.1%}".format(
+            idempotency_created,
+            idempotency_deduplicated,
+            idempotency_ratio,
+        ),
         "安全告警：{0} 条".format(len(warnings)),
         "未授权访问(1h/24h)：{0}/{1}".format(unauthorized_1h, unauthorized_24h),
         "事件统计过滤本机：{0}".format("是" if events_exclude_local else "否"),
@@ -1827,6 +1878,8 @@ def format_admin_overview_text(overview: dict) -> str:
         lines.append("待执行节点（最多 5 个）：{0}".format(", ".join(pending_parts)))
     if near_cap_parts:
         lines.append("队列接近上限（最多 5 个）：{0}".format(", ".join(near_cap_parts)))
+    if idempotency_parts:
+        lines.append("去重热点节点（命中/总请求）：{0}".format(", ".join(idempotency_parts)))
     if top_unauthorized_parts:
         lines.append("未授权来源TOP（最多 3 个）：{0}".format(", ".join(top_unauthorized_parts)))
     lines.append("说明：24h 为滚动统计，加固后会随时间自然下降。")
@@ -3007,6 +3060,163 @@ async def run_admin_smoke_action(query, back_menu_callback: str) -> None:
     )
 
 
+async def run_admin_log_archive_action(query, back_menu_callback: str) -> None:
+    if not os.path.exists(ADMIN_LOG_ARCHIVE_SCRIPT):
+        await query.edit_message_text(
+            "未找到日志归档脚本：{0}".format(ADMIN_LOG_ARCHIVE_SCRIPT),
+            reply_markup=build_back_keyboard(back_menu_callback),
+        )
+        return
+
+    archive_cmd = "bash {0}".format(shlex.quote(ADMIN_LOG_ARCHIVE_SCRIPT))
+    code, stdout, stderr = await run_local_shell(archive_cmd, timeout=180)
+    raw_output = (stdout or "").strip() or (stderr or "").strip()
+    parsed = {}
+    for raw_line in raw_output.splitlines():
+        line = str(raw_line or "").strip()
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        parsed[key.strip()] = value.strip()
+
+    if code != 0:
+        await query.edit_message_text(
+            "日志归档失败\n\n"
+            f"退出码：{code}\n"
+            f"输出摘要：\n{format_recent_log_output(raw_output, line_limit=60, char_limit=2600)}",
+            reply_markup=build_back_keyboard(back_menu_callback),
+        )
+        return
+
+    archive_path = str(parsed.get("ARCHIVE_PATH", "")).strip()
+    size_bytes = int(parsed.get("SIZE_BYTES", 0) or 0)
+    cleaned_files = int(parsed.get("CLEANED_FILES", 0) or 0)
+    keep_count = int(parsed.get("KEEP_COUNT", 0) or 0)
+    window_hours = int(parsed.get("WINDOW_HOURS", 24) or 24)
+    created_at = int(parsed.get("CREATED_AT", 0) or 0)
+    created_text = (
+        datetime.fromtimestamp(created_at).strftime("%Y-%m-%d %H:%M:%S")
+        if created_at > 0
+        else "-"
+    )
+    await query.edit_message_text(
+        "日志归档完成\n\n"
+        f"范围：最近 {window_hours} 小时\n"
+        f"路径：{archive_path or '-'}\n"
+        f"大小：{size_bytes} bytes\n"
+        f"清理旧归档：{cleaned_files} 个（保留 {keep_count} 个）\n"
+        f"时间：{created_text}\n\n"
+        "可用以下命令拉取：\n"
+        f"scp root@你的服务器IP:{archive_path} ./",
+        reply_markup=build_back_keyboard(back_menu_callback),
+    )
+
+
+async def run_admin_sub_policy_panel_action(query, notice: str = "") -> None:
+    status_result, error_message, _ = await controller_request("GET", "/admin/security/status")
+    if error_message:
+        await query.edit_message_text(
+            "读取订阅安全状态失败：{0}".format(localize_controller_error(error_message)),
+            reply_markup=build_back_keyboard("menu:maintain"),
+        )
+        return
+
+    if not isinstance(status_result, dict):
+        await query.edit_message_text(
+            "读取订阅安全状态失败：返回格式异常。",
+            reply_markup=build_back_keyboard("menu:maintain"),
+        )
+        return
+
+    auth_enabled = "已启用" if bool(status_result.get("auth_enabled")) else "未启用"
+    sign_key_enabled = "已设置" if bool(status_result.get("sub_link_sign_enabled")) else "未设置"
+    sign_required = "已强制" if bool(status_result.get("sub_link_require_signature")) else "未强制"
+    rate_limit_enabled = "已启用" if bool(status_result.get("api_rate_limit_enabled")) else "未启用"
+    rate_window = int(status_result.get("api_rate_limit_window_seconds", 0) or 0)
+    rate_max = int(status_result.get("api_rate_limit_max_requests", 0) or 0)
+    sub_ttl = int(status_result.get("sub_link_default_ttl_seconds", 0) or 0)
+
+    lines = []
+    if notice:
+        lines.extend([notice, ""])
+    lines.extend(
+        [
+            "订阅与访问安全预设",
+            "",
+            f"接口鉴权：{auth_enabled}",
+            f"订阅签名密钥：{sign_key_enabled}",
+            f"订阅签名强制：{sign_required}",
+            f"轻量限流：{rate_limit_enabled}（窗口 {rate_window}s / 最大 {rate_max} 次）",
+            f"默认签名TTL：{sub_ttl}s",
+            "",
+            "预设说明：",
+            "1) 推荐：签名+限流（生产）",
+            "2) 仅签名（低流量环境）",
+            "3) 开放测试（仅临时排障，不建议长期）",
+        ]
+    )
+    if sign_key_enabled == "未设置":
+        lines.append("")
+        lines.append("提示：当前未设置 SUB_LINK_SIGN_KEY，签名相关预设将被拒绝。")
+    await query.edit_message_text(
+        "\n".join(lines),
+        reply_markup=build_sub_policy_keyboard(),
+    )
+
+
+async def apply_admin_sub_policy_action(query, mode: str) -> None:
+    mode_key = str(mode or "").strip().lower()
+    mode_map = {
+        "strict": ("推荐：签名+限流", {"SUB_LINK_REQUIRE_SIGNATURE": "1", "API_RATE_LIMIT_ENABLED": "1"}),
+        "signed": ("仅签名", {"SUB_LINK_REQUIRE_SIGNATURE": "1", "API_RATE_LIMIT_ENABLED": "0"}),
+        "open": ("开放测试", {"SUB_LINK_REQUIRE_SIGNATURE": "0", "API_RATE_LIMIT_ENABLED": "0"}),
+    }
+    if mode_key not in mode_map:
+        await query.edit_message_text(
+            "无效预设，请重试。",
+            reply_markup=build_back_keyboard("action:maintain_sub_policy"),
+        )
+        return
+
+    mode_name, updates = mode_map[mode_key]
+    env_map = load_env_map()
+    sign_key = str(env_map.get("SUB_LINK_SIGN_KEY", "")).strip()
+    if mode_key in ("strict", "signed") and not sign_key:
+        await query.edit_message_text(
+            "当前未设置 SUB_LINK_SIGN_KEY，无法启用签名预设。\n"
+            "请先在“配置向导”中设置 SUB_LINK_SIGN_KEY。",
+            reply_markup=build_back_keyboard("action:maintain_sub_policy"),
+        )
+        return
+
+    ok, err_text = write_env_updates(updates)
+    if not ok:
+        await query.edit_message_text(
+            "写入配置失败：{0}".format(err_text),
+            reply_markup=build_back_keyboard("action:maintain_sub_policy"),
+        )
+        return
+
+    restart_code, restart_stdout, restart_stderr = await run_local_shell(
+        "systemctl restart sb-controller",
+        timeout=60,
+    )
+    if restart_code != 0:
+        raw = (restart_stdout or "").strip() or (restart_stderr or "").strip()
+        await query.edit_message_text(
+            "预设已写入 .env，但重启 controller 失败。\n\n"
+            f"预设：{mode_name}\n"
+            f"输出：\n{format_recent_log_output(raw, line_limit=50, char_limit=2400)}",
+            reply_markup=build_back_keyboard("action:maintain_sub_policy"),
+        )
+        return
+
+    await run_admin_sub_policy_panel_action(
+        query,
+        notice=f"已应用预设：{mode_name}（controller 已重启）",
+    )
+
+
 async def run_admin_node_access_status_action(query, back_menu_callback: str) -> None:
     result, error_message, _ = await controller_request("GET", "/admin/node_access/status")
     if error_message:
@@ -3802,6 +4012,9 @@ async def start_maintain_config_wizard(
         "ENABLE_HTTPS",
         "HTTPS_DOMAIN",
         "MIGRATE_DIR",
+        "LOG_ARCHIVE_WINDOW_HOURS",
+        "LOG_ARCHIVE_RETENTION_COUNT",
+        "LOG_ARCHIVE_DIR",
         "SUB_LINK_REQUIRE_SIGNATURE",
         "API_RATE_LIMIT_ENABLED",
     ]
@@ -3862,6 +4075,8 @@ async def maintain_config_input(
         "BOT_NODE_MONITOR_INTERVAL",
         "BOT_NODE_OFFLINE_THRESHOLD",
         "BOT_LOG_VIEW_MAX_PAGES",
+        "LOG_ARCHIVE_WINDOW_HOURS",
+        "LOG_ARCHIVE_RETENTION_COUNT",
         "SUB_LINK_DEFAULT_TTL_SECONDS",
         "API_RATE_LIMIT_WINDOW_SECONDS",
         "API_RATE_LIMIT_MAX_REQUESTS",
@@ -5962,6 +6177,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await run_admin_smoke_action(query, "menu:maintain")
         return
 
+    if callback_data == "action:maintain_log_archive":
+        await run_admin_log_archive_action(query, "menu:maintain")
+        return
+
     if callback_data == "action:maintain_update":
         update_cmd = "cd {0} && bash {1} --reuse-config".format(
             shlex.quote(ADMIN_PROJECT_DIR),
@@ -6384,6 +6603,15 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     if callback_data == "action:maintain_security_events_local":
         await run_admin_security_events_action(query, include_local=True)
+        return
+
+    if callback_data == "action:maintain_sub_policy":
+        await run_admin_sub_policy_panel_action(query)
+        return
+
+    if callback_data.startswith("maintain:subpolicy:"):
+        mode = callback_data.split(":", maxsplit=2)[2] if callback_data.count(":") >= 2 else ""
+        await apply_admin_sub_policy_action(query, mode)
         return
 
     if callback_data == "action:maintain_https_status":

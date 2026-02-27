@@ -220,6 +220,11 @@ run_api_checks() {
       FAIL_API=1
       record_fail "管理接口校验异常：带 token 访问 /admin/overview 期望 200，实际 ${code}"
     fi
+    code="$(http_code "${api_url}/admin/node_tasks/idempotency" -H "Authorization: Bearer ${auth_token}")"
+    if [[ "$code" != "200" ]]; then
+      FAIL_API=1
+      record_fail "管理接口校验异常：带 token 访问 /admin/node_tasks/idempotency 期望 200，实际 ${code}"
+    fi
     code="$(http_code "${api_url}/admin/security/maintenance_cleanup" -X POST -H "Authorization: Bearer ${auth_token}")"
     if [[ "$code" != "200" ]]; then
       FAIL_API=1
@@ -250,6 +255,11 @@ run_api_checks() {
     if [[ "$code" != "200" ]]; then
       FAIL_API=1
       record_fail "AUTH_TOKEN 为空时 /admin/overview 应可访问，期望 200，实际 ${code}"
+    fi
+    code="$(http_code "${api_url}/admin/node_tasks/idempotency")"
+    if [[ "$code" != "200" ]]; then
+      FAIL_API=1
+      record_fail "AUTH_TOKEN 为空时 /admin/node_tasks/idempotency 应可访问，期望 200，实际 ${code}"
     fi
     code="$(http_code "${api_url}/admin/security/maintenance_cleanup" -X POST)"
     if [[ "$code" != "200" ]]; then

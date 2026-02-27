@@ -1,5 +1,6 @@
 import json
 import time
+import hashlib
 from typing import Any, Dict, List, Union
 
 from fastapi import HTTPException, Request
@@ -33,6 +34,13 @@ def create_node_task_service(
     payload_obj = validate_node_task_payload(task_type, raw_payload_obj)
     payload_json = json.dumps(payload_obj, ensure_ascii=False)
     validate_node_task_payload_size(payload_json)
+    canonical_payload_json = json.dumps(
+        payload_obj,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    payload_hash = hashlib.sha256(canonical_payload_json.encode("utf-8")).hexdigest()
     force_new = bool(payload.force_new)
     max_attempts = int(payload.max_attempts or 1)
     if max_attempts < 1:
@@ -63,6 +71,7 @@ def create_node_task_service(
                     node_code,
                     task_type,
                     payload_json,
+                    payload_hash,
                     status,
                     attempts,
                     max_attempts,
@@ -72,12 +81,15 @@ def create_node_task_service(
                 FROM node_tasks
                 WHERE node_code = ?
                   AND task_type = ?
-                  AND payload_json = ?
+                  AND (
+                    (payload_hash = ? AND payload_hash != '')
+                    OR payload_json = ?
+                  )
                   AND status IN ('pending', 'running')
                 ORDER BY id ASC
                 LIMIT 1
                 """,
-                (node_code, task_type, payload_json),
+                (node_code, task_type, payload_hash, payload_json),
             ).fetchone()
             if existing_row is not None:
                 task_data = build_task_row_dict(existing_row)
@@ -90,6 +102,7 @@ def create_node_task_service(
                         "node_code": node_code,
                         "task_type": task_type,
                         "force_new": False,
+                        "payload_hash": payload_hash[:16],
                     },
                     actor=get_request_actor(request),
                     source_ip=get_source_ip_for_audit(request),
@@ -121,6 +134,7 @@ def create_node_task_service(
                 node_code,
                 task_type,
                 payload_json,
+                payload_hash,
                 status,
                 attempts,
                 max_attempts,
@@ -128,9 +142,9 @@ def create_node_task_service(
                 updated_at,
                 result_text
             )
-            VALUES (?, ?, ?, 'pending', 0, ?, ?, ?, '')
+            VALUES (?, ?, ?, ?, 'pending', 0, ?, ?, ?, '')
             """,
-            (node_code, task_type, payload_json, max_attempts, now_ts, now_ts),
+            (node_code, task_type, payload_json, payload_hash, max_attempts, now_ts, now_ts),
         )
         task_id = int(cursor.lastrowid or 0)
         write_audit_log(
@@ -144,6 +158,7 @@ def create_node_task_service(
                 "max_attempts": max_attempts,
                 "payload_keys": sorted(list(payload_obj.keys())),
                 "payload_size_bytes": len(payload_json.encode("utf-8")),
+                "payload_hash": payload_hash[:16],
             },
             actor=get_request_actor(request),
             source_ip=get_source_ip_for_audit(request),
@@ -158,6 +173,7 @@ def create_node_task_service(
                 node_code,
                 task_type,
                 payload_json,
+                payload_hash,
                 status,
                 attempts,
                 max_attempts,
@@ -208,6 +224,7 @@ def list_node_tasks_service(
                 node_code,
                 task_type,
                 payload_json,
+                payload_hash,
                 status,
                 attempts,
                 max_attempts,
@@ -254,6 +271,7 @@ def get_next_node_task_service(
                 node_code,
                 task_type,
                 payload_json,
+                payload_hash,
                 status,
                 attempts,
                 max_attempts,
@@ -289,6 +307,7 @@ def get_next_node_task_service(
                 node_code,
                 task_type,
                 payload_json,
+                payload_hash,
                 status,
                 attempts,
                 max_attempts,

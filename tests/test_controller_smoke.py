@@ -221,6 +221,7 @@ class ControllerSmokeTestCase(unittest.TestCase):
             self.assertIn("queue_cap_per_node", overview_payload["tasks"])
             self.assertIn("near_cap_threshold", overview_payload["tasks"])
             self.assertIn("near_cap_nodes", overview_payload["tasks"])
+            self.assertIn("idempotency_24h", overview_payload["tasks"])
             self.assertIn("security", overview_payload)
             self.assertIn("security_events", overview_payload)
             self.assertIn("unauthorized_1h", overview_payload["security_events"])
@@ -242,6 +243,19 @@ class ControllerSmokeTestCase(unittest.TestCase):
             self.assertIn("since", sec_payload)
             self.assertIn("unauthorized", sec_payload)
             self.assertIn("top_unauthorized_ips", sec_payload)
+
+            idempotency = client.get(
+                "/admin/node_tasks/idempotency?window_seconds=86400&top=3",
+                headers=self._auth_header(),
+            )
+            self.assertEqual(200, idempotency.status_code)
+            idempotency_payload = idempotency.json()
+            self.assertIn("window_seconds", idempotency_payload)
+            self.assertIn("incoming_total", idempotency_payload)
+            self.assertIn("created", idempotency_payload)
+            self.assertIn("deduplicated", idempotency_payload)
+            self.assertIn("dedup_ratio", idempotency_payload)
+            self.assertIn("top_nodes", idempotency_payload)
 
             node_access = client.get("/admin/node_access/status", headers=self._auth_header())
             self.assertEqual(200, node_access.status_code)
@@ -422,6 +436,11 @@ class ControllerSmokeTestCase(unittest.TestCase):
             second_task = second_resp.json()
             self.assertTrue(bool(second_task.get("deduplicated")))
             self.assertEqual(first_id, int(second_task["id"]))
+            self.assertTrue(str(first_task.get("payload_hash", "")))
+            self.assertEqual(
+                str(first_task.get("payload_hash", "")),
+                str(second_task.get("payload_hash", "")),
+            )
 
             force_resp = client.post(
                 "/nodes/JP1/tasks/create",
@@ -432,6 +451,39 @@ class ControllerSmokeTestCase(unittest.TestCase):
             force_task = force_resp.json()
             self.assertFalse(bool(force_task.get("deduplicated")))
             self.assertNotEqual(first_id, int(force_task["id"]))
+
+    def test_node_task_deduplicate_hash_order_insensitive(self) -> None:
+        with TestClient(app_module.app) as client:
+            first_resp = client.post(
+                "/nodes/JP1/tasks/create",
+                headers=self._auth_header(),
+                json={
+                    "task_type": "config_set",
+                    "payload": {"poll_interval": 15, "tuic_listen_port": 8443},
+                },
+            )
+            self.assertEqual(200, first_resp.status_code)
+            first_task = first_resp.json()
+            self.assertFalse(bool(first_task.get("deduplicated")))
+            first_id = int(first_task.get("id", 0) or 0)
+
+            second_resp = client.post(
+                "/nodes/JP1/tasks/create",
+                headers=self._auth_header(),
+                json={
+                    "task_type": "config_set",
+                    "payload": {"tuic_listen_port": 8443, "poll_interval": 15},
+                },
+            )
+            self.assertEqual(200, second_resp.status_code)
+            second_task = second_resp.json()
+            self.assertTrue(bool(second_task.get("deduplicated")))
+            self.assertEqual(first_id, int(second_task.get("id", 0) or 0))
+            self.assertTrue(str(first_task.get("payload_hash", "")))
+            self.assertEqual(
+                str(first_task.get("payload_hash", "")),
+                str(second_task.get("payload_hash", "")),
+            )
 
     def test_node_task_backlog_limit_smoke(self) -> None:
         with TestClient(app_module.app) as client:
