@@ -15,6 +15,7 @@ EXPORT_SCRIPT="${PROJECT_DIR}/scripts/admin/sb_migrate_export.sh"
 IMPORT_SCRIPT="${PROJECT_DIR}/scripts/admin/sb_migrate_import.sh"
 SMOKE_SCRIPT="${PROJECT_DIR}/scripts/admin/smoke_test.sh"
 DB_CHECK_SCRIPT="${PROJECT_DIR}/scripts/admin/db_consistency_check.sh"
+HARDEN_SCRIPT="${PROJECT_DIR}/scripts/admin/harden_security.sh"
 
 msg() { echo -e "\033[1;32m[信息]\033[0m $*"; }
 warn() { echo -e "\033[1;33m[警告]\033[0m $*"; }
@@ -64,6 +65,7 @@ wait_for_controller_ready() {
 show_config_guide() {
   echo "配置项用途说明："
   echo "  - CONTROLLER_PORT（controller 对外监听端口；节点 agent 需要访问）"
+  echo "  - CONTROLLER_PORT_WHITELIST（可选；限制可访问 controller 端口的来源 IP/CIDR）"
   echo "  - CONTROLLER_PUBLIC_URL（可选，给节点/外部访问的完整 URL）"
   echo "  - ENABLE_HTTPS（是否启用 Caddy 自动申请/续期证书）"
   echo "  - HTTPS_DOMAIN（管理端证书域名，如 panel.example.com）"
@@ -99,8 +101,9 @@ show_menu() {
 12. 迁移：导入迁移包
 13. 一键验收自检（语法/单测/API）
 14. 数据库一致性校验（迁移前建议）
-15. 卸载
-16. 退出
+15. 安全加固向导（token轮换 + 8080收敛）
+16. 卸载
+17. 退出
 ========================================
 EOF
 }
@@ -222,7 +225,7 @@ main() {
 
   while true; do
     show_menu
-    read -r -p "请输入选项 [1-16]: " action
+    read -r -p "请输入选项 [1-17]: " action
     case "$action" in
       1)
         install_or_update
@@ -303,15 +306,23 @@ main() {
         pause
         ;;
       15)
-        do_uninstall
+        if [[ -f "$HARDEN_SCRIPT" ]]; then
+          bash "$HARDEN_SCRIPT"
+        else
+          err "未找到安全加固脚本: $HARDEN_SCRIPT"
+        fi
         pause
         ;;
       16)
+        do_uninstall
+        pause
+        ;;
+      17)
         msg "已退出。"
         exit 0
         ;;
       *)
-        warn "无效选项，请输入 1-16。"
+        warn "无效选项，请输入 1-17。"
         pause
         ;;
     esac

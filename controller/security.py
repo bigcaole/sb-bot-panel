@@ -72,13 +72,25 @@ RATE_LIMIT_STATIC_SEGMENTS: Set[str] = {
 }
 
 
+def get_auth_tokens() -> list:
+    tokens = []
+    for item in str(AUTH_TOKEN or "").split(","):
+        token = str(item or "").strip()
+        if token:
+            tokens.append(token)
+    return tokens
+
+
 def verify_admin_authorization(authorization: Optional[str]) -> Optional[JSONResponse]:
-    if not AUTH_TOKEN:
+    tokens = get_auth_tokens()
+    if not tokens:
         return None
-    expected = "Bearer {0}".format(AUTH_TOKEN)
-    if not hmac.compare_digest(str(authorization or ""), expected):
-        return JSONResponse(status_code=401, content={"ok": False, "error": "unauthorized"})
-    return None
+    auth_value = str(authorization or "")
+    for token in tokens:
+        expected = "Bearer {0}".format(token)
+        if hmac.compare_digest(auth_value, expected):
+            return None
+    return JSONResponse(status_code=401, content={"ok": False, "error": "unauthorized"})
 
 
 def is_auth_exempt_path(path: str) -> bool:

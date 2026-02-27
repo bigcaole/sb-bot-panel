@@ -19,12 +19,13 @@ from controller.db_migration import (
 )
 from controller.schemas import VerifyDbExportRequest
 from controller.security import (
+    AUTH_TOKEN as SECURITY_AUTH_TOKEN,
     API_RATE_LIMIT_ENABLED,
     API_RATE_LIMIT_MAX_REQUESTS,
     API_RATE_LIMIT_WINDOW_SECONDS,
-    AUTH_TOKEN,
     TRUSTED_PROXY_IPS,
     TRUST_X_FORWARDED_FOR,
+    get_auth_tokens,
     verify_admin_authorization,
 )
 from controller.settings import (
@@ -40,12 +41,17 @@ from controller.subscription import build_signed_subscription_urls
 
 
 router = APIRouter(tags=["admin"])
+# Compatibility alias for existing tests/tools that import controller.routers_admin.AUTH_TOKEN.
+AUTH_TOKEN = SECURITY_AUTH_TOKEN
 
 
 def build_security_status_payload() -> Dict[str, Union[bool, int, List[str]]]:
+    auth_tokens = get_auth_tokens()
     warnings: List[str] = []
-    if not AUTH_TOKEN:
+    if not auth_tokens:
         warnings.append("AUTH_TOKEN 未设置：管理接口未启用鉴权")
+    if len(auth_tokens) > 1:
+        warnings.append("AUTH_TOKEN 处于多 token 过渡模式（建议迁移完成后移除旧 token）")
     if not SUB_LINK_SIGN_KEY:
         warnings.append("SUB_LINK_SIGN_KEY 未设置：订阅签名功能不可用")
     if SUB_LINK_SIGN_KEY and not SUB_LINK_REQUIRE_SIGNATURE:
@@ -56,7 +62,8 @@ def build_security_status_payload() -> Dict[str, Union[bool, int, List[str]]]:
         warnings.append("轻量限流未启用")
 
     return {
-        "auth_enabled": bool(AUTH_TOKEN),
+        "auth_enabled": bool(auth_tokens),
+        "auth_token_count": len(auth_tokens),
         "trust_x_forwarded_for": TRUST_X_FORWARDED_FOR,
         "trusted_proxy_ips": sorted(TRUSTED_PROXY_IPS),
         "sub_link_sign_enabled": bool(SUB_LINK_SIGN_KEY),

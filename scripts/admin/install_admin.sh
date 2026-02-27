@@ -27,6 +27,7 @@ PYTHON_BIN=""
 MIGRATE_DIR_DEFAULT="/var/backups/sb-migrate"
 
 CONTROLLER_PORT="8080"
+CONTROLLER_PORT_WHITELIST=""
 CONTROLLER_URL=""
 CONTROLLER_PUBLIC_URL=""
 PANEL_BASE_URL=""
@@ -114,6 +115,36 @@ wait_for_controller_ready() {
     sleep 1
   done
   return 1
+}
+
+normalize_whitelist_csv() {
+  local raw="$1"
+  local result=""
+  IFS=',' read -r -a items <<<"$raw"
+  for item in "${items[@]}"; do
+    local value
+    value="$(echo "$item" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    [[ -z "$value" ]] && continue
+    if [[ -z "$result" ]]; then
+      result="$value"
+    else
+      result="${result},${value}"
+    fi
+  done
+  echo "$result"
+}
+
+delete_controller_port_rules() {
+  local controller_port="$1"
+  local rule_ids
+  rule_ids="$(ufw status numbered 2>/dev/null | grep "${controller_port}/tcp" | sed -E 's/^\[ *([0-9]+)\].*/\1/' | sort -rn || true)"
+  if [[ -z "$rule_ids" ]]; then
+    return
+  fi
+  while read -r rule_id; do
+    [[ -z "${rule_id:-}" ]] && continue
+    yes | ufw delete "$rule_id" >/dev/null 2>&1 || true
+  done <<<"$rule_ids"
 }
 
 is_ipv4() {
@@ -331,8 +362,9 @@ has_env_key() {
 }
 
 load_existing_env_defaults() {
-  local old_port old_url old_public_url old_panel_base old_enable_https old_https_domain old_https_email old_auth old_bot old_admin old_view_admin old_ops_admin old_super_admin old_migrate old_backup_retention old_migrate_retention old_menu_ttl old_monitor_interval old_offline_threshold old_mutation_cooldown old_trust_xff old_trusted_proxy_ips old_task_timeout old_task_retention old_task_max_pending old_sub_link_sign_key old_sub_link_require old_sub_link_ttl old_rate_limit_enabled old_rate_limit_window old_rate_limit_max old_controller_http_timeout old_bot_actor_label
+  local old_port old_port_whitelist old_url old_public_url old_panel_base old_enable_https old_https_domain old_https_email old_auth old_bot old_admin old_view_admin old_ops_admin old_super_admin old_migrate old_backup_retention old_migrate_retention old_menu_ttl old_monitor_interval old_offline_threshold old_mutation_cooldown old_trust_xff old_trusted_proxy_ips old_task_timeout old_task_retention old_task_max_pending old_sub_link_sign_key old_sub_link_require old_sub_link_ttl old_rate_limit_enabled old_rate_limit_window old_rate_limit_max old_controller_http_timeout old_bot_actor_label
   old_port="$(get_env_value "CONTROLLER_PORT")"
+  old_port_whitelist="$(get_env_value "CONTROLLER_PORT_WHITELIST")"
   old_url="$(get_env_value "CONTROLLER_URL")"
   old_public_url="$(get_env_value "CONTROLLER_PUBLIC_URL")"
   old_panel_base="$(get_env_value "PANEL_BASE_URL")"
@@ -367,6 +399,7 @@ load_existing_env_defaults() {
   old_bot_actor_label="$(get_env_value "BOT_ACTOR_LABEL")"
 
   CONTROLLER_PORT="${old_port:-8080}"
+  CONTROLLER_PORT_WHITELIST="${old_port_whitelist:-}"
   CONTROLLER_URL="${old_url:-http://127.0.0.1:${CONTROLLER_PORT}}"
   CONTROLLER_PUBLIC_URL="${old_public_url:-}"
   PANEL_BASE_URL="${old_panel_base:-}"
@@ -406,6 +439,7 @@ load_existing_env_defaults() {
 }
 
 normalize_loaded_values() {
+  CONTROLLER_PORT_WHITELIST="$(normalize_whitelist_csv "$CONTROLLER_PORT_WHITELIST")"
   if ! [[ "$ENABLE_HTTPS" =~ ^[01]$ ]]; then
     ENABLE_HTTPS="0"
   fi
@@ -485,6 +519,7 @@ prompt_env_config() {
   echo ""
   msg "配置向导说明："
   echo "  - CONTROLLER_PORT：controller 对外监听端口（节点 agent 需要访问）"
+  echo "  - CONTROLLER_PORT_WHITELIST：可选，限制可访问 controller 端口的来源 IP/CIDR"
   echo "  - CONTROLLER_PUBLIC_URL：可选，对外访问 URL（给节点/外部使用）"
   echo "  - PANEL_BASE_URL：bot 生成订阅链接使用的基础地址（建议使用域名）"
   echo "  - ENABLE_HTTPS / HTTPS_DOMAIN：启用 Caddy 自动证书（申请+续期）"
@@ -511,6 +546,9 @@ prompt_env_config() {
     warn "端口无效，已回退为 8080"
     CONTROLLER_PORT="8080"
   fi
+  read -r -p "CONTROLLER_PORT_WHITELIST（可选，逗号分隔 IP/CIDR；留空=公网放行） [${CONTROLLER_PORT_WHITELIST}]: " input_port_whitelist
+  CONTROLLER_PORT_WHITELIST="${input_port_whitelist:-$CONTROLLER_PORT_WHITELIST}"
+  CONTROLLER_PORT_WHITELIST="$(normalize_whitelist_csv "$CONTROLLER_PORT_WHITELIST")"
 
   local public_ip default_public_url
   public_ip="$(get_public_ipv4)"
@@ -656,7 +694,11 @@ prompt_env_config() {
 
   echo ""
   msg "UFW/端口放行说明："
-  echo "  - 需要放行 ${CONTROLLER_PORT}/tcp（节点 agent 直连 controller 时使用）"
+  if [[ -n "$CONTROLLER_PORT_WHITELIST" ]]; then
+    echo "  - ${CONTROLLER_PORT}/tcp 按白名单放行：${CONTROLLER_PORT_WHITELIST}"
+  else
+    echo "  - ${CONTROLLER_PORT}/tcp 为公网放行（建议生产环境改为白名单）"
+  fi
   if [[ "$ENABLE_HTTPS" == "1" ]]; then
     echo "  - 需要放行 80/tcp 与 443/tcp（Caddy 证书申请/HTTPS）"
   fi
@@ -688,7 +730,10 @@ HTTPS_ACME_EMAIL=${HTTPS_ACME_EMAIL}
 # controller 监听端口（供 systemd 使用）
 CONTROLLER_PORT=${CONTROLLER_PORT}
 
-# 轻量鉴权 token（如未启用鉴权也可保留）
+# controller 端口白名单（可选，逗号分隔）
+CONTROLLER_PORT_WHITELIST=${CONTROLLER_PORT_WHITELIST}
+
+# 轻量鉴权 token（可用逗号分隔做轮换过渡）
 AUTH_TOKEN=${AUTH_TOKEN}
 
 # Telegram Bot token（必填）
@@ -817,10 +862,26 @@ configure_ufw_rules() {
 
   msg "配置 UFW 防火墙规则..."
   ufw allow 22/tcp >/dev/null || true
-  ufw allow "${CONTROLLER_PORT}/tcp" >/dev/null || true
   if [[ "$ENABLE_HTTPS" == "1" ]]; then
     ufw allow 80/tcp >/dev/null || true
     ufw allow 443/tcp >/dev/null || true
+  fi
+  delete_controller_port_rules "$CONTROLLER_PORT"
+  if [[ -n "$CONTROLLER_PORT_WHITELIST" ]]; then
+    local item ip
+    local -a whitelist_items=()
+    IFS=',' read -r -a whitelist_items <<<"$CONTROLLER_PORT_WHITELIST"
+    for item in "${whitelist_items[@]}"; do
+      ip="$(echo "$item" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+      [[ -z "$ip" ]] && continue
+      if ! ufw allow from "$ip" to any port "$CONTROLLER_PORT" proto tcp >/dev/null 2>&1; then
+        warn "白名单规则添加失败（已跳过）：${ip}"
+      fi
+    done
+    msg "已按白名单放行 ${CONTROLLER_PORT}/tcp。"
+  else
+    ufw allow "${CONTROLLER_PORT}/tcp" >/dev/null || true
+    warn "已公网放行 ${CONTROLLER_PORT}/tcp（建议配置 CONTROLLER_PORT_WHITELIST 收敛来源）。"
   fi
 
   local status_line
@@ -998,6 +1059,11 @@ run_self_checks() {
   check_env_key "CONTROLLER_HTTP_TIMEOUT"
   check_env_key "BOT_ACTOR_LABEL"
   check_env_key "BOT_MUTATION_COOLDOWN"
+  if [[ -n "$CONTROLLER_PORT_WHITELIST" ]]; then
+    check_ok ".env 参数存在：CONTROLLER_PORT_WHITELIST"
+  else
+    check_warn "CONTROLLER_PORT_WHITELIST 为空（8080 可能为公网开放）"
+  fi
   if [[ -z "$AUTH_TOKEN" ]]; then
     check_warn "AUTH_TOKEN 为空（controller 接口不鉴权，建议仅内网或配防火墙来源限制）"
   elif [[ "$AUTH_TOKEN" == "devtoken123" || ${#AUTH_TOKEN} -lt 16 ]]; then
@@ -1099,6 +1165,7 @@ show_summary() {
   echo "项目目录: ${PROJECT_DIR}"
   echo "venv 目录: ${VENV_DIR}"
   echo "Controller: 0.0.0.0:${CONTROLLER_PORT}"
+  echo "CONTROLLER_PORT_WHITELIST: ${CONTROLLER_PORT_WHITELIST}"
   if [[ "$ENABLE_HTTPS" == "1" ]]; then
     echo "HTTPS 域名: ${HTTPS_DOMAIN}"
   else

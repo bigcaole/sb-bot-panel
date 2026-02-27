@@ -30,10 +30,19 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
+def get_primary_auth_token(raw: str) -> str:
+    for item in str(raw or "").split(","):
+        token = str(item or "").strip()
+        if token:
+            return token
+    return ""
+
+
 CONTROLLER_URL = os.getenv("CONTROLLER_URL", "http://127.0.0.1:8080").rstrip("/")
 if not CONTROLLER_URL:
     CONTROLLER_URL = "http://127.0.0.1:8080"
-CONTROLLER_AUTH_TOKEN = os.getenv("AUTH_TOKEN", "").strip()
+CONTROLLER_AUTH_TOKEN = get_primary_auth_token(os.getenv("AUTH_TOKEN", "").strip())
 BOT_ACTOR_LABEL = os.getenv("BOT_ACTOR_LABEL", "sb-bot").strip() or "sb-bot"
 try:
     CONTROLLER_HTTP_TIMEOUT_SECONDS = float(

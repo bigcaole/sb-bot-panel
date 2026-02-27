@@ -35,6 +35,12 @@ class SecurityTestCase(unittest.TestCase):
         self.assertIsNotNone(security.verify_admin_authorization("Bearer wrong"))
         self.assertIsNone(security.verify_admin_authorization("Bearer abc123"))
 
+    def test_verify_admin_authorization_accepts_token_rotation_list(self) -> None:
+        security.AUTH_TOKEN = "newtoken,oldtoken"
+        self.assertIsNone(security.verify_admin_authorization("Bearer newtoken"))
+        self.assertIsNone(security.verify_admin_authorization("Bearer oldtoken"))
+        self.assertIsNotNone(security.verify_admin_authorization("Bearer invalid"))
+
     def test_check_and_consume_rate_limit_window(self) -> None:
         security.API_RATE_LIMIT_WINDOW_SECONDS = 10
         security.API_RATE_LIMIT_MAX_REQUESTS = 2
