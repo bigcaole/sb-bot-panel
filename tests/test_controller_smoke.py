@@ -249,7 +249,7 @@ class ControllerSmokeTestCase(unittest.TestCase):
 
             ops_audit_event_resp = client.post(
                 "/admin/audit/event",
-                headers=self._auth_header(),
+                headers={**self._auth_header(), "X-Actor": "smoke-ops"},
                 json={
                     "action": "ops.harden.apply",
                     "resource_type": "security",
@@ -283,6 +283,18 @@ class ControllerSmokeTestCase(unittest.TestCase):
             self.assertTrue(isinstance(ops_rows, list))
             self.assertGreaterEqual(len(ops_rows), 1)
             for item in ops_rows:
+                self.assertTrue(str(item.get("action", "")).startswith("ops."))
+
+            ops_actor_rows_resp = client.get(
+                "/admin/audit?limit=20&action_prefix=ops.&actor=smoke-ops&window_seconds=3600",
+                headers=self._auth_header(),
+            )
+            self.assertEqual(200, ops_actor_rows_resp.status_code)
+            ops_actor_rows = ops_actor_rows_resp.json()
+            self.assertTrue(isinstance(ops_actor_rows, list))
+            self.assertGreaterEqual(len(ops_actor_rows), 1)
+            for item in ops_actor_rows:
+                self.assertEqual("smoke-ops", str(item.get("actor", "")))
                 self.assertTrue(str(item.get("action", "")).startswith("ops."))
 
             sync_tokens_resp = client.post(

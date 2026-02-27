@@ -95,6 +95,16 @@ except ValueError:
     LOG_VIEW_MAX_PAGES = 100
 if LOG_VIEW_MAX_PAGES < 1:
     LOG_VIEW_MAX_PAGES = 1
+try:
+    OPS_AUDIT_WINDOW_SECONDS = int(
+        os.getenv("BOT_OPS_AUDIT_WINDOW_SECONDS", "604800").strip() or "604800"
+    )
+except ValueError:
+    OPS_AUDIT_WINDOW_SECONDS = 604800
+if OPS_AUDIT_WINDOW_SECONDS < 3600:
+    OPS_AUDIT_WINDOW_SECONDS = 3600
+if OPS_AUDIT_WINDOW_SECONDS > 30 * 86400:
+    OPS_AUDIT_WINDOW_SECONDS = 30 * 86400
 
 MENU_AUTO_CLEAR_JOBS_KEY = "menu_auto_clear_jobs"
 NODE_MONITOR_STATE_KEY = "node_monitor_state"
@@ -460,6 +470,7 @@ MAINTAIN_ALLOWED_ENV_KEYS = [
     "BOT_LOG_VIEW_COOLDOWN",
     "BOT_MUTATION_COOLDOWN",
     "BOT_LOG_VIEW_MAX_PAGES",
+    "BOT_OPS_AUDIT_WINDOW_SECONDS",
     "CONTROLLER_HTTP_TIMEOUT",
     "BOT_ACTOR_LABEL",
     "SUB_LINK_SIGN_KEY",
@@ -6723,7 +6734,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     if callback_data == "action:maintain_ops_audit":
         audit_rows, error_message, _ = await controller_request(
-            "GET", "/admin/audit?limit=120&action_prefix=ops."
+            "GET",
+            "/admin/audit?limit=120&action_prefix=ops.&window_seconds={0}".format(
+                int(OPS_AUDIT_WINDOW_SECONDS)
+            ),
         )
         if error_message:
             await query.edit_message_text(
@@ -6731,7 +6745,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 reply_markup=build_back_keyboard("menu:maintain_ops"),
             )
             return
-        text = format_ops_audit_text(audit_rows if isinstance(audit_rows, list) else [])
+        text = (
+            "运维审计窗口：最近 {0} 秒\n\n".format(int(OPS_AUDIT_WINDOW_SECONDS))
+            + format_ops_audit_text(audit_rows if isinstance(audit_rows, list) else [])
+        )
         await query.edit_message_text(
             text,
             reply_markup=build_maintain_ops_audit_keyboard(),

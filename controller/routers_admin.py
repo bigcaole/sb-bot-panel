@@ -1987,6 +1987,8 @@ def list_admin_audit_logs(
     limit: int = 50,
     action: str = "",
     action_prefix: str = "",
+    actor: str = "",
+    window_seconds: int = 0,
     authorization: Optional[str] = Header(default=None, alias="Authorization"),
 ) -> Union[List[Dict[str, Union[int, str]]], JSONResponse]:
     auth_error = verify_admin_authorization(authorization)
@@ -1999,39 +2001,44 @@ def list_admin_audit_logs(
         limit = 200
     action_value = str(action or "").strip()
     action_prefix_value = str(action_prefix or "").strip()
+    actor_value = str(actor or "").strip()
+    window_value = int(window_seconds or 0)
+    if window_value < 0:
+        window_value = 0
+    if window_value > 30 * 86400:
+        window_value = 30 * 86400
+
+    where_clauses: List[str] = []
+    params: List[Union[int, str]] = []
+    if action_value:
+        where_clauses.append("action = ?")
+        params.append(action_value)
+    elif action_prefix_value:
+        where_clauses.append("SUBSTR(action, 1, ?) = ?")
+        params.extend([len(action_prefix_value), action_prefix_value])
+    if actor_value:
+        where_clauses.append("actor = ?")
+        params.append(actor_value)
+    if window_value > 0:
+        where_clauses.append("created_at >= ?")
+        params.append(int(time.time()) - window_value)
+
+    where_sql = ""
+    if where_clauses:
+        where_sql = " WHERE {0}".format(" AND ".join(where_clauses))
+
+    params.append(limit)
     with get_connection() as conn:
-        if action_value:
-            rows = conn.execute(
-                """
-                SELECT id, actor, action, resource_type, resource_id, detail, source_ip, created_at
-                FROM audit_logs
-                WHERE action = ?
-                ORDER BY id DESC
-                LIMIT ?
-                """,
-                (action_value, limit),
-            ).fetchall()
-        elif action_prefix_value:
-            rows = conn.execute(
-                """
-                SELECT id, actor, action, resource_type, resource_id, detail, source_ip, created_at
-                FROM audit_logs
-                WHERE SUBSTR(action, 1, ?) = ?
-                ORDER BY id DESC
-                LIMIT ?
-                """,
-                (len(action_prefix_value), action_prefix_value, limit),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                """
-                SELECT id, actor, action, resource_type, resource_id, detail, source_ip, created_at
-                FROM audit_logs
-                ORDER BY id DESC
-                LIMIT ?
-                """,
-                (limit,),
-            ).fetchall()
+        rows = conn.execute(
+            """
+            SELECT id, actor, action, resource_type, resource_id, detail, source_ip, created_at
+            FROM audit_logs
+            {0}
+            ORDER BY id DESC
+            LIMIT ?
+            """.format(where_sql),
+            tuple(params),
+        ).fetchall()
     return [dict(row) for row in rows]
 
 
