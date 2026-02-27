@@ -343,6 +343,43 @@ class ControllerSmokeTestCase(unittest.TestCase):
             self.assertTrue(bool(verify_payload.get("snapshot_valid")))
             self.assertTrue(bool(verify_payload.get("live_match")))
 
+    def test_node_sync_filters_disabled_and_expired_users(self) -> None:
+        with TestClient(app_module.app) as client:
+            first_sync = client.get("/nodes/JP1/sync", headers=self._auth_header())
+            self.assertEqual(200, first_sync.status_code)
+            first_payload = first_sync.json()
+            self.assertEqual("JP1", str(first_payload.get("node", {}).get("node_code")))
+            self.assertEqual(1, len(first_payload.get("users", [])))
+
+            now_ts = int(time.time())
+            with db_module.get_connection() as conn:
+                conn.execute("UPDATE users SET status = 'disabled' WHERE user_code = ?", ("u1001",))
+                conn.commit()
+            disabled_sync = client.get("/nodes/JP1/sync", headers=self._auth_header())
+            self.assertEqual(200, disabled_sync.status_code)
+            self.assertEqual(0, len(disabled_sync.json().get("users", [])))
+
+            with db_module.get_connection() as conn:
+                conn.execute(
+                    "UPDATE users SET status = 'active', expire_at = ? WHERE user_code = ?",
+                    (now_ts - 10, "u1001"),
+                )
+                conn.commit()
+            expired_sync = client.get("/nodes/JP1/sync", headers=self._auth_header())
+            self.assertEqual(200, expired_sync.status_code)
+            self.assertEqual(0, len(expired_sync.json().get("users", [])))
+
+            with db_module.get_connection() as conn:
+                conn.execute(
+                    "UPDATE users SET status = 'active', expire_at = ? WHERE user_code = ?",
+                    (now_ts + 86400, "u1001"),
+                )
+                conn.execute("UPDATE nodes SET enabled = 0 WHERE node_code = ?", ("JP1",))
+                conn.commit()
+            node_disabled_sync = client.get("/nodes/JP1/sync", headers=self._auth_header())
+            self.assertEqual(200, node_disabled_sync.status_code)
+            self.assertEqual(0, len(node_disabled_sync.json().get("users", [])))
+
     def test_security_block_unblock_smoke(self) -> None:
         with TestClient(app_module.app) as client:
             block_resp = client.post(

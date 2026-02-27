@@ -430,26 +430,31 @@ def get_node_sync_service(node_code: str, request: Request) -> Dict[str, Union[D
             "UPDATE nodes SET last_seen_at = ? WHERE node_code = ?",
             (generated_at, node_code),
         )
-
-        user_rows = conn.execute(
-            """
-            SELECT
-                u.user_code,
-                u.display_name,
-                u.status,
-                u.expire_at,
-                u.speed_mbps,
-                u.vless_uuid,
-                u.tuic_secret,
-                un.tuic_port,
-                un.created_at AS bound_at
-            FROM user_nodes un
-            JOIN users u ON u.user_code = un.user_code
-            WHERE un.node_code = ?
-            ORDER BY u.user_code ASC
-            """,
-            (node_code,),
-        ).fetchall()
+        node_enabled = int(node_row["enabled"] or 0) == 1
+        if node_enabled:
+            user_rows = conn.execute(
+                """
+                SELECT
+                    u.user_code,
+                    u.display_name,
+                    u.status,
+                    u.expire_at,
+                    u.speed_mbps,
+                    u.vless_uuid,
+                    u.tuic_secret,
+                    un.tuic_port,
+                    un.created_at AS bound_at
+                FROM user_nodes un
+                JOIN users u ON u.user_code = un.user_code
+                WHERE un.node_code = ?
+                  AND u.status = 'active'
+                  AND (u.expire_at IS NULL OR u.expire_at = 0 OR u.expire_at > ?)
+                ORDER BY u.user_code ASC
+                """,
+                (node_code, generated_at),
+            ).fetchall()
+        else:
+            user_rows = []
 
     node_data = dict(node_row)
     node_data["last_seen_at"] = generated_at
