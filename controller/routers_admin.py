@@ -197,39 +197,42 @@ def run_ufw_command(args: List[str], timeout_seconds: int = 20) -> Tuple[int, st
         return 124, stdout_text, stderr_text or "ufw command timeout"
 
 
-def apply_ufw_ip_block(source_ip: str) -> Dict[str, Union[bool, str]]:
-    args = [
-        "ufw",
-        "--force",
-        "deny",
-        "from",
-        source_ip,
-        "to",
-        "any",
-        "port",
-        str(CONTROLLER_PORT),
-        "proto",
-        "tcp",
+def is_ufw_rule_exists_message(text: str) -> bool:
+    merged = str(text or "").lower()
+    return ("skip" in merged and "existing" in merged) or ("already" in merged and "rule" in merged)
+
+
+def is_ufw_invalid_syntax_message(text: str) -> bool:
+    merged = str(text or "").lower()
+    return "invalid syntax" in merged
+
+
+def build_ufw_deny_arg_sets(source_ip: str) -> List[List[str]]:
+    port_text = str(CONTROLLER_PORT)
+    return [
+        ["ufw", "deny", "proto", "tcp", "from", source_ip, "to", "any", "port", port_text],
+        ["ufw", "deny", "from", source_ip, "to", "any", "port", port_text, "proto", "tcp"],
     ]
-    code, stdout, stderr = run_ufw_command(args)
-    merged = "{0}\n{1}".format(stdout, stderr).strip().lower()
-    if code == 0:
-        return {"ok": True, "result": (stdout or stderr or "ok").strip()}
-    if "skip" in merged and "existing" in merged:
-        return {"ok": True, "result": (stdout or stderr or "existing").strip()}
-    if code == 127:
-        raise HTTPException(status_code=503, detail="ufw is not available on controller host")
-    raise HTTPException(
-        status_code=500,
-        detail="ufw deny failed: {0}".format((stderr or stdout or "unknown error").strip()),
-    )
 
 
-def remove_ufw_ip_block(source_ip: str) -> Dict[str, Union[int, str]]:
-    removed = 0
-    last_output = ""
-    for _ in range(6):
-        args = [
+def build_ufw_delete_arg_sets(source_ip: str) -> List[List[str]]:
+    port_text = str(CONTROLLER_PORT)
+    return [
+        [
+            "ufw",
+            "--force",
+            "delete",
+            "deny",
+            "proto",
+            "tcp",
+            "from",
+            source_ip,
+            "to",
+            "any",
+            "port",
+            port_text,
+        ],
+        [
             "ufw",
             "--force",
             "delete",
@@ -239,25 +242,64 @@ def remove_ufw_ip_block(source_ip: str) -> Dict[str, Union[int, str]]:
             "to",
             "any",
             "port",
-            str(CONTROLLER_PORT),
+            port_text,
             "proto",
             "tcp",
-        ]
+        ],
+    ]
+
+
+def apply_ufw_ip_block(source_ip: str) -> Dict[str, Union[bool, str]]:
+    last_error = ""
+    for args in build_ufw_deny_arg_sets(source_ip):
         code, stdout, stderr = run_ufw_command(args)
         merged = "{0}\n{1}".format(stdout, stderr).strip()
-        merged_lower = merged.lower()
-        last_output = merged
         if code == 0:
-            removed += 1
-            continue
+            return {"ok": True, "result": (stdout or stderr or "ok").strip()}
         if code == 127:
             raise HTTPException(status_code=503, detail="ufw is not available on controller host")
-        if "non-existent" in merged_lower or "not found" in merged_lower:
+        if is_ufw_rule_exists_message(merged):
+            return {"ok": True, "result": (stdout or stderr or "existing").strip()}
+        last_error = (stderr or stdout or "unknown error").strip()
+        if not is_ufw_invalid_syntax_message(merged):
             break
-        raise HTTPException(
-            status_code=500,
-            detail="ufw delete failed: {0}".format((stderr or stdout or "unknown error").strip()),
-        )
+    raise HTTPException(
+        status_code=500,
+        detail="ufw deny failed: {0}".format(last_error or "unknown error"),
+    )
+
+
+def remove_ufw_ip_block(source_ip: str) -> Dict[str, Union[int, str]]:
+    removed = 0
+    last_output = ""
+    for _ in range(6):
+        should_continue = False
+        handled = False
+        for args in build_ufw_delete_arg_sets(source_ip):
+            code, stdout, stderr = run_ufw_command(args)
+            merged = "{0}\n{1}".format(stdout, stderr).strip()
+            merged_lower = merged.lower()
+            last_output = merged
+            if code == 0:
+                removed += 1
+                should_continue = True
+                handled = True
+                break
+            if code == 127:
+                raise HTTPException(status_code=503, detail="ufw is not available on controller host")
+            if "non-existent" in merged_lower or "not found" in merged_lower:
+                return {"removed": int(removed), "result": last_output}
+            if is_ufw_invalid_syntax_message(merged):
+                continue
+            raise HTTPException(
+                status_code=500,
+                detail="ufw delete failed: {0}".format((stderr or stdout or "unknown error").strip()),
+            )
+        if should_continue:
+            continue
+        if handled:
+            continue
+        break
     return {"removed": int(removed), "result": last_output}
 
 
