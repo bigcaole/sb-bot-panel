@@ -3036,6 +3036,11 @@ async def run_admin_node_access_status_action(query, back_menu_callback: str) ->
                 int(security_result.get("controller_port_whitelist_count", 0) or 0)
             )
         )
+        protected_items = security_result.get("security_block_protected_ips", [])
+        protected_count = int(security_result.get("security_block_protected_ips_count", 0) or 0)
+        lines.append(f"- 封禁保护白名单数量：{protected_count}")
+        if isinstance(protected_items, list) and protected_items:
+            lines.append("- 封禁保护白名单样例：{0}".format(", ".join(str(x) for x in protected_items[:3])))
         lines.append(f"- 订阅签名：{sign_enabled}（{sign_required}）")
         lines.append(f"- 轻量限流：{rate_limit_enabled}")
         warnings = security_result.get("warnings", [])
@@ -3106,11 +3111,13 @@ async def run_admin_security_events_action(query, include_local: bool) -> None:
     auth_enabled_text = "-"
     sample_text = "-"
     auto_block_text = "-"
+    protected_ip_text = "-"
     if status_error:
         token_count_text = "读取失败"
         auth_enabled_text = "读取失败"
         sample_text = "读取失败"
         auto_block_text = "读取失败"
+        protected_ip_text = "读取失败"
     elif isinstance(status_result, dict):
         auth_enabled = bool(status_result.get("auth_enabled"))
         auth_enabled_text = "已启用" if auth_enabled else "未启用"
@@ -3134,6 +3141,15 @@ async def run_admin_security_events_action(query, include_local: bool) -> None:
             if auto_block_enabled
             else "未启用"
         )
+        protected_items = status_result.get("security_block_protected_ips", [])
+        protected_count = int(status_result.get("security_block_protected_ips_count", 0) or 0)
+        if isinstance(protected_items, list) and protected_items:
+            protected_ip_text = "{0}（{1}）".format(
+                protected_count,
+                ", ".join(str(x) for x in protected_items[:3]),
+            )
+        else:
+            protected_ip_text = str(protected_count)
 
     unlocked_enabled_nodes = 0
     whitelist_missing_count = 0
@@ -3170,6 +3186,7 @@ async def run_admin_security_events_action(query, include_local: bool) -> None:
         f"AUTH_TOKEN 数量：{token_count_text}",
         f"未授权审计采样：{sample_text}",
         f"自动封禁策略：{auto_block_text}",
+        f"封禁保护白名单：{protected_ip_text}",
         f"访问收敛：{access_text}",
         "",
         "来源 TOP5：",
