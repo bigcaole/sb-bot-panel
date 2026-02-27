@@ -80,6 +80,7 @@ SELF_CHECK_OK=0
 SELF_CHECK_WARN=0
 SELF_CHECK_FAIL=0
 NODE_DEFAULT_SYNC_SUMMARY="未执行"
+INSTALL_SCRIPT_ACTOR="install-admin"
 
 msg() { echo -e "\033[1;32m[信息]\033[0m $*"; }
 warn() { echo -e "\033[1;33m[警告]\033[0m $*"; }
@@ -1265,12 +1266,14 @@ sync_node_agent_defaults_after_config() {
     response="$(
       curl -sS --max-time 15 -X POST "http://127.0.0.1:${CONTROLLER_PORT}/admin/nodes/sync_agent_defaults" \
         -H "Authorization: Bearer ${primary_token}" \
+        -H "X-Actor: ${INSTALL_SCRIPT_ACTOR}" \
         -H "Content-Type: application/json" \
         -w $'\n%{http_code}' 2>/dev/null || true
     )"
   else
     response="$(
       curl -sS --max-time 15 -X POST "http://127.0.0.1:${CONTROLLER_PORT}/admin/nodes/sync_agent_defaults" \
+        -H "X-Actor: ${INSTALL_SCRIPT_ACTOR}" \
         -H "Content-Type: application/json" \
         -w $'\n%{http_code}' 2>/dev/null || true
     )"

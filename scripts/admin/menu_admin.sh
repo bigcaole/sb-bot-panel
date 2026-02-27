@@ -18,6 +18,7 @@ DB_CHECK_SCRIPT="${PROJECT_DIR}/scripts/admin/db_consistency_check.sh"
 HARDEN_SCRIPT="${PROJECT_DIR}/scripts/admin/harden_security.sh"
 TOKEN_COLLAPSE_SCRIPT="${PROJECT_DIR}/scripts/admin/auth_token_collapse.sh"
 LOG_ARCHIVE_SCRIPT="${PROJECT_DIR}/scripts/admin/log_archive.sh"
+ADMIN_SCRIPT_ACTOR="sb-admin"
 
 msg() { echo -e "\033[1;32m[信息]\033[0m $*"; }
 warn() { echo -e "\033[1;33m[警告]\033[0m $*"; }
@@ -255,12 +256,12 @@ run_security_maintenance_cleanup() {
   local url="http://127.0.0.1:${controller_port}/admin/security/maintenance_cleanup"
   local response=""
   if [[ -n "$auth_token" ]]; then
-    response="$(curl -fsSL -X POST "$url" -H "Authorization: Bearer ${auth_token}")" || {
+    response="$(curl -fsSL -X POST "$url" -H "Authorization: Bearer ${auth_token}" -H "X-Actor: ${ADMIN_SCRIPT_ACTOR}")" || {
       err "执行手动安全清理失败，请检查 AUTH_TOKEN 或 controller 状态。"
       return 1
     }
   else
-    response="$(curl -fsSL -X POST "$url")" || {
+    response="$(curl -fsSL -X POST "$url" -H "X-Actor: ${ADMIN_SCRIPT_ACTOR}")" || {
       err "执行手动安全清理失败，请检查 controller 状态。"
       return 1
     }
@@ -308,6 +309,7 @@ run_sync_node_defaults() {
       curl -sS --max-time 15 -X POST \
         "http://127.0.0.1:${controller_port}/admin/nodes/sync_agent_defaults?include_disabled=${include_disabled}&force_new=${force_new}" \
         -H "Authorization: Bearer ${auth_token}" \
+        -H "X-Actor: ${ADMIN_SCRIPT_ACTOR}" \
         -H "Content-Type: application/json" \
         -w $'\n%{http_code}' 2>/dev/null || true
     )"
@@ -315,6 +317,7 @@ run_sync_node_defaults() {
     response="$(
       curl -sS --max-time 15 -X POST \
         "http://127.0.0.1:${controller_port}/admin/nodes/sync_agent_defaults?include_disabled=${include_disabled}&force_new=${force_new}" \
+        -H "X-Actor: ${ADMIN_SCRIPT_ACTOR}" \
         -H "Content-Type: application/json" \
         -w $'\n%{http_code}' 2>/dev/null || true
     )"
