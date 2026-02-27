@@ -198,6 +198,82 @@ show_fail2ban_status() {
   fi
 }
 
+show_ssh_security_status() {
+  local ssh_service ssh_port client_ip pass_auth permit_root pubkey_auth
+  ssh_service="$(detect_ssh_service)"
+  ssh_port="$(detect_sshd_port)"
+  client_ip="$(detect_current_ssh_client_ip)"
+  pass_auth="unknown"
+  permit_root="unknown"
+  pubkey_auth="unknown"
+
+  echo "----- SSH 安全状态总览 -----"
+  echo "sshd 服务名: ${ssh_service}"
+  echo "sshd 端口: ${ssh_port}"
+  echo "当前会话来源 IP: ${client_ip:-未知}"
+
+  if systemctl is-active "$ssh_service" >/dev/null 2>&1; then
+    msg "SSH 服务状态：运行中"
+  else
+    warn "SSH 服务状态：未运行"
+  fi
+
+  if command -v sshd >/dev/null 2>&1; then
+    pass_auth="$(sshd -T 2>/dev/null | awk '/^passwordauthentication /{print $2; exit}' || true)"
+    permit_root="$(sshd -T 2>/dev/null | awk '/^permitrootlogin /{print $2; exit}' || true)"
+    pubkey_auth="$(sshd -T 2>/dev/null | awk '/^pubkeyauthentication /{print $2; exit}' || true)"
+  fi
+
+  echo ""
+  echo "----- SSH 策略（生效值）-----"
+  echo "PubkeyAuthentication: ${pubkey_auth}"
+  echo "PasswordAuthentication: ${pass_auth}"
+  echo "PermitRootLogin: ${permit_root}"
+  if [[ "$pubkey_auth" == "yes" && "$pass_auth" == "no" ]]; then
+    msg "当前策略符合“仅密钥登录”基本要求。"
+  else
+    warn "当前策略不是严格仅密钥登录（建议 PasswordAuthentication=no 且 PubkeyAuthentication=yes）。"
+  fi
+
+  echo ""
+  echo "----- authorized_keys -----"
+  if has_authorized_keys_for_user root; then
+    msg "root 用户已检测到 authorized_keys。"
+  else
+    warn "root 用户未检测到 authorized_keys。"
+  fi
+
+  echo ""
+  echo "----- fail2ban（sshd）-----"
+  if command -v fail2ban-client >/dev/null 2>&1; then
+    if systemctl is-active fail2ban >/dev/null 2>&1; then
+      fail2ban-client status sshd 2>/dev/null || warn "未检测到 sshd jail（可能未启用）。"
+    else
+      warn "fail2ban 服务未运行。"
+    fi
+  else
+    warn "系统未安装 fail2ban。"
+  fi
+
+  echo ""
+  echo "----- UFW SSH 放行 -----"
+  if command -v ufw >/dev/null 2>&1; then
+    local ufw_state
+    ufw_state="$(ufw status 2>/dev/null | head -n1 || true)"
+    echo "UFW 状态: ${ufw_state:-未知}"
+    ufw status 2>/dev/null | grep -E "^ *${ssh_port}(/tcp)?[[:space:]]" || warn "未发现 SSH 端口(${ssh_port})放行规则。"
+    if [[ -n "$client_ip" ]]; then
+      if ufw_allows_ssh_for_ip "$client_ip" "$ssh_port"; then
+        msg "当前来源 IP(${client_ip}) 对 SSH 端口放行状态：允许。"
+      else
+        warn "当前来源 IP(${client_ip}) 对 SSH 端口放行状态：不明确允许。"
+      fi
+    fi
+  else
+    warn "系统未安装 UFW。"
+  fi
+}
+
 unban_fail2ban_ip() {
   if ! command -v fail2ban-client >/dev/null 2>&1; then
     err "未检测到 fail2ban-client，请先安装 fail2ban。"
@@ -396,7 +472,7 @@ refresh_certificate() {
   fi
 
   systemctl restart "$SINGBOX_SERVICE" || true
-  msg "已触发 sing-box 重启。可使用菜单 10/9 查看证书与日志状态。"
+  msg "已触发 sing-box 重启。可使用菜单 9/8 查看证书与日志状态。"
 }
 
 uninstall_all() {
@@ -461,13 +537,14 @@ show_menu() {
   echo "12) 查看 fail2ban 状态与封禁列表"
   echo "13) 解封 fail2ban 封禁 IP"
   echo "14) 生成 SSH 密钥（ed25519）"
-  echo "15) 启用 SSH 仅密钥登录（禁用密码）"
-  echo "16) 恢复 SSH 密码登录（应急）"
+  echo "15) SSH 安全状态总览（只读）"
+  echo "16) 启用 SSH 仅密钥登录（禁用密码）"
+  echo "17) 恢复 SSH 密码登录（应急）"
   echo ""
   echo "【系统级操作（谨慎）】"
-  echo "17) 更新同步（保留原配置，自动 git pull）"
-  echo "18) 卸载"
-  echo "19) 退出"
+  echo "18) 更新同步（保留原配置，自动 git pull）"
+  echo "19) 卸载"
+  echo "20) 退出"
   echo "========================================"
 }
 
@@ -475,7 +552,7 @@ main() {
   require_root
   while true; do
     show_menu
-    read -r -p "请选择操作 [1-19]: " choice
+    read -r -p "请选择操作 [1-20]: " choice
     case "$choice" in
       1)
         run_reconfigure
@@ -537,14 +614,18 @@ main() {
         pause
         ;;
       15)
-        enable_ssh_key_only_login
+        show_ssh_security_status
         pause
         ;;
       16)
-        disable_ssh_key_only_login
+        enable_ssh_key_only_login
         pause
         ;;
       17)
+        disable_ssh_key_only_login
+        pause
+        ;;
+      18)
         if confirm_action "确认执行更新同步？" "N"; then
           run_install
         else
@@ -552,18 +633,18 @@ main() {
         fi
         pause
         ;;
-      18)
+      19)
         uninstall_all
         pause
         ;;
-      19)
+      20)
         if confirm_action "确认退出菜单？" "Y"; then
           msg "已退出。"
           exit 0
         fi
         ;;
       *)
-        warn "无效选项，请输入 1-19。"
+        warn "无效选项，请输入 1-20。"
         pause
         ;;
     esac
