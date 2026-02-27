@@ -360,6 +360,7 @@ MUTATION_CALLBACK_PREFIXES = (
 )
 MAINTAIN_ALLOWED_ENV_KEYS = [
     "CONTROLLER_PORT",
+    "CONTROLLER_PORT_WHITELIST",
     "CONTROLLER_URL",
     "CONTROLLER_PUBLIC_URL",
     "PANEL_BASE_URL",
@@ -387,6 +388,7 @@ MAINTAIN_ALLOWED_ENV_KEYS = [
     "API_RATE_LIMIT_ENABLED",
     "API_RATE_LIMIT_WINDOW_SECONDS",
     "API_RATE_LIMIT_MAX_REQUESTS",
+    "SECURITY_EVENTS_EXCLUDE_LOCAL",
 ]
 
 
@@ -1538,6 +1540,7 @@ def format_admin_overview_text(overview: dict) -> str:
             top_unauthorized_parts.append("{0}({1})".format(source_ip, count))
     queue_cap_per_node = int(tasks.get("queue_cap_per_node", 0) or 0)
     near_cap_threshold = int(tasks.get("near_cap_threshold", 0) or 0)
+    events_exclude_local = bool(security.get("security_events_exclude_local", True))
 
     lines = [
         "控制面概览：",
@@ -1569,6 +1572,7 @@ def format_admin_overview_text(overview: dict) -> str:
         ),
         "安全告警：{0} 条".format(len(warnings)),
         "未授权访问(1h/24h)：{0}/{1}".format(unauthorized_1h, unauthorized_24h),
+        "事件统计过滤本机：{0}".format("是" if events_exclude_local else "否"),
     ]
 
     if offline_codes:
@@ -5377,12 +5381,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             return
 
         unauthorized_count = 0
+        include_local = False
         top_parts = []
         if isinstance(events_result, dict):
             try:
                 unauthorized_count = int(events_result.get("unauthorized", 0) or 0)
             except (TypeError, ValueError):
                 unauthorized_count = 0
+            include_local = bool(events_result.get("include_local"))
             top_rows = events_result.get("top_unauthorized_ips", [])
             if isinstance(top_rows, list):
                 for item in top_rows[:5]:
@@ -5408,11 +5414,13 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await query.edit_message_text(
             "安全事件（近 1 小时）：\n"
             "未授权请求数：{0}\n"
-            "来源 TOP5：{1}\n"
-            "鉴权状态：{2}\n"
-            "AUTH_TOKEN 数量：{3}\n\n"
+            "统计模式：{1}\n"
+            "来源 TOP5：{2}\n"
+            "鉴权状态：{3}\n"
+            "AUTH_TOKEN 数量：{4}\n\n"
             "说明：24h 指标受历史数据影响，建议优先看 1h 趋势。".format(
                 unauthorized_count,
+                "包含本机来源" if include_local else "默认过滤本机测试来源",
                 top_text,
                 auth_enabled_text,
                 token_count_text,

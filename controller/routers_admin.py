@@ -33,6 +33,7 @@ from controller.settings import (
     MIGRATE_RETENTION_COUNT,
     NODE_TASK_MAX_PENDING_PER_NODE,
     NODE_MONITOR_OFFLINE_THRESHOLD_SECONDS,
+    SECURITY_EVENTS_EXCLUDE_LOCAL,
     SUB_LINK_DEFAULT_TTL_SECONDS,
     SUB_LINK_REQUIRE_SIGNATURE,
     SUB_LINK_SIGN_KEY,
@@ -46,7 +47,10 @@ AUTH_TOKEN = SECURITY_AUTH_TOKEN
 
 
 def build_unauthorized_events_snapshot(
-    now_ts: int, window_seconds: int, top_limit: int
+    now_ts: int,
+    window_seconds: int,
+    top_limit: int,
+    include_local: Optional[bool] = None,
 ) -> Dict[str, Union[int, List[Dict[str, Union[int, str]]]]]:
     if window_seconds < 60:
         window_seconds = 60
@@ -57,15 +61,19 @@ def build_unauthorized_events_snapshot(
     if top_limit > 20:
         top_limit = 20
 
+    include_local_effective = (
+        bool(include_local) if include_local is not None else (not SECURITY_EVENTS_EXCLUDE_LOCAL)
+    )
     since_ts = int(now_ts - window_seconds)
+    where_sql = "action = 'auth.unauthorized' AND created_at >= ?"
+    if not include_local_effective:
+        where_sql += (
+            " AND source_ip NOT IN ('127.0.0.1', '::1', 'localhost', 'testclient', '::ffff:127.0.0.1')"
+        )
     with get_connection() as conn:
         unauthorized_count = int(
             conn.execute(
-                """
-                SELECT COUNT(*) AS c
-                FROM audit_logs
-                WHERE action = 'auth.unauthorized' AND created_at >= ?
-                """,
+                "SELECT COUNT(*) AS c FROM audit_logs WHERE {0}".format(where_sql),
                 (since_ts,),
             ).fetchone()["c"]
             or 0
@@ -74,14 +82,13 @@ def build_unauthorized_events_snapshot(
             """
             SELECT source_ip, COUNT(*) AS c
             FROM audit_logs
-            WHERE action = 'auth.unauthorized'
-              AND created_at >= ?
+            WHERE {0}
               AND source_ip IS NOT NULL
               AND source_ip != ''
             GROUP BY source_ip
             ORDER BY c DESC, source_ip ASC
             LIMIT ?
-            """,
+            """.format(where_sql),
             (since_ts, top_limit),
         ).fetchall()
 
@@ -95,6 +102,7 @@ def build_unauthorized_events_snapshot(
         )
     return {
         "window_seconds": int(window_seconds),
+        "include_local": bool(include_local_effective),
         "since": int(since_ts),
         "unauthorized": int(unauthorized_count),
         "top_unauthorized_ips": top_items,
@@ -116,6 +124,8 @@ def build_security_status_payload() -> Dict[str, Union[bool, int, List[str]]]:
         warnings.append("已启用 XFF 信任，但 TRUSTED_PROXY_IPS 为空")
     if not API_RATE_LIMIT_ENABLED:
         warnings.append("轻量限流未启用")
+    if not SECURITY_EVENTS_EXCLUDE_LOCAL:
+        warnings.append("安全事件统计包含本机来源（可能放大测试噪声）")
 
     return {
         "auth_enabled": bool(auth_tokens),
@@ -128,6 +138,7 @@ def build_security_status_payload() -> Dict[str, Union[bool, int, List[str]]]:
         "api_rate_limit_enabled": API_RATE_LIMIT_ENABLED,
         "api_rate_limit_window_seconds": API_RATE_LIMIT_WINDOW_SECONDS,
         "api_rate_limit_max_requests": API_RATE_LIMIT_MAX_REQUESTS,
+        "security_events_exclude_local": bool(SECURITY_EVENTS_EXCLUDE_LOCAL),
         "node_task_max_pending_per_node": NODE_TASK_MAX_PENDING_PER_NODE,
         "warnings": warnings,
     }
@@ -683,15 +694,22 @@ def get_admin_overview(
 def get_admin_security_events(
     window_seconds: int = 3600,
     top: int = 5,
+    include_local: Optional[int] = None,
     authorization: Optional[str] = Header(default=None, alias="Authorization"),
 ) -> Union[Dict[str, Union[int, List[Dict[str, Union[int, str]]]]], JSONResponse]:
     auth_error = verify_admin_authorization(authorization)
     if auth_error is not None:
         return auth_error
+    include_local_flag: Optional[bool] = None
+    if include_local is not None:
+        if int(include_local) not in (0, 1):
+            raise HTTPException(status_code=400, detail="include_local must be 0 or 1")
+        include_local_flag = bool(int(include_local))
     return build_unauthorized_events_snapshot(
         now_ts=int(time.time()),
         window_seconds=int(window_seconds or 0),
         top_limit=int(top or 0),
+        include_local=include_local_flag,
     )
 
 

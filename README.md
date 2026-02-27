@@ -374,6 +374,7 @@ scp root@旧IP:/var/backups/sb-migrate/sb-migrate-xxxx.tar.gz root@新IP:/root/
 - `API_RATE_LIMIT_ENABLED=0`（可选；controller 轻量限流开关）
 - `API_RATE_LIMIT_WINDOW_SECONDS=60`（可选；限流窗口）
 - `API_RATE_LIMIT_MAX_REQUESTS=120`（可选；单个 IP+路径窗口内请求上限）
+- `SECURITY_EVENTS_EXCLUDE_LOCAL=1`（可选；安全统计默认过滤本机测试来源）
 - `BOT_TOKEN=xxxxxxxx`（必填）
 - `ADMIN_CHAT_IDS=123,456`（可空）
 - `VIEW_ADMIN_CHAT_IDS=`（可选，只读管理员）
@@ -440,6 +441,7 @@ scp root@旧IP:/var/backups/sb-migrate/sb-migrate-xxxx.tar.gz root@新IP:/root/
 - 安全状态检查：
   - `GET /admin/security/status` 可查看当前鉴权、订阅签名、XFF 信任、限流等配置状态与告警提示
   - `GET /admin/security/events?window_seconds=3600&top=5` 可按窗口查看未授权来源统计（适合观察加固后的实时效果）
+  - 可选参数：`include_local=1`（临时包含本机测试来源）
 - 数据库迁移检查：
   - `POST /admin/db/export` 生成逻辑导出快照（json.gz）
   - `POST /admin/db/verify_export` 校验快照并可选对比当前数据库

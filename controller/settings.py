@@ -9,6 +9,11 @@ def _get_int_env(name: str, default: int) -> int:
         return default
 
 
+def _get_bool_env(name: str, default: bool) -> bool:
+    raw = os.getenv(name, "1" if default else "0").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
 NODE_TASK_RUNNING_TIMEOUT_SECONDS = int(_get_int_env("NODE_TASK_RUNNING_TIMEOUT", 120))
 if NODE_TASK_RUNNING_TIMEOUT_SECONDS < 30:
     NODE_TASK_RUNNING_TIMEOUT_SECONDS = 30
@@ -54,3 +59,6 @@ NODE_MONITOR_OFFLINE_THRESHOLD_SECONDS = int(
 )
 if NODE_MONITOR_OFFLINE_THRESHOLD_SECONDS < 30:
     NODE_MONITOR_OFFLINE_THRESHOLD_SECONDS = 30
+
+# 默认过滤本机/测试来源（127.0.0.1/testclient）以便更准确观察真实公网扫描趋势。
+SECURITY_EVENTS_EXCLUDE_LOCAL = _get_bool_env("SECURITY_EVENTS_EXCLUDE_LOCAL", True)

@@ -156,6 +156,7 @@ class ControllerSmokeTestCase(unittest.TestCase):
             admin_sec = client.get("/admin/security/status", headers=self._auth_header())
             self.assertEqual(200, admin_sec.status_code)
             self.assertTrue(bool(admin_sec.json().get("auth_enabled")))
+            self.assertIn("security_events_exclude_local", admin_sec.json())
 
             overview_resp = client.get("/admin/overview", headers=self._auth_header())
             self.assertEqual(200, overview_resp.status_code)
@@ -187,6 +188,7 @@ class ControllerSmokeTestCase(unittest.TestCase):
             self.assertEqual(200, sec_events.status_code)
             sec_payload = sec_events.json()
             self.assertEqual(3600, int(sec_payload.get("window_seconds", 0)))
+            self.assertIn("include_local", sec_payload)
             self.assertIn("since", sec_payload)
             self.assertIn("unauthorized", sec_payload)
             self.assertIn("top_unauthorized_ips", sec_payload)

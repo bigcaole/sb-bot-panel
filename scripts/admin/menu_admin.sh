@@ -72,6 +72,7 @@ show_config_guide() {
   echo "  - HTTPS_DOMAIN（管理端证书域名，如 panel.example.com）"
   echo "  - HTTPS_ACME_EMAIL（可选，证书账号邮箱）"
   echo "  - AUTH_TOKEN（可选；用于保护 controller 接口；默认建议随机串，不建议弱口令）"
+  echo "  - SECURITY_EVENTS_EXCLUDE_LOCAL（是否过滤本机测试来源，建议 1）"
   echo "  - BOT_TOKEN（必填；Telegram 机器人 token）"
   echo "  - ADMIN_CHAT_IDS（可选；限制谁能使用 bot）"
   echo "  - MIGRATE_DIR（迁移包/备份包输出目录）"
