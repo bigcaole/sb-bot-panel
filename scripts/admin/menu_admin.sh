@@ -32,6 +32,35 @@ pause() {
   read -r -p "按回车继续..." _
 }
 
+get_controller_port() {
+  local env_file="${PROJECT_DIR}/.env"
+  local port="8080"
+  if [[ -f "$env_file" ]]; then
+    local value
+    value="$(grep -E '^CONTROLLER_PORT=' "$env_file" | tail -n1 | cut -d= -f2- || true)"
+    if [[ "${value:-}" =~ ^[0-9]+$ ]]; then
+      port="$value"
+    fi
+  fi
+  echo "$port"
+}
+
+wait_for_controller_ready() {
+  local timeout_seconds="${1:-20}"
+  local port
+  port="$(get_controller_port)"
+  local i
+  for i in $(seq 1 "$timeout_seconds"); do
+    if curl -fsSL --max-time 2 "http://127.0.0.1:${port}/health" >/dev/null 2>&1; then
+      msg "controller 已就绪（127.0.0.1:${port}）"
+      return 0
+    fi
+    sleep 1
+  done
+  warn "controller 启动超时（${timeout_seconds}s），请执行：journalctl -u sb-controller -n 120 --no-pager"
+  return 1
+}
+
 show_config_guide() {
   echo "配置项用途说明："
   echo "  - CONTROLLER_PORT（controller 对外监听端口；节点 agent 需要访问）"
@@ -205,6 +234,7 @@ main() {
         ;;
       3)
         systemctl start sb-controller || true
+        wait_for_controller_ready 20 || true
         msg "已执行启动 controller。"
         pause
         ;;

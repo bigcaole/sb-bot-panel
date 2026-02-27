@@ -31,6 +31,7 @@ TRUST_X_FORWARDED_FOR="0"
 TRUSTED_PROXY_IPS="127.0.0.1,::1"
 NODE_TASK_RUNNING_TIMEOUT="120"
 NODE_TASK_RETENTION_SECONDS="604800"
+NODE_TASK_MAX_PENDING_PER_NODE="50"
 SUB_LINK_SIGN_KEY=""
 SUB_LINK_REQUIRE_SIGNATURE="0"
 SUB_LINK_DEFAULT_TTL_SECONDS="604800"
@@ -184,6 +185,9 @@ NODE_TASK_RUNNING_TIMEOUT=${NODE_TASK_RUNNING_TIMEOUT}
 # 节点任务历史保留秒数（到期自动清理）
 NODE_TASK_RETENTION_SECONDS=${NODE_TASK_RETENTION_SECONDS}
 
+# 单节点任务队列上限（pending+running）
+NODE_TASK_MAX_PENDING_PER_NODE=${NODE_TASK_MAX_PENDING_PER_NODE}
+
 # 订阅签名密钥（可选）
 SUB_LINK_SIGN_KEY=${SUB_LINK_SIGN_KEY}
 
@@ -239,6 +243,18 @@ normalize_input_url() {
     default_scheme="http"
   fi
   echo "${default_scheme}://${raw%/}"
+}
+
+wait_for_controller_ready() {
+  local timeout_seconds="${1:-30}"
+  local i
+  for i in $(seq 1 "$timeout_seconds"); do
+    if curl -fsSL "http://127.0.0.1:${CONTROLLER_PORT}/health" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
 }
 
 sanitize_domain_input() {
@@ -568,6 +584,8 @@ main() {
   NODE_TASK_RUNNING_TIMEOUT="${NODE_TASK_RUNNING_TIMEOUT:-120}"
   NODE_TASK_RETENTION_SECONDS="$(get_env_value NODE_TASK_RETENTION_SECONDS)"
   NODE_TASK_RETENTION_SECONDS="${NODE_TASK_RETENTION_SECONDS:-604800}"
+  NODE_TASK_MAX_PENDING_PER_NODE="$(get_env_value NODE_TASK_MAX_PENDING_PER_NODE)"
+  NODE_TASK_MAX_PENDING_PER_NODE="${NODE_TASK_MAX_PENDING_PER_NODE:-50}"
   SUB_LINK_SIGN_KEY="$(get_env_value SUB_LINK_SIGN_KEY)"
   SUB_LINK_SIGN_KEY="${SUB_LINK_SIGN_KEY:-}"
   SUB_LINK_REQUIRE_SIGNATURE="$(get_env_value SUB_LINK_REQUIRE_SIGNATURE)"
@@ -692,7 +710,7 @@ main() {
 
   echo ""
   msg "自检开始..."
-  if curl -fsSL "http://127.0.0.1:${CONTROLLER_PORT}/health" >/dev/null 2>&1; then
+  if wait_for_controller_ready 30; then
     msg "controller /health 检查通过。"
   else
     warn "controller /health 检查失败，请查看日志。"

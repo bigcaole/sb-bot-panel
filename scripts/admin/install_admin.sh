@@ -50,6 +50,7 @@ TRUST_X_FORWARDED_FOR="0"
 TRUSTED_PROXY_IPS="127.0.0.1,::1"
 NODE_TASK_RUNNING_TIMEOUT="120"
 NODE_TASK_RETENTION_SECONDS="604800"
+NODE_TASK_MAX_PENDING_PER_NODE="50"
 SUB_LINK_SIGN_KEY=""
 SUB_LINK_REQUIRE_SIGNATURE="0"
 SUB_LINK_DEFAULT_TTL_SECONDS="604800"
@@ -101,6 +102,18 @@ extract_url_host() {
   raw="${raw%%/*}"
   raw="${raw%%:*}"
   echo "$raw"
+}
+
+wait_for_controller_ready() {
+  local timeout_seconds="${1:-30}"
+  local i
+  for i in $(seq 1 "$timeout_seconds"); do
+    if curl -fsSL --max-time 3 "http://127.0.0.1:${CONTROLLER_PORT}/health" >/tmp/sb-controller-health.json 2>/dev/null; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
 }
 
 is_ipv4() {
@@ -318,7 +331,7 @@ has_env_key() {
 }
 
 load_existing_env_defaults() {
-  local old_port old_url old_public_url old_panel_base old_enable_https old_https_domain old_https_email old_auth old_bot old_admin old_view_admin old_ops_admin old_super_admin old_migrate old_backup_retention old_migrate_retention old_menu_ttl old_monitor_interval old_offline_threshold old_mutation_cooldown old_trust_xff old_trusted_proxy_ips old_task_timeout old_task_retention old_sub_link_sign_key old_sub_link_require old_sub_link_ttl old_rate_limit_enabled old_rate_limit_window old_rate_limit_max old_controller_http_timeout old_bot_actor_label
+  local old_port old_url old_public_url old_panel_base old_enable_https old_https_domain old_https_email old_auth old_bot old_admin old_view_admin old_ops_admin old_super_admin old_migrate old_backup_retention old_migrate_retention old_menu_ttl old_monitor_interval old_offline_threshold old_mutation_cooldown old_trust_xff old_trusted_proxy_ips old_task_timeout old_task_retention old_task_max_pending old_sub_link_sign_key old_sub_link_require old_sub_link_ttl old_rate_limit_enabled old_rate_limit_window old_rate_limit_max old_controller_http_timeout old_bot_actor_label
   old_port="$(get_env_value "CONTROLLER_PORT")"
   old_url="$(get_env_value "CONTROLLER_URL")"
   old_public_url="$(get_env_value "CONTROLLER_PUBLIC_URL")"
@@ -343,6 +356,7 @@ load_existing_env_defaults() {
   old_trusted_proxy_ips="$(get_env_value "TRUSTED_PROXY_IPS")"
   old_task_timeout="$(get_env_value "NODE_TASK_RUNNING_TIMEOUT")"
   old_task_retention="$(get_env_value "NODE_TASK_RETENTION_SECONDS")"
+  old_task_max_pending="$(get_env_value "NODE_TASK_MAX_PENDING_PER_NODE")"
   old_sub_link_sign_key="$(get_env_value "SUB_LINK_SIGN_KEY")"
   old_sub_link_require="$(get_env_value "SUB_LINK_REQUIRE_SIGNATURE")"
   old_sub_link_ttl="$(get_env_value "SUB_LINK_DEFAULT_TTL_SECONDS")"
@@ -380,6 +394,7 @@ load_existing_env_defaults() {
   TRUSTED_PROXY_IPS="${old_trusted_proxy_ips:-127.0.0.1,::1}"
   NODE_TASK_RUNNING_TIMEOUT="${old_task_timeout:-120}"
   NODE_TASK_RETENTION_SECONDS="${old_task_retention:-604800}"
+  NODE_TASK_MAX_PENDING_PER_NODE="${old_task_max_pending:-50}"
   SUB_LINK_SIGN_KEY="${old_sub_link_sign_key:-}"
   SUB_LINK_REQUIRE_SIGNATURE="${old_sub_link_require:-0}"
   SUB_LINK_DEFAULT_TTL_SECONDS="${old_sub_link_ttl:-604800}"
@@ -402,6 +417,9 @@ normalize_loaded_values() {
   fi
   if ! [[ "$NODE_TASK_RETENTION_SECONDS" =~ ^[0-9]+$ ]] || (( NODE_TASK_RETENTION_SECONDS < 3600 )); then
     NODE_TASK_RETENTION_SECONDS="604800"
+  fi
+  if ! [[ "$NODE_TASK_MAX_PENDING_PER_NODE" =~ ^[0-9]+$ ]] || (( NODE_TASK_MAX_PENDING_PER_NODE < 1 )); then
+    NODE_TASK_MAX_PENDING_PER_NODE="50"
   fi
   if ! [[ "$SUB_LINK_REQUIRE_SIGNATURE" =~ ^[01]$ ]]; then
     SUB_LINK_REQUIRE_SIGNATURE="0"
@@ -721,6 +739,9 @@ NODE_TASK_RUNNING_TIMEOUT=${NODE_TASK_RUNNING_TIMEOUT}
 # 节点任务历史保留秒数（到期自动清理）
 NODE_TASK_RETENTION_SECONDS=${NODE_TASK_RETENTION_SECONDS}
 
+# 单节点任务队列上限（pending+running）
+NODE_TASK_MAX_PENDING_PER_NODE=${NODE_TASK_MAX_PENDING_PER_NODE}
+
 # 订阅签名密钥（可选，留空关闭签名）
 SUB_LINK_SIGN_KEY=${SUB_LINK_SIGN_KEY}
 
@@ -967,6 +988,7 @@ run_self_checks() {
   check_env_key "TRUSTED_PROXY_IPS"
   check_env_key "NODE_TASK_RUNNING_TIMEOUT"
   check_env_key "NODE_TASK_RETENTION_SECONDS"
+  check_env_key "NODE_TASK_MAX_PENDING_PER_NODE"
   check_env_key "SUB_LINK_SIGN_KEY"
   check_env_key "SUB_LINK_REQUIRE_SIGNATURE"
   check_env_key "SUB_LINK_DEFAULT_TTL_SECONDS"
@@ -1006,7 +1028,7 @@ run_self_checks() {
     check_fail "sb-bot 未运行"
   fi
 
-  if curl -fsSL --max-time 5 "http://127.0.0.1:${CONTROLLER_PORT}/health" >/tmp/sb-controller-health.json 2>/dev/null; then
+  if wait_for_controller_ready 30; then
     if grep -q '"ok"[[:space:]]*:[[:space:]]*true' /tmp/sb-controller-health.json; then
       check_ok "本地 health 检查通过：http://127.0.0.1:${CONTROLLER_PORT}/health"
     else
@@ -1093,6 +1115,7 @@ show_summary() {
   echo "TRUST_X_FORWARDED_FOR: ${TRUST_X_FORWARDED_FOR}"
   echo "NODE_TASK_RUNNING_TIMEOUT: ${NODE_TASK_RUNNING_TIMEOUT}"
   echo "NODE_TASK_RETENTION_SECONDS: ${NODE_TASK_RETENTION_SECONDS}"
+  echo "NODE_TASK_MAX_PENDING_PER_NODE: ${NODE_TASK_MAX_PENDING_PER_NODE}"
   echo "SUB_LINK_REQUIRE_SIGNATURE: ${SUB_LINK_REQUIRE_SIGNATURE}"
   echo "SUB_LINK_DEFAULT_TTL_SECONDS: ${SUB_LINK_DEFAULT_TTL_SECONDS}"
   echo "API_RATE_LIMIT_ENABLED: ${API_RATE_LIMIT_ENABLED}"

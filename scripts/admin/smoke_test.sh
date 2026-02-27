@@ -134,6 +134,19 @@ http_code() {
   curl -sS -o /tmp/sb_smoke_resp.txt -w "%{http_code}" "$@" "$url" || true
 }
 
+wait_api_ready() {
+  local api_url="$1"
+  local timeout_seconds="${2:-20}"
+  local i
+  for i in $(seq 1 "$timeout_seconds"); do
+    if curl -fsS --max-time 2 "${api_url}/health" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
 run_api_checks() {
   if [[ "$API_MODE" == "skip" ]]; then
     msg "3/3 已跳过 API 冒烟检查（--skip-api）"
@@ -147,7 +160,11 @@ run_api_checks() {
 
   msg "3/3 运行 API 冒烟检查（${api_url}）..."
 
-  code="$(http_code "${api_url}/health")"
+  if ! wait_api_ready "$api_url" 20; then
+    code="$(http_code "${api_url}/health")"
+  else
+    code="200"
+  fi
   if [[ "$code" != "200" ]]; then
     if [[ "$API_MODE" == "require" ]]; then
       FAIL_API=1
