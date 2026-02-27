@@ -218,6 +218,7 @@ sudo bash scripts/admin/install_admin.sh --configure-quick
 
 说明：执行安装/配置向导时，会自动写入完整 `.env` 字段（包括 `BOT_MENU_TTL`、`BOT_NODE_MONITOR_INTERVAL`、`BOT_NODE_OFFLINE_THRESHOLD`、`BOT_LOG_VIEW_COOLDOWN`、`BOT_LOG_VIEW_MAX_PAGES`），无需手工补字段。
 并且 URL 字段支持省略协议（`http://` / `https://`），脚本会自动补全。
+配置完成后，脚本会自动调用 `POST /admin/nodes/sync_agent_defaults`，下发节点默认参数（`auth_token`、`poll_interval`、可选 `controller_url`），降低管理端与节点端参数不一致风险。
 
 ### 管理服务器 HTTPS 证书（申请+自动续期）
 

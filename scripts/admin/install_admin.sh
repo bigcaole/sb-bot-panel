@@ -79,6 +79,7 @@ BOT_ACTOR_LABEL="sb-bot"
 SELF_CHECK_OK=0
 SELF_CHECK_WARN=0
 SELF_CHECK_FAIL=0
+NODE_DEFAULT_SYNC_SUMMARY="未执行"
 
 msg() { echo -e "\033[1;32m[信息]\033[0m $*"; }
 warn() { echo -e "\033[1;33m[警告]\033[0m $*"; }
@@ -1236,6 +1237,73 @@ restart_services() {
   fi
 }
 
+extract_primary_auth_token() {
+  local raw="${AUTH_TOKEN:-}"
+  local primary
+  primary="$(echo "${raw%%,*}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+  echo "$primary"
+}
+
+sync_node_agent_defaults_after_config() {
+  local primary_token
+  local response
+  local body
+  local http_code
+  local selected
+  local created
+  local deduplicated
+  local failed
+
+  if ! wait_for_controller_ready 30; then
+    warn "配置后自动同步节点默认参数：controller 未就绪，已跳过。"
+    NODE_DEFAULT_SYNC_SUMMARY="跳过（controller 未就绪）"
+    return
+  fi
+
+  primary_token="$(extract_primary_auth_token)"
+  if [[ -n "$primary_token" ]]; then
+    response="$(
+      curl -sS --max-time 15 -X POST "http://127.0.0.1:${CONTROLLER_PORT}/admin/nodes/sync_agent_defaults" \
+        -H "Authorization: Bearer ${primary_token}" \
+        -H "Content-Type: application/json" \
+        -w $'\n%{http_code}' 2>/dev/null || true
+    )"
+  else
+    response="$(
+      curl -sS --max-time 15 -X POST "http://127.0.0.1:${CONTROLLER_PORT}/admin/nodes/sync_agent_defaults" \
+        -H "Content-Type: application/json" \
+        -w $'\n%{http_code}' 2>/dev/null || true
+    )"
+  fi
+
+  http_code="${response##*$'\n'}"
+  body="${response%$'\n'*}"
+
+  if [[ "$http_code" != "200" ]]; then
+    warn "配置后自动同步节点默认参数失败（HTTP ${http_code:-unknown}）。可在 bot 菜单手动执行“节点默认参数同步”。"
+    if [[ -n "$body" ]]; then
+      warn "返回：${body}"
+    fi
+    NODE_DEFAULT_SYNC_SUMMARY="失败（HTTP ${http_code:-unknown}）"
+    return
+  fi
+
+  if command -v jq >/dev/null 2>&1; then
+    selected="$(echo "$body" | jq -r '.selected // 0' 2>/dev/null || echo "0")"
+    created="$(echo "$body" | jq -r '.created // 0' 2>/dev/null || echo "0")"
+    deduplicated="$(echo "$body" | jq -r '.deduplicated // 0' 2>/dev/null || echo "0")"
+    failed="$(echo "$body" | jq -r '.failed // 0' 2>/dev/null || echo "0")"
+  else
+    selected="-"
+    created="-"
+    deduplicated="-"
+    failed="-"
+  fi
+
+  msg "配置后自动同步节点默认参数已执行：目标=${selected} 新建=${created} 去重=${deduplicated} 失败=${failed}"
+  NODE_DEFAULT_SYNC_SUMMARY="已执行（目标=${selected} 新建=${created} 去重=${deduplicated} 失败=${failed}）"
+}
+
 check_env_key() {
   local key="$1"
   local value
@@ -1457,6 +1525,7 @@ show_summary() {
   echo "SECURITY_AUTO_BLOCK_MAX_PER_INTERVAL: ${SECURITY_AUTO_BLOCK_MAX_PER_INTERVAL}"
   echo "CONTROLLER_HTTP_TIMEOUT: ${CONTROLLER_HTTP_TIMEOUT}"
   echo "BOT_ACTOR_LABEL: ${BOT_ACTOR_LABEL}"
+  echo "节点默认参数同步: ${NODE_DEFAULT_SYNC_SUMMARY}"
   echo ""
   echo "快捷查看："
   echo "  systemctl status sb-controller"
@@ -1513,6 +1582,7 @@ main() {
   install_admin_menu_commands
   write_caddy_config_if_needed
   restart_services
+  sync_node_agent_defaults_after_config
   show_summary
   run_self_checks
 }
