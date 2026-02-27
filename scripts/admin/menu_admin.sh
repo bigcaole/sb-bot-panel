@@ -47,6 +47,17 @@ get_controller_port() {
   echo "$port"
 }
 
+first_auth_token() {
+  local raw="${1:-}"
+  raw="${raw//$'\n'/}"
+  raw="${raw//$'\r'/}"
+  if [[ "$raw" == *","* ]]; then
+    echo "${raw%%,*}"
+  else
+    echo "$raw"
+  fi
+}
+
 wait_for_controller_ready() {
   local timeout_seconds="${1:-20}"
   local port
@@ -61,6 +72,42 @@ wait_for_controller_ready() {
   done
   warn "controller 启动超时（${timeout_seconds}s），请执行：journalctl -u sb-controller -n 120 --no-pager"
   return 1
+}
+
+run_security_maintenance_cleanup() {
+  local env_file="${PROJECT_DIR}/.env"
+  local auth_token_raw=""
+  local auth_token=""
+  local controller_port
+  controller_port="$(get_controller_port)"
+
+  if [[ -f "$env_file" ]]; then
+    auth_token_raw="$(grep -E '^AUTH_TOKEN=' "$env_file" | tail -n1 | cut -d= -f2- || true)"
+  fi
+  auth_token="$(first_auth_token "$auth_token_raw")"
+  auth_token="${auth_token#"${auth_token%%[![:space:]]*}"}"
+  auth_token="${auth_token%"${auth_token##*[![:space:]]}"}"
+
+  local url="http://127.0.0.1:${controller_port}/admin/security/maintenance_cleanup"
+  local response=""
+  if [[ -n "$auth_token" ]]; then
+    response="$(curl -fsSL -X POST "$url" -H "Authorization: Bearer ${auth_token}")" || {
+      err "执行手动安全清理失败，请检查 AUTH_TOKEN 或 controller 状态。"
+      return 1
+    }
+  else
+    response="$(curl -fsSL -X POST "$url")" || {
+      err "执行手动安全清理失败，请检查 controller 状态。"
+      return 1
+    }
+  fi
+
+  msg "手动安全清理已执行。"
+  if command -v jq >/dev/null 2>&1; then
+    echo "$response" | jq
+  else
+    echo "$response"
+  fi
 }
 
 show_config_guide() {
@@ -105,8 +152,9 @@ show_menu() {
 14. 数据库一致性校验（迁移前建议）
 15. 安全加固向导（token轮换 + 8080收敛）
 16. 收敛 AUTH_TOKEN（新旧双token -> 单token）
-17. 卸载
-18. 退出
+17. 手动安全清理（过期封禁 + 审计日志）
+18. 卸载
+19. 退出
 ========================================
 EOF
 }
@@ -228,7 +276,7 @@ main() {
 
   while true; do
     show_menu
-    read -r -p "请输入选项 [1-18]: " action
+    read -r -p "请输入选项 [1-19]: " action
     case "$action" in
       1)
         install_or_update
@@ -325,15 +373,19 @@ main() {
         pause
         ;;
       17)
-        do_uninstall
+        run_security_maintenance_cleanup
         pause
         ;;
       18)
+        do_uninstall
+        pause
+        ;;
+      19)
         msg "已退出。"
         exit 0
         ;;
       *)
-        warn "无效选项，请输入 1-18。"
+        warn "无效选项，请输入 1-19。"
         pause
         ;;
     esac

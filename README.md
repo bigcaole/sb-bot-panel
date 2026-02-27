@@ -212,6 +212,8 @@ sudo bash scripts/admin/install_admin.sh --configure-only
 sudo bash scripts/admin/menu_admin.sh
 ```
 
+菜单新增 `手动安全清理（过期封禁 + 审计日志）`，可在 SSH 下直接触发一次安全维护清理，不必进入 bot。
+
 ## Bot 远程管理（管理服务器）
 
 在 Telegram 的 `管理服务器` 菜单中已支持：
