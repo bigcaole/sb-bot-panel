@@ -472,7 +472,7 @@ show_menu() {
  sb-bot-panel 管理服务器菜单
 ========================================
 【日常运维】
-1. 配置向导（修改端口/域名/token 等参数）
+1. 配置（快速默认 / 高级变量向导）
 2. 启动 controller
 3. 停止 controller
 4. 启动 bot
@@ -525,9 +525,20 @@ install_or_update() {
 
 configure_only() {
   if [[ -f "$INSTALL_SCRIPT" ]]; then
-    msg "即将进入配置向导（修改参数并重启服务）。"
-    show_config_guide
-    bash "$INSTALL_SCRIPT" --configure-only
+    msg "配置模式选择："
+    echo "  1) 快速配置（推荐默认值，最少提问）"
+    echo "  2) 高级变量设置向导（逐项说明，全部可调）"
+    local cfg_mode
+    read -r -p "请选择 [1/2]（默认 1）: " cfg_mode
+    cfg_mode="${cfg_mode:-1}"
+    if [[ "$cfg_mode" == "2" ]]; then
+      msg "即将进入高级变量设置向导（修改参数并重启服务）。"
+      show_config_guide
+      bash "$INSTALL_SCRIPT" --configure-only
+    else
+      msg "即将进入快速配置（推荐默认值并重启服务）。"
+      bash "$INSTALL_SCRIPT" --configure-quick
+    fi
   else
     err "未找到安装脚本: $INSTALL_SCRIPT"
   fi

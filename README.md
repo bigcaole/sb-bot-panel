@@ -197,7 +197,7 @@ git clone <你的仓库地址> sb-bot-panel && cd sb-bot-panel && sudo bash scri
   - `sb-controller.service`
   - `sb-bot.service`
 
-说明：菜单 `17) 安装/更新` 默认复用现有 `.env` 配置，不会每次重复询问端口/域名/token/chat_id。需要改参数时使用菜单 `1) 配置向导`。
+说明：菜单 `17) 安装/更新` 默认复用现有 `.env` 配置，不会每次重复询问端口/域名/token/chat_id。需要改参数时使用菜单 `1) 配置（快速默认 / 高级变量向导）`。
 
 ### 仅重新配置（改 token/chat id）
 
@@ -205,9 +205,16 @@ git clone <你的仓库地址> sb-bot-panel && cd sb-bot-panel && sudo bash scri
 sudo bash scripts/admin/install_admin.sh --configure-only
 ```
 
-或通过菜单：
+快速配置（推荐默认值，最少提问）：
 
-- `2) 配置向导（修改参数并重启）`
+```bash
+sudo bash scripts/admin/install_admin.sh --configure-quick
+```
+
+或通过菜单 `1) 配置` 进入后选择：
+
+- `1) 快速配置（推荐默认值，最少提问）`
+- `2) 高级变量设置向导（逐项说明，全部可调）`
 
 说明：执行安装/配置向导时，会自动写入完整 `.env` 字段（包括 `BOT_MENU_TTL`、`BOT_NODE_MONITOR_INTERVAL`、`BOT_NODE_OFFLINE_THRESHOLD`、`BOT_LOG_VIEW_COOLDOWN`、`BOT_LOG_VIEW_MAX_PAGES`），无需手工补字段。
 并且 URL 字段支持省略协议（`http://` / `https://`），脚本会自动补全。
@@ -301,7 +308,7 @@ sb-admin
 菜单项：
 
 【日常运维】
-1. 配置向导（修改参数并重启）
+1. 配置（快速默认 / 高级变量向导）
 2. 启动 controller
 3. 停止 controller
 4. 启动 bot

@@ -728,7 +728,17 @@ run_reconfigure() {
     err "未找到 install.sh: $INSTALL_SCRIPT"
     return
   fi
-  bash "$INSTALL_SCRIPT" --configure-only
+  msg "配置模式选择："
+  echo "  1) 快速配置（推荐默认值，最少提问）"
+  echo "  2) 高级变量设置向导（逐项说明，全部可调）"
+  local cfg_mode
+  read -r -p "请选择 [1/2]（默认 1）: " cfg_mode
+  cfg_mode="${cfg_mode:-1}"
+  if [[ "$cfg_mode" == "2" ]]; then
+    bash "$INSTALL_SCRIPT" --configure-only
+  else
+    bash "$INSTALL_SCRIPT" --configure-quick
+  fi
 }
 
 show_agent_status() {
@@ -846,7 +856,7 @@ show_menu() {
   echo " sb-agent 中文管理菜单"
   echo "========================================"
   echo "【运行与配置】"
-  echo " 1) 配置（修改 /etc/sb-agent/config.json）"
+  echo " 1) 配置（快速默认 / 高级变量向导）"
   echo " 2) 启动 sb-agent"
   echo " 3) 停止 sb-agent"
   echo " 4) 重启 sb-agent"

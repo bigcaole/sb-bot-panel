@@ -2,15 +2,19 @@
 set -euo pipefail
 
 MODE="${1:-install}"
-if [[ "$MODE" != "install" && "$MODE" != "--configure-only" && "$MODE" != "--reuse-config" ]]; then
+if [[ "$MODE" != "install" && "$MODE" != "--configure-only" && "$MODE" != "--configure-quick" && "$MODE" != "--reuse-config" ]]; then
   echo "用法:"
   echo "  sudo bash scripts/admin/install_admin.sh"
   echo "  sudo bash scripts/admin/install_admin.sh --configure-only"
+  echo "  sudo bash scripts/admin/install_admin.sh --configure-quick"
   echo "  sudo bash scripts/admin/install_admin.sh --reuse-config"
   exit 1
 fi
 if [[ "$MODE" == "--configure-only" ]]; then
   MODE="configure-only"
+fi
+if [[ "$MODE" == "--configure-quick" ]]; then
+  MODE="configure-quick"
 fi
 if [[ "$MODE" == "--reuse-config" ]]; then
   MODE="reuse-config"
@@ -806,6 +810,92 @@ prompt_env_config() {
   echo "  - 如仅内网使用，建议限制来源 IP，而不是全网开放"
 }
 
+prompt_env_config_quick() {
+  load_existing_env_defaults
+
+  echo ""
+  msg "快速配置（推荐默认值）"
+  echo "  - 本模式会优先使用安全默认值，仅提问最关键参数。"
+  echo "  - 其余变量会自动按标准默认值写入。"
+  echo "  - 后续可在菜单中进入“高级变量设置向导”逐项调整。"
+  echo ""
+
+  local public_ip default_public_url default_controller_url default_panel_base
+  public_ip="$(get_public_ipv4)"
+  if [[ -n "$public_ip" ]]; then
+    default_public_url="http://${public_ip}:${CONTROLLER_PORT}"
+  else
+    default_public_url="http://127.0.0.1:${CONTROLLER_PORT}"
+  fi
+  read -r -p "CONTROLLER_PUBLIC_URL（节点/外部访问地址，支持省略 http/https） [${CONTROLLER_PUBLIC_URL:-$default_public_url}]: " input_public_url
+  CONTROLLER_PUBLIC_URL="${input_public_url:-${CONTROLLER_PUBLIC_URL:-$default_public_url}}"
+  CONTROLLER_PUBLIC_URL="$(normalize_input_url "$CONTROLLER_PUBLIC_URL" "http")"
+
+  local enable_https_default
+  if [[ "$ENABLE_HTTPS" == "1" ]]; then
+    enable_https_default="Y"
+  else
+    enable_https_default="N"
+  fi
+  if ask_yes_no "是否启用 HTTPS（Caddy 自动证书）？" "$enable_https_default"; then
+    ENABLE_HTTPS="1"
+    local public_host
+    public_host="$(extract_url_host "$CONTROLLER_PUBLIC_URL")"
+    if [[ -z "$HTTPS_DOMAIN" && -n "$public_host" ]] && ! is_ipv4 "$public_host"; then
+      HTTPS_DOMAIN="$public_host"
+    fi
+    read -r -p "HTTPS_DOMAIN（证书域名） [${HTTPS_DOMAIN}]: " input_https_domain
+    HTTPS_DOMAIN="$(sanitize_domain_input "${input_https_domain:-$HTTPS_DOMAIN}")"
+    if [[ -z "$HTTPS_DOMAIN" ]] || ! is_valid_domain "$HTTPS_DOMAIN"; then
+      warn "域名无效，回退为 HTTP 模式。"
+      ENABLE_HTTPS="0"
+      HTTPS_DOMAIN=""
+      HTTPS_ACME_EMAIL=""
+    else
+      read -r -p "HTTPS_ACME_EMAIL（证书账号邮箱，可选） [${HTTPS_ACME_EMAIL}]: " input_https_email
+      HTTPS_ACME_EMAIL="${input_https_email:-$HTTPS_ACME_EMAIL}"
+      CONTROLLER_PUBLIC_URL="https://${HTTPS_DOMAIN}"
+    fi
+  else
+    ENABLE_HTTPS="0"
+    HTTPS_DOMAIN=""
+    HTTPS_ACME_EMAIL=""
+  fi
+
+  default_controller_url="http://127.0.0.1:${CONTROLLER_PORT}"
+  CONTROLLER_URL="$default_controller_url"
+  if [[ "$ENABLE_HTTPS" == "1" && -n "$HTTPS_DOMAIN" ]]; then
+    default_panel_base="https://${HTTPS_DOMAIN}"
+  else
+    default_panel_base="${CONTROLLER_PUBLIC_URL:-$default_controller_url}"
+  fi
+  PANEL_BASE_URL="$(normalize_input_url "$default_panel_base" "$([[ "$ENABLE_HTTPS" == "1" ]] && echo https || echo http)")"
+
+  read -r -p "BOT_TOKEN（Telegram 机器人 token；可先留空） [${BOT_TOKEN}]: " input_bot
+  BOT_TOKEN="${input_bot:-$BOT_TOKEN}"
+  if ! is_bot_token_configured "$BOT_TOKEN"; then
+    warn "BOT_TOKEN 为空/占位：将跳过 sb-bot 启动，你可稍后在高级向导中补填。"
+  fi
+
+  read -r -p "ADMIN_CHAT_IDS（可选，逗号分隔；不填=不限制） [${ADMIN_CHAT_IDS}]: " input_admin
+  ADMIN_CHAT_IDS="${input_admin:-$ADMIN_CHAT_IDS}"
+
+  read -r -p "AUTH_TOKEN（接口鉴权 token，回车使用当前值） [${AUTH_TOKEN}]: " input_auth
+  if [[ "$input_auth" == "-" ]]; then
+    AUTH_TOKEN=""
+  else
+    AUTH_TOKEN="${input_auth:-$AUTH_TOKEN}"
+  fi
+
+  if [[ -z "$MIGRATE_DIR" ]]; then
+    MIGRATE_DIR="$MIGRATE_DIR_DEFAULT"
+  fi
+
+  normalize_loaded_values
+  echo ""
+  msg "快速配置完成：其余变量已使用默认值。"
+}
+
 write_env_file() {
   msg "写入环境配置: ${ENV_FILE}"
   mkdir -p "$PROJECT_DIR"
@@ -1409,7 +1499,11 @@ main() {
   fi
 
   if [[ "$should_prompt" == "1" ]]; then
-    prompt_env_config
+    if [[ "$MODE" == "configure-quick" ]]; then
+      prompt_env_config_quick
+    else
+      prompt_env_config
+    fi
   fi
   normalize_loaded_values
   write_env_file

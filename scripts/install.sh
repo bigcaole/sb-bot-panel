@@ -5,15 +5,19 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 MODE="${1:-install}"
-if [[ "$MODE" != "install" && "$MODE" != "--configure-only" && "$MODE" != "--sync-only" ]]; then
+if [[ "$MODE" != "install" && "$MODE" != "--configure-only" && "$MODE" != "--configure-quick" && "$MODE" != "--sync-only" ]]; then
   echo "用法:"
   echo "  sudo bash scripts/install.sh              # 完整安装/更新"
   echo "  sudo bash scripts/install.sh --configure-only  # 仅重写配置并重启服务"
+  echo "  sudo bash scripts/install.sh --configure-quick # 快速配置（默认值）并重启服务"
   echo "  sudo bash scripts/install.sh --sync-only  # 无交互同步代码并重启（复用现有配置）"
   exit 1
 fi
 if [[ "$MODE" == "--configure-only" ]]; then
   MODE="configure-only"
+fi
+if [[ "$MODE" == "--configure-quick" ]]; then
+  MODE="configure-quick"
 fi
 if [[ "$MODE" == "--sync-only" ]]; then
   MODE="sync-only"
@@ -567,6 +571,17 @@ prompt_config() {
   old_tuic_port="$(read_old_config_value "tuic_listen_port")"
   old_poll="$(read_old_config_value "poll_interval")"
 
+  echo ""
+  msg "配置向导说明（每项都可回车采用默认值）："
+  echo "  1) controller_url：节点拉取配置的 controller 地址"
+  echo "  2) node_code：节点唯一标识（需与管理端节点编码一致）"
+  echo "  3) auth_token：节点访问 controller 的 Bearer token"
+  echo "  4) tuic_domain：TUIC 证书域名（留空=不启用 TUIC）"
+  echo "  5) acme_email：证书申请邮箱（启用 TUIC 时建议填写）"
+  echo "  6) tuic_listen_port：TUIC 监听 UDP 端口（默认 8443）"
+  echo "  7) poll_interval：agent 轮询间隔秒数（默认 15）"
+  echo ""
+
   read -r -p "1) 请输入 controller_url（支持省略 http/https，例如 panel.cwzs.de:8080） [${old_controller:-http://127.0.0.1:8080}]: " CONTROLLER_URL
   CONTROLLER_URL="${CONTROLLER_URL:-${old_controller:-http://127.0.0.1:8080}}"
   local controller_scheme controller_host
@@ -613,6 +628,54 @@ prompt_config() {
   POLL_INTERVAL="${POLL_INTERVAL:-${old_poll:-15}}"
   if ! [[ "$POLL_INTERVAL" =~ ^[0-9]+$ ]] || (( POLL_INTERVAL < 5 )); then
     warn "轮询间隔无效，已回退为 15 秒"
+    POLL_INTERVAL=15
+  fi
+}
+
+prompt_config_quick() {
+  local old_controller old_node old_token old_domain old_email old_tuic_port old_poll
+  old_controller="$(read_old_config_value "controller_url")"
+  old_node="$(read_old_config_value "node_code")"
+  old_token="$(read_old_config_value "auth_token")"
+  old_domain="$(read_old_config_value "tuic_domain")"
+  old_email="$(read_old_config_value "acme_email")"
+  old_tuic_port="$(read_old_config_value "tuic_listen_port")"
+  old_poll="$(read_old_config_value "poll_interval")"
+
+  echo ""
+  msg "快速配置（推荐默认值）"
+  echo "  - 仅提问关键参数：controller_url / node_code / auth_token"
+  echo "  - 其余变量自动按默认值写入（可在高级向导再改）"
+  echo ""
+
+  read -r -p "controller_url（节点拉取配置地址） [${old_controller:-http://127.0.0.1:8080}]: " CONTROLLER_URL
+  CONTROLLER_URL="${CONTROLLER_URL:-${old_controller:-http://127.0.0.1:8080}}"
+  local controller_scheme controller_host
+  controller_host="$(extract_url_host "$CONTROLLER_URL")"
+  controller_scheme="https"
+  if [[ "$controller_host" == "127.0.0.1" || "$controller_host" == "localhost" || "$CONTROLLER_URL" == *":8080"* || "$CONTROLLER_URL" == *":80"* ]]; then
+    controller_scheme="http"
+  fi
+  CONTROLLER_URL="$(normalize_input_url "$CONTROLLER_URL" "$controller_scheme")"
+
+  read -r -p "node_code（节点唯一标识） [${old_node:-JP1}]: " NODE_CODE
+  NODE_CODE="${NODE_CODE:-${old_node:-JP1}}"
+  NODE_CODE="$(echo "$NODE_CODE" | tr -d '[:space:]')"
+  if [[ -z "$NODE_CODE" ]]; then
+    NODE_CODE="JP1"
+  fi
+
+  read -r -p "auth_token（用于拉取 sync） [${old_token:-devtoken123}]: " AUTH_TOKEN
+  AUTH_TOKEN="${AUTH_TOKEN:-${old_token:-devtoken123}}"
+
+  TUIC_DOMAIN="${old_domain:-}"
+  ACME_EMAIL="${old_email:-}"
+  TUIC_LISTEN_PORT="${old_tuic_port:-8443}"
+  POLL_INTERVAL="${old_poll:-15}"
+  if ! [[ "$TUIC_LISTEN_PORT" =~ ^[0-9]+$ ]] || (( TUIC_LISTEN_PORT < 1 || TUIC_LISTEN_PORT > 65535 )); then
+    TUIC_LISTEN_PORT=8443
+  fi
+  if ! [[ "$POLL_INTERVAL" =~ ^[0-9]+$ ]] || (( POLL_INTERVAL < 5 )); then
     POLL_INTERVAL=15
   fi
 }
@@ -881,7 +944,11 @@ main() {
   if [[ "$MODE" == "sync-only" ]]; then
     msg "已加载现有配置：$CONFIG_PATH"
   else
-    prompt_config
+    if [[ "$MODE" == "configure-quick" ]]; then
+      prompt_config_quick
+    else
+      prompt_config
+    fi
     check_domain_resolution_interactive
     configure_ufw_rules
     configure_security_interactive
