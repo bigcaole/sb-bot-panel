@@ -410,10 +410,8 @@ main() {
         pause
         ;;
       19)
-        if confirm_action "确认退出菜单？" "Y"; then
-          msg "已退出。"
-          exit 0
-        fi
+        msg "已退出。"
+        exit 0
         ;;
       *)
         warn "无效选项，请输入 1-19。"

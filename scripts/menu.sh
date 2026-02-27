@@ -200,12 +200,23 @@ show_fail2ban_status() {
 
 show_ssh_security_status() {
   local ssh_service ssh_port client_ip pass_auth permit_root pubkey_auth
+  local risk_score risk_level
+  local root_has_keys=0
+  local fail2ban_ok=0
+  local ufw_ok=1
+  local ufw_installed=1
+  local ssh_active=0
+  local client_ip_allowed=1
+  local -a suggestions
   ssh_service="$(detect_ssh_service)"
   ssh_port="$(detect_sshd_port)"
   client_ip="$(detect_current_ssh_client_ip)"
   pass_auth="unknown"
   permit_root="unknown"
   pubkey_auth="unknown"
+  risk_score=0
+  risk_level="低"
+  suggestions=()
 
   echo "----- SSH 安全状态总览 -----"
   echo "sshd 服务名: ${ssh_service}"
@@ -213,8 +224,11 @@ show_ssh_security_status() {
   echo "当前会话来源 IP: ${client_ip:-未知}"
 
   if systemctl is-active "$ssh_service" >/dev/null 2>&1; then
+    ssh_active=1
     msg "SSH 服务状态：运行中"
   else
+    risk_score=$((risk_score + 3))
+    suggestions+=("检查 SSH 服务并恢复：systemctl status ${ssh_service} && systemctl restart ${ssh_service}")
     warn "SSH 服务状态：未运行"
   fi
 
@@ -232,14 +246,29 @@ show_ssh_security_status() {
   if [[ "$pubkey_auth" == "yes" && "$pass_auth" == "no" ]]; then
     msg "当前策略符合“仅密钥登录”基本要求。"
   else
+    if [[ "$pubkey_auth" != "yes" ]]; then
+      risk_score=$((risk_score + 2))
+      suggestions+=("启用公钥认证：菜单 16（启用仅密钥登录）或在 sshd 配置中设置 PubkeyAuthentication yes")
+    fi
+    if [[ "$pass_auth" != "no" ]]; then
+      risk_score=$((risk_score + 2))
+      suggestions+=("禁用密码登录：菜单 16（启用仅密钥登录）后验证 PasswordAuthentication=no")
+    fi
     warn "当前策略不是严格仅密钥登录（建议 PasswordAuthentication=no 且 PubkeyAuthentication=yes）。"
+  fi
+  if [[ "$permit_root" == "yes" ]]; then
+    risk_score=$((risk_score + 1))
+    suggestions+=("建议将 PermitRootLogin 调整为 prohibit-password（菜单 16 会自动处理）")
   fi
 
   echo ""
   echo "----- authorized_keys -----"
   if has_authorized_keys_for_user root; then
+    root_has_keys=1
     msg "root 用户已检测到 authorized_keys。"
   else
+    risk_score=$((risk_score + 3))
+    suggestions+=("先为 root 写入公钥再启用仅密钥登录：mkdir -p /root/.ssh && chmod 700 /root/.ssh && 编辑 /root/.ssh/authorized_keys")
     warn "root 用户未检测到 authorized_keys。"
   fi
 
@@ -247,11 +276,16 @@ show_ssh_security_status() {
   echo "----- fail2ban（sshd）-----"
   if command -v fail2ban-client >/dev/null 2>&1; then
     if systemctl is-active fail2ban >/dev/null 2>&1; then
+      fail2ban_ok=1
       fail2ban-client status sshd 2>/dev/null || warn "未检测到 sshd jail（可能未启用）。"
     else
+      risk_score=$((risk_score + 1))
+      suggestions+=("启动 fail2ban：菜单 11（安装/启用 fail2ban）")
       warn "fail2ban 服务未运行。"
     fi
   else
+    risk_score=$((risk_score + 1))
+    suggestions+=("安装 fail2ban：菜单 11（安装/启用 fail2ban）")
     warn "系统未安装 fail2ban。"
   fi
 
@@ -261,17 +295,61 @@ show_ssh_security_status() {
     local ufw_state
     ufw_state="$(ufw status 2>/dev/null | head -n1 || true)"
     echo "UFW 状态: ${ufw_state:-未知}"
-    ufw status 2>/dev/null | grep -E "^ *${ssh_port}(/tcp)?[[:space:]]" || warn "未发现 SSH 端口(${ssh_port})放行规则。"
+    if ! ufw status 2>/dev/null | grep -E "^ *${ssh_port}(/tcp)?[[:space:]]" >/dev/null; then
+      ufw_ok=0
+      risk_score=$((risk_score + 2))
+      suggestions+=("放行 SSH 端口：ufw allow ${ssh_port}/tcp")
+      warn "未发现 SSH 端口(${ssh_port})放行规则。"
+    else
+      ufw status 2>/dev/null | grep -E "^ *${ssh_port}(/tcp)?[[:space:]]" || true
+    fi
     if [[ -n "$client_ip" ]]; then
       if ufw_allows_ssh_for_ip "$client_ip" "$ssh_port"; then
         msg "当前来源 IP(${client_ip}) 对 SSH 端口放行状态：允许。"
       else
+        client_ip_allowed=0
+        risk_score=$((risk_score + 2))
+        suggestions+=("放行当前运维来源 IP：ufw allow from ${client_ip} to any port ${ssh_port} proto tcp")
         warn "当前来源 IP(${client_ip}) 对 SSH 端口放行状态：不明确允许。"
       fi
     fi
   else
+    ufw_installed=0
+    risk_score=$((risk_score + 1))
+    suggestions+=("安装并启用 UFW 后仅放行必要端口（SSH/443/TUIC）")
     warn "系统未安装 UFW。"
   fi
+
+  echo ""
+  echo "----- 风险评估 -----"
+  if (( risk_score >= 6 )); then
+    risk_level="高"
+  elif (( risk_score >= 3 )); then
+    risk_level="中"
+  else
+    risk_level="低"
+  fi
+  echo "风险等级: ${risk_level}（评分=${risk_score}）"
+  if [[ "$risk_level" == "低" ]]; then
+    msg "当前 SSH 安全基线较好，可按流程执行仅密钥切换。"
+  elif [[ "$risk_level" == "中" ]]; then
+    warn "存在中等风险，建议先修复后再做仅密钥切换。"
+  else
+    warn "存在高风险，暂不建议切换仅密钥登录。"
+  fi
+
+  if (( ${#suggestions[@]} > 0 )); then
+    echo ""
+    echo "----- 修复建议（按顺序）-----"
+    local i=1
+    for item in "${suggestions[@]}"; do
+      echo "${i}) ${item}"
+      i=$((i + 1))
+    done
+  fi
+
+  # Keep variables referenced for shellcheck clarity.
+  : "${ssh_active}" "${root_has_keys}" "${fail2ban_ok}" "${ufw_ok}" "${ufw_installed}" "${client_ip_allowed}"
 }
 
 unban_fail2ban_ip() {
@@ -638,10 +716,8 @@ main() {
         pause
         ;;
       20)
-        if confirm_action "确认退出菜单？" "Y"; then
-          msg "已退出。"
-          exit 0
-        fi
+        msg "已退出。"
+        exit 0
         ;;
       *)
         warn "无效选项，请输入 1-20。"
