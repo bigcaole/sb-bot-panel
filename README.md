@@ -254,6 +254,7 @@ sudo bash scripts/admin/menu_admin.sh
 - 状态查看（controller/bot/caddy）
 - 查看日志（controller/bot/caddy）
 - 日志归档（打包最近日志到服务器本地，支持保留策略）
+- 运维审计（仅看 `ops.*` 脚本运维事件）
 - HTTPS 证书状态 / 刷新
 - 迁移导出 / 迁移导入（导入走非交互模式）
 - 操作日志（`/admin/audit`，查看最近审计记录）

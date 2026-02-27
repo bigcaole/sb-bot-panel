@@ -258,6 +258,7 @@ SUBMENUS = {
         "title": "管理服务器 / 服务运维",
         "buttons": [
             ("📈 状态查看", "action:maintain_status"),
+            ("🧾 运维审计", "action:maintain_ops_audit"),
             ("📜 查看日志", "action:maintain_logs"),
             ("🗂 日志归档", "action:maintain_log_archive"),
             ("✅ 一键验收自检", "action:maintain_smoke"),
@@ -352,6 +353,7 @@ PRIVILEGED_CALLBACK_EXACT = {
     "action:maintain_backup": ROLE_OPERATOR,
     "action:maintain_smoke": ROLE_OPERATOR,
     "action:maintain_log_archive": ROLE_OPERATOR,
+    "action:maintain_ops_audit": ROLE_OPERATOR,
     "action:maintain_sub_policy": ROLE_OPERATOR,
     "action:maintain_controller_start": ROLE_OPERATOR,
     "action:maintain_https_reload": ROLE_OPERATOR,
@@ -1657,6 +1659,18 @@ def build_backup_audit_keyboard() -> InlineKeyboardMarkup:
     )
 
 
+def build_maintain_ops_audit_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("刷新", callback_data="action:maintain_ops_audit"),
+                InlineKeyboardButton("返回服务运维", callback_data="menu:maintain_ops"),
+            ],
+            [InlineKeyboardButton("返回维护菜单", callback_data="menu:maintain")],
+        ]
+    )
+
+
 def build_query_user_picker_keyboard(users: list) -> InlineKeyboardMarkup:
     rows = []
     for user in users:
@@ -1755,6 +1769,45 @@ def format_admin_audit_text(items: list, line_limit: int = 50, char_limit: int =
             f"详情：{detail if detail else '-'}"
         )
         count += 1
+    text = "\n\n".join(lines)
+    if len(text) > char_limit:
+        text = text[:char_limit] + "\n\n...（日志较多，已截断）"
+    return text
+
+
+def format_ops_audit_text(items: list, line_limit: int = 20, char_limit: int = 3600) -> str:
+    if not items:
+        return "运维审计（ops.*）：\n（暂无记录）"
+    lines = ["运维审计（ops.* 最近记录）："]
+    count = 0
+    for item in items:
+        if count >= line_limit:
+            break
+        action = str(item.get("action", "")).strip()
+        if not action.startswith("ops."):
+            continue
+        try:
+            created_at = int(item.get("created_at", 0) or 0)
+        except (TypeError, ValueError):
+            created_at = 0
+        time_text = (
+            datetime.fromtimestamp(created_at).strftime("%Y-%m-%d %H:%M:%S")
+            if created_at > 0
+            else "-"
+        )
+        actor = str(item.get("actor", "")).strip() or "unknown"
+        source_ip = str(item.get("source_ip", "")).strip() or "-"
+        detail = str(item.get("detail", "")).strip()
+        if len(detail) > 180:
+            detail = detail[:180] + "..."
+        lines.append(
+            f"{time_text} | {action}\n"
+            f"操作者：{actor} | 来源IP：{source_ip}\n"
+            f"详情：{detail if detail else '-'}"
+        )
+        count += 1
+    if count == 0:
+        lines.append("（暂无记录）")
     text = "\n\n".join(lines)
     if len(text) > char_limit:
         text = text[:char_limit] + "\n\n...（日志较多，已截断）"
@@ -6665,6 +6718,23 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await query.edit_message_text(
             "请选择要查看的服务日志：",
             reply_markup=build_maintain_logs_keyboard(),
+        )
+        return
+
+    if callback_data == "action:maintain_ops_audit":
+        audit_rows, error_message, _ = await controller_request(
+            "GET", "/admin/audit?limit=120&action_prefix=ops."
+        )
+        if error_message:
+            await query.edit_message_text(
+                "获取运维审计失败：{0}".format(localize_controller_error(error_message)),
+                reply_markup=build_back_keyboard("menu:maintain_ops"),
+            )
+            return
+        text = format_ops_audit_text(audit_rows if isinstance(audit_rows, list) else [])
+        await query.edit_message_text(
+            text,
+            reply_markup=build_maintain_ops_audit_keyboard(),
         )
         return
 

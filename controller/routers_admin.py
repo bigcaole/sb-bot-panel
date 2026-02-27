@@ -1986,6 +1986,7 @@ def list_security_blocked_ips(
 def list_admin_audit_logs(
     limit: int = 50,
     action: str = "",
+    action_prefix: str = "",
     authorization: Optional[str] = Header(default=None, alias="Authorization"),
 ) -> Union[List[Dict[str, Union[int, str]]], JSONResponse]:
     auth_error = verify_admin_authorization(authorization)
@@ -1997,6 +1998,7 @@ def list_admin_audit_logs(
     if limit > 200:
         limit = 200
     action_value = str(action or "").strip()
+    action_prefix_value = str(action_prefix or "").strip()
     with get_connection() as conn:
         if action_value:
             rows = conn.execute(
@@ -2008,6 +2010,17 @@ def list_admin_audit_logs(
                 LIMIT ?
                 """,
                 (action_value, limit),
+            ).fetchall()
+        elif action_prefix_value:
+            rows = conn.execute(
+                """
+                SELECT id, actor, action, resource_type, resource_id, detail, source_ip, created_at
+                FROM audit_logs
+                WHERE SUBSTR(action, 1, ?) = ?
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (len(action_prefix_value), action_prefix_value, limit),
             ).fetchall()
         else:
             rows = conn.execute(

@@ -274,6 +274,17 @@ class ControllerSmokeTestCase(unittest.TestCase):
             )
             self.assertEqual(400, bad_audit_event_resp.status_code)
 
+            ops_audit_rows_resp = client.get(
+                "/admin/audit?limit=20&action_prefix=ops.",
+                headers=self._auth_header(),
+            )
+            self.assertEqual(200, ops_audit_rows_resp.status_code)
+            ops_rows = ops_audit_rows_resp.json()
+            self.assertTrue(isinstance(ops_rows, list))
+            self.assertGreaterEqual(len(ops_rows), 1)
+            for item in ops_rows:
+                self.assertTrue(str(item.get("action", "")).startswith("ops."))
+
             sync_tokens_resp = client.post(
                 "/admin/auth/sync_node_tokens",
                 headers=self._auth_header(),

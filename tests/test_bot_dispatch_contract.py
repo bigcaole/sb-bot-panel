@@ -78,6 +78,7 @@ class BotDispatchContractTestCase(unittest.TestCase):
             "wizard:create_confirm",
             "wizard:nodes_create_confirm",
             "action:maintain_status",
+            "action:maintain_ops_audit",
             "action:maintain_smoke",
             "action:maintain_security_events",
             "action:maintain_sub_policy",
