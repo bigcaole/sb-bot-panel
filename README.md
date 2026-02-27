@@ -316,7 +316,7 @@ sb-admin
 4. 启动 bot
 5. 停止 bot
 6. 状态查看（controller/bot）
-7. 查看日志（controller/bot/归档）
+7. 查看日志（controller/bot/归档/运维审计）
 8. HTTPS 证书状态（Caddy）
 9. HTTPS 证书刷新（重载 Caddy）
 10. 迁移：导出迁移包

@@ -483,6 +483,62 @@ run_sync_menu() {
   esac
 }
 
+show_ops_audit_events() {
+  local env_file="${PROJECT_DIR}/.env"
+  local auth_token_raw=""
+  local auth_token=""
+  local controller_port
+  local response
+
+  controller_port="$(get_controller_port)"
+  if [[ -f "$env_file" ]]; then
+    auth_token_raw="$(grep -E '^AUTH_TOKEN=' "$env_file" | tail -n1 | cut -d= -f2- || true)"
+  fi
+  auth_token="$(pick_working_auth_token "$controller_port" "$auth_token_raw")" || {
+    warn "AUTH_TOKEN 多值模式下未探测到可用 token，回退使用第一个 token。"
+  }
+  if [[ -z "$auth_token" ]]; then
+    auth_token="$(first_auth_token "$auth_token_raw")"
+  fi
+
+  if [[ -n "$auth_token" ]]; then
+    response="$(curl -fsSL \
+      "http://127.0.0.1:${controller_port}/admin/audit?limit=100" \
+      -H "Authorization: Bearer ${auth_token}" \
+      -H "X-Actor: ${ADMIN_SCRIPT_ACTOR}" 2>/dev/null || true)"
+  else
+    response="$(curl -fsSL \
+      "http://127.0.0.1:${controller_port}/admin/audit?limit=100" \
+      -H "X-Actor: ${ADMIN_SCRIPT_ACTOR}" 2>/dev/null || true)"
+  fi
+
+  if [[ -z "$response" ]]; then
+    err "读取审计日志失败，请检查 controller 状态与鉴权。"
+    return 1
+  fi
+
+  if command -v jq >/dev/null 2>&1; then
+    echo "----- 运维审计速览（ops.*，最新 20 条）-----"
+    echo "$response" | jq '
+      map(select((.action // "") | startswith("ops.")))[:20]
+      | if length == 0 then
+          "暂无 ops.* 审计记录"
+        else
+          map({
+            id: .id,
+            time: (.created_at | tostring),
+            actor: (.actor // ""),
+            action: .action,
+            resource: ((.resource_type // "") + ":" + (.resource_id // "")),
+            detail: (.detail // "")
+          })
+        end
+    '
+  else
+    echo "$response"
+  fi
+}
+
 show_admin_ssh_security_status() {
   local ssh_service ssh_port client_ip pass_auth permit_root pubkey_auth
   local risk_score risk_level fail2ban_bans_24h
@@ -765,7 +821,7 @@ show_status() {
 
 show_logs() {
   local choice
-  read -r -p "查看哪个服务日志？1=controller 2=bot 3=日志归档 [1]: " choice
+  read -r -p "查看哪个日志？1=controller 2=bot 3=日志归档 4=运维审计(ops.*) [1]: " choice
   choice="${choice:-1}"
   if [[ "$choice" == "2" ]]; then
     journalctl -u sb-bot -n 200 --no-pager || true
@@ -775,6 +831,8 @@ show_logs() {
     else
       err "未找到日志归档脚本: $LOG_ARCHIVE_SCRIPT"
     fi
+  elif [[ "$choice" == "4" ]]; then
+    show_ops_audit_events
   else
     journalctl -u sb-controller -n 200 --no-pager || true
   fi
