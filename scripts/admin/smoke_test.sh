@@ -29,6 +29,17 @@ record_fail() {
   err "$item"
 }
 
+first_auth_token() {
+  local raw="${1:-}"
+  raw="${raw//$'\n'/}"
+  raw="${raw//$'\r'/}"
+  if [[ "$raw" == *","* ]]; then
+    echo "${raw%%,*}"
+  else
+    echo "$raw"
+  fi
+}
+
 usage() {
   cat <<'EOF'
 用法：
@@ -155,7 +166,14 @@ run_api_checks() {
 
   local controller_port="${CONTROLLER_PORT:-8080}"
   local api_url="${API_BASE_URL:-http://127.0.0.1:${controller_port}}"
-  local auth_token="${AUTH_TOKEN:-}"
+  local auth_token_raw="${AUTH_TOKEN:-}"
+  local auth_token
+  auth_token="$(first_auth_token "$auth_token_raw")"
+  auth_token="${auth_token#"${auth_token%%[![:space:]]*}"}"
+  auth_token="${auth_token%"${auth_token##*[![:space:]]}"}"
+  if [[ -n "$auth_token_raw" && "$auth_token_raw" == *","* ]]; then
+    record_warn "检测到 AUTH_TOKEN 多 token 过渡模式，验收默认使用第一个 token。"
+  fi
   local require_node_lock="${SMOKE_REQUIRE_NODE_LOCK:-0}"
   local code
   local node_access_status
