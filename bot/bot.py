@@ -128,6 +128,16 @@ except ValueError:
     NODE_OFFLINE_THRESHOLD_SECONDS = 120
 if NODE_OFFLINE_THRESHOLD_SECONDS <= 0:
     NODE_OFFLINE_THRESHOLD_SECONDS = 120
+try:
+    NODE_TIME_SYNC_INTERVAL_SECONDS = int(
+        os.getenv("BOT_NODE_TIME_SYNC_INTERVAL", "86400").strip() or "86400"
+    )
+except ValueError:
+    NODE_TIME_SYNC_INTERVAL_SECONDS = 86400
+if NODE_TIME_SYNC_INTERVAL_SECONDS < 0:
+    NODE_TIME_SYNC_INTERVAL_SECONDS = 0
+if NODE_TIME_SYNC_INTERVAL_SECONDS > 30 * 86400:
+    NODE_TIME_SYNC_INTERVAL_SECONDS = 30 * 86400
 
 WIZARD_KEY = "create_user_wizard"
 CREATE_DISPLAY_NAME, CREATE_TUIC_PORT, CREATE_SPEED_MBPS, CREATE_VALID_DAYS, CREATE_CONFIRM = range(5)
@@ -470,6 +480,7 @@ MAINTAIN_ALLOWED_ENV_KEYS = [
     "BOT_MENU_TTL",
     "BOT_NODE_MONITOR_INTERVAL",
     "BOT_NODE_OFFLINE_THRESHOLD",
+    "BOT_NODE_TIME_SYNC_INTERVAL",
     "BOT_LOG_VIEW_COOLDOWN",
     "BOT_MUTATION_COOLDOWN",
     "BOT_LOG_VIEW_MAX_PAGES",
@@ -1133,6 +1144,32 @@ async def run_node_monitor_job(context: ContextTypes.DEFAULT_TYPE) -> None:
             state_map.pop(node_code, None)
 
     context.application.bot_data[NODE_MONITOR_STATE_KEY] = state_map
+
+
+async def run_node_time_sync_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    if NODE_TIME_SYNC_INTERVAL_SECONDS <= 0:
+        return
+    result, error_message, status_code = await controller_request(
+        "POST",
+        "/admin/nodes/sync_time?include_disabled=0&force_new=0",
+    )
+    if error_message:
+        if status_code in (401, 403):
+            logger.warning("node time sync unauthorized: %s", error_message)
+        else:
+            logger.warning("node time sync failed: %s", error_message)
+        return
+    if not isinstance(result, dict):
+        logger.warning("node time sync invalid response")
+        return
+    logger.info(
+        "node time sync dispatched: selected=%s created=%s deduplicated=%s failed=%s server_unix=%s",
+        int(result.get("selected", 0) or 0),
+        int(result.get("created", 0) or 0),
+        int(result.get("deduplicated", 0) or 0),
+        int(result.get("failed", 0) or 0),
+        int(result.get("server_unix", 0) or 0),
+    )
 
 
 def build_main_menu() -> InlineKeyboardMarkup:
@@ -4566,6 +4603,7 @@ async def start_maintain_config_wizard(
         "LOG_ARCHIVE_WINDOW_HOURS",
         "LOG_ARCHIVE_RETENTION_COUNT",
         "LOG_ARCHIVE_DIR",
+        "BOT_NODE_TIME_SYNC_INTERVAL",
         "SUB_LINK_REQUIRE_SIGNATURE",
         "API_RATE_LIMIT_ENABLED",
     ]
@@ -4625,6 +4663,7 @@ async def maintain_config_input(
         "BOT_MENU_TTL",
         "BOT_NODE_MONITOR_INTERVAL",
         "BOT_NODE_OFFLINE_THRESHOLD",
+        "BOT_NODE_TIME_SYNC_INTERVAL",
         "BOT_LOG_VIEW_MAX_PAGES",
         "LOG_ARCHIVE_WINDOW_HOURS",
         "LOG_ARCHIVE_RETENTION_COUNT",
@@ -4636,6 +4675,16 @@ async def maintain_config_input(
             if not updates[key].isdigit():
                 await update.message.reply_text("{0} 必须为整数。".format(key))
                 return MAINTAIN_CONFIG_INPUT
+    if "BOT_NODE_TIME_SYNC_INTERVAL" in updates:
+        sync_interval = int(updates["BOT_NODE_TIME_SYNC_INTERVAL"])
+        if sync_interval < 0:
+            await update.message.reply_text("BOT_NODE_TIME_SYNC_INTERVAL 不能小于 0。")
+            return MAINTAIN_CONFIG_INPUT
+        if sync_interval > 0 and sync_interval < 3600:
+            await update.message.reply_text(
+                "BOT_NODE_TIME_SYNC_INTERVAL 最小为 3600（或设为 0 关闭）。"
+            )
+            return MAINTAIN_CONFIG_INPUT
     for key in ("BOT_LOG_VIEW_COOLDOWN", "BOT_MUTATION_COOLDOWN"):
         if key not in updates:
             continue
@@ -7875,6 +7924,18 @@ def main() -> None:
             first=NODE_MONITOR_INTERVAL_SECONDS,
             name="node_monitor_job",
         )
+        if NODE_TIME_SYNC_INTERVAL_SECONDS > 0:
+            application.job_queue.run_repeating(
+                run_node_time_sync_job,
+                interval=NODE_TIME_SYNC_INTERVAL_SECONDS,
+                first=NODE_TIME_SYNC_INTERVAL_SECONDS,
+                name="node_time_sync_job",
+            )
+            logger.info(
+                "node time sync job enabled: interval=%ss", NODE_TIME_SYNC_INTERVAL_SECONDS
+            )
+        else:
+            logger.info("node time sync job disabled: BOT_NODE_TIME_SYNC_INTERVAL=%s", NODE_TIME_SYNC_INTERVAL_SECONDS)
     application.run_polling()
 
 

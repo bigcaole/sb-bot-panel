@@ -216,7 +216,7 @@ sudo bash scripts/admin/install_admin.sh --configure-quick
 - `1) 快速配置（推荐默认值，最少提问）`
 - `2) 高级变量设置向导（逐项说明，全部可调）`
 
-说明：执行安装/配置向导时，会自动写入完整 `.env` 字段（包括 `BOT_MENU_TTL`、`BOT_NODE_MONITOR_INTERVAL`、`BOT_NODE_OFFLINE_THRESHOLD`、`BOT_LOG_VIEW_COOLDOWN`、`BOT_LOG_VIEW_MAX_PAGES`），无需手工补字段。
+说明：执行安装/配置向导时，会自动写入完整 `.env` 字段（包括 `BOT_MENU_TTL`、`BOT_NODE_MONITOR_INTERVAL`、`BOT_NODE_OFFLINE_THRESHOLD`、`BOT_NODE_TIME_SYNC_INTERVAL`、`BOT_LOG_VIEW_COOLDOWN`、`BOT_LOG_VIEW_MAX_PAGES`），无需手工补字段。
 并且 URL 字段支持省略协议（`http://` / `https://`），脚本会自动补全。
 配置完成后，脚本会自动调用 `POST /admin/nodes/sync_agent_defaults`，下发节点默认参数（`auth_token`、`poll_interval`、可选 `controller_url`），降低管理端与节点端参数不一致风险。
 快速配置模式下，若未设置 `SECURITY_BLOCK_PROTECTED_IPS`，脚本会自动填入当前 SSH 来源 IP 作为封禁保护白名单，减少误封风险。
@@ -466,6 +466,7 @@ scp root@旧IP:/var/backups/sb-migrate/sb-migrate-xxxx.tar.gz root@新IP:/root/
 - `BOT_MENU_TTL=60`（可选，bot 菜单按钮自动清理秒数）
 - `BOT_NODE_MONITOR_INTERVAL=60`（可选，节点在线检测周期秒数）
 - `BOT_NODE_OFFLINE_THRESHOLD=120`（可选，判定离线阈值秒数）
+- `BOT_NODE_TIME_SYNC_INTERVAL=86400`（可选，节点自动时间对齐周期；0=关闭）
 - `CONTROLLER_HTTP_TIMEOUT=10`（可选，bot 调 controller 超时秒数）
 - `BOT_ACTOR_LABEL=sb-bot`（可选，bot 调 controller 时用于审计的操作者标识）
 - `BOT_LOG_VIEW_COOLDOWN=1`（可选，日志翻页冷却秒数，防止触发 Telegram 限流）
@@ -485,6 +486,7 @@ scp root@旧IP:/var/backups/sb-migrate/sb-migrate-xxxx.tar.gz root@新IP:/root/
 - 开启后 bot 周期检查（默认每 `60` 秒）。
 - 在线时不推送，掉线时推送一次，恢复后再推送一次。
 - 节点在线状态基于 agent 心跳（`/nodes/{node_code}/sync` 自动写入 `last_seen_at`）。
+- bot 还支持“节点自动时间对齐”任务（默认每 24 小时一次，下发 `sync_time`）。
 
 建议配置：
 
@@ -492,6 +494,7 @@ scp root@旧IP:/var/backups/sb-migrate/sb-migrate-xxxx.tar.gz root@新IP:/root/
   - `SUPER_ADMIN_CHAT_IDS=你的chat_id`
   - `BOT_NODE_MONITOR_INTERVAL=60`
   - `BOT_NODE_OFFLINE_THRESHOLD=120`
+  - `BOT_NODE_TIME_SYNC_INTERVAL=86400`
   - `BOT_LOG_VIEW_COOLDOWN=1`
   - `BOT_LOG_VIEW_MAX_PAGES=100`
 - 重启 bot：`systemctl restart sb-bot`

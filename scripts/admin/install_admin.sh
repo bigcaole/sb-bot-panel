@@ -54,6 +54,7 @@ LOG_ARCHIVE_DIR="/var/backups/sb-controller/logs"
 BOT_MENU_TTL="60"
 BOT_NODE_MONITOR_INTERVAL="60"
 BOT_NODE_OFFLINE_THRESHOLD="120"
+BOT_NODE_TIME_SYNC_INTERVAL="86400"
 BOT_MUTATION_COOLDOWN="1"
 TRUST_X_FORWARDED_FOR="0"
 TRUSTED_PROXY_IPS="127.0.0.1,::1"
@@ -405,7 +406,7 @@ has_env_key() {
 }
 
 load_existing_env_defaults() {
-  local old_port old_port_whitelist old_url old_public_url old_panel_base old_enable_https old_https_domain old_https_email old_auth old_bot old_admin old_view_admin old_ops_admin old_super_admin old_migrate old_backup_retention old_migrate_retention old_log_archive_window old_log_archive_retention old_log_archive_dir old_menu_ttl old_monitor_interval old_offline_threshold old_mutation_cooldown old_trust_xff old_trusted_proxy_ips old_task_timeout old_task_retention old_task_max_pending old_sub_link_sign_key old_sub_link_require old_sub_link_ttl old_rate_limit_enabled old_rate_limit_window old_rate_limit_max old_security_events_exclude_local old_security_block_protected_ips old_security_auto_block_enabled old_security_auto_block_interval old_security_auto_block_window old_security_auto_block_threshold old_security_auto_block_duration old_security_auto_block_max old_controller_http_timeout old_bot_actor_label
+  local old_port old_port_whitelist old_url old_public_url old_panel_base old_enable_https old_https_domain old_https_email old_auth old_bot old_admin old_view_admin old_ops_admin old_super_admin old_migrate old_backup_retention old_migrate_retention old_log_archive_window old_log_archive_retention old_log_archive_dir old_menu_ttl old_monitor_interval old_offline_threshold old_time_sync_interval old_mutation_cooldown old_trust_xff old_trusted_proxy_ips old_task_timeout old_task_retention old_task_max_pending old_sub_link_sign_key old_sub_link_require old_sub_link_ttl old_rate_limit_enabled old_rate_limit_window old_rate_limit_max old_security_events_exclude_local old_security_block_protected_ips old_security_auto_block_enabled old_security_auto_block_interval old_security_auto_block_window old_security_auto_block_threshold old_security_auto_block_duration old_security_auto_block_max old_controller_http_timeout old_bot_actor_label
   old_port="$(get_env_value "CONTROLLER_PORT")"
   old_port_whitelist="$(get_env_value "CONTROLLER_PORT_WHITELIST")"
   old_url="$(get_env_value "CONTROLLER_URL")"
@@ -429,6 +430,7 @@ load_existing_env_defaults() {
   old_menu_ttl="$(get_env_value "BOT_MENU_TTL")"
   old_monitor_interval="$(get_env_value "BOT_NODE_MONITOR_INTERVAL")"
   old_offline_threshold="$(get_env_value "BOT_NODE_OFFLINE_THRESHOLD")"
+  old_time_sync_interval="$(get_env_value "BOT_NODE_TIME_SYNC_INTERVAL")"
   old_mutation_cooldown="$(get_env_value "BOT_MUTATION_COOLDOWN")"
   old_trust_xff="$(get_env_value "TRUST_X_FORWARDED_FOR")"
   old_trusted_proxy_ips="$(get_env_value "TRUSTED_PROXY_IPS")"
@@ -479,6 +481,7 @@ load_existing_env_defaults() {
   BOT_MENU_TTL="${old_menu_ttl:-60}"
   BOT_NODE_MONITOR_INTERVAL="${old_monitor_interval:-60}"
   BOT_NODE_OFFLINE_THRESHOLD="${old_offline_threshold:-120}"
+  BOT_NODE_TIME_SYNC_INTERVAL="${old_time_sync_interval:-86400}"
   BOT_MUTATION_COOLDOWN="${old_mutation_cooldown:-1}"
   TRUST_X_FORWARDED_FOR="${old_trust_xff:-0}"
   TRUSTED_PROXY_IPS="${old_trusted_proxy_ips:-127.0.0.1,::1}"
@@ -519,6 +522,12 @@ normalize_loaded_values() {
   fi
   if ! [[ "$NODE_TASK_MAX_PENDING_PER_NODE" =~ ^[0-9]+$ ]] || (( NODE_TASK_MAX_PENDING_PER_NODE < 1 )); then
     NODE_TASK_MAX_PENDING_PER_NODE="50"
+  fi
+  if ! [[ "$BOT_NODE_TIME_SYNC_INTERVAL" =~ ^[0-9]+$ ]]; then
+    BOT_NODE_TIME_SYNC_INTERVAL="86400"
+  fi
+  if (( BOT_NODE_TIME_SYNC_INTERVAL > 0 && BOT_NODE_TIME_SYNC_INTERVAL < 3600 )); then
+    BOT_NODE_TIME_SYNC_INTERVAL="3600"
   fi
   if ! [[ "$SUB_LINK_REQUIRE_SIGNATURE" =~ ^[01]$ ]]; then
     SUB_LINK_REQUIRE_SIGNATURE="0"
@@ -632,6 +641,7 @@ prompt_env_config() {
   echo "  - BOT_MENU_TTL：bot 菜单按钮自动清理秒数"
   echo "  - BOT_NODE_MONITOR_INTERVAL：节点在线检测周期秒数"
   echo "  - BOT_NODE_OFFLINE_THRESHOLD：节点离线判定阈值秒数"
+  echo "  - BOT_NODE_TIME_SYNC_INTERVAL：节点自动时间对齐周期秒数（0=关闭）"
   echo "  - BOT_MUTATION_COOLDOWN：bot 写操作按钮防抖秒数（防止重复点击）"
   echo "  - TRUST_X_FORWARDED_FOR/TRUSTED_PROXY_IPS：仅在受控反代场景下才启用 XFF"
   echo "  - SECURITY_EVENTS_EXCLUDE_LOCAL：安全统计默认过滤本机测试来源（建议 1）"
@@ -804,6 +814,16 @@ prompt_env_config() {
   if ! [[ "$BOT_NODE_OFFLINE_THRESHOLD" =~ ^[0-9]+$ ]] || (( BOT_NODE_OFFLINE_THRESHOLD < 30 )); then
     warn "BOT_NODE_OFFLINE_THRESHOLD 无效，回退为 120"
     BOT_NODE_OFFLINE_THRESHOLD="120"
+  fi
+
+  read -r -p "BOT_NODE_TIME_SYNC_INTERVAL（节点自动时间对齐秒数，0=关闭） [${BOT_NODE_TIME_SYNC_INTERVAL}]: " input_time_sync_interval
+  BOT_NODE_TIME_SYNC_INTERVAL="${input_time_sync_interval:-$BOT_NODE_TIME_SYNC_INTERVAL}"
+  if ! [[ "$BOT_NODE_TIME_SYNC_INTERVAL" =~ ^[0-9]+$ ]]; then
+    warn "BOT_NODE_TIME_SYNC_INTERVAL 无效，回退为 86400"
+    BOT_NODE_TIME_SYNC_INTERVAL="86400"
+  elif (( BOT_NODE_TIME_SYNC_INTERVAL > 0 && BOT_NODE_TIME_SYNC_INTERVAL < 3600 )); then
+    warn "BOT_NODE_TIME_SYNC_INTERVAL 过小，最小为 3600（或 0 关闭）"
+    BOT_NODE_TIME_SYNC_INTERVAL="3600"
   fi
 
   read -r -p "BOT_MUTATION_COOLDOWN（写操作防抖秒数） [${BOT_MUTATION_COOLDOWN}]: " input_mutation_cooldown
@@ -994,6 +1014,9 @@ BOT_NODE_MONITOR_INTERVAL=${BOT_NODE_MONITOR_INTERVAL}
 
 # 节点离线判定阈值秒数
 BOT_NODE_OFFLINE_THRESHOLD=${BOT_NODE_OFFLINE_THRESHOLD}
+
+# 节点自动时间对齐周期秒数（0=关闭）
+BOT_NODE_TIME_SYNC_INTERVAL=${BOT_NODE_TIME_SYNC_INTERVAL}
 
 # bot 写操作按钮防抖秒数（防重复提交）
 BOT_MUTATION_COOLDOWN=${BOT_MUTATION_COOLDOWN}
@@ -1445,6 +1468,7 @@ run_self_checks() {
   check_env_key "CONTROLLER_HTTP_TIMEOUT"
   check_env_key "BOT_ACTOR_LABEL"
   check_env_key "BOT_MUTATION_COOLDOWN"
+  check_env_key "BOT_NODE_TIME_SYNC_INTERVAL"
   if [[ -n "$CONTROLLER_PORT_WHITELIST" ]]; then
     check_ok ".env 参数存在：CONTROLLER_PORT_WHITELIST"
   else
@@ -1575,6 +1599,7 @@ show_summary() {
   echo "BOT_MENU_TTL: ${BOT_MENU_TTL}"
   echo "BOT_NODE_MONITOR_INTERVAL: ${BOT_NODE_MONITOR_INTERVAL}"
   echo "BOT_NODE_OFFLINE_THRESHOLD: ${BOT_NODE_OFFLINE_THRESHOLD}"
+  echo "BOT_NODE_TIME_SYNC_INTERVAL: ${BOT_NODE_TIME_SYNC_INTERVAL}"
   echo "BOT_MUTATION_COOLDOWN: ${BOT_MUTATION_COOLDOWN}"
   if is_bot_token_configured "$BOT_TOKEN"; then
     echo "BOT_TOKEN: 已配置（sb-bot 已启用）"
