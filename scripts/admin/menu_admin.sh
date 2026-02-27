@@ -71,6 +71,116 @@ first_auth_token() {
   fi
 }
 
+detect_ssh_service() {
+  if systemctl list-unit-files | grep -q '^sshd\.service'; then
+    echo "sshd"
+  else
+    echo "ssh"
+  fi
+}
+
+detect_sshd_port() {
+  local port
+  port="$(sshd -T 2>/dev/null | awk '/^port /{print $2; exit}' || true)"
+  if [[ -z "$port" ]]; then
+    port="$(grep -E '^[[:space:]]*Port[[:space:]]+[0-9]+' /etc/ssh/sshd_config 2>/dev/null | tail -n1 | awk '{print $2}' || true)"
+  fi
+  echo "${port:-22}"
+}
+
+detect_current_ssh_client_ip() {
+  local ip
+  ip="${SSH_CLIENT:-}"
+  ip="${ip%% *}"
+  if [[ -z "$ip" ]]; then
+    ip="${SSH_CONNECTION:-}"
+    ip="${ip%% *}"
+  fi
+  if [[ -z "$ip" ]]; then
+    ip="$(who -u am i 2>/dev/null | awk '{print $NF}' | tr -d '()' || true)"
+  fi
+  echo "$ip"
+}
+
+has_authorized_keys_for_user() {
+  local user_name="$1"
+  local user_home
+  user_home="$(getent passwd "$user_name" | awk -F: '{print $6}' || true)"
+  if [[ -z "$user_home" ]]; then
+    return 1
+  fi
+  if [[ -s "${user_home}/.ssh/authorized_keys" ]]; then
+    return 0
+  fi
+  return 1
+}
+
+ufw_allows_ssh_for_ip() {
+  local ip="$1"
+  local ssh_port="$2"
+  if ! command -v ufw >/dev/null 2>&1; then
+    return 1
+  fi
+  ufw status 2>/dev/null | awk -v p="$ssh_port" -v ip="$ip" '
+    BEGIN {found=0}
+    $0 ~ p"/tcp" && $0 ~ /ALLOW/ {
+      if ($0 ~ ip) { found=1; exit 0; }
+    }
+    END { exit found ? 0 : 1 }
+  '
+}
+
+get_fail2ban_ban_count_24h() {
+  if ! command -v journalctl >/dev/null 2>&1; then
+    echo "-1"
+    return
+  fi
+  journalctl -u fail2ban --since "24 hours ago" --no-pager 2>/dev/null | awk '
+    / Ban / {count++}
+    END {print count + 0}
+  '
+}
+
+cleanup_ufw_duplicate_ssh_rules() {
+  local ssh_port removed_count
+  ssh_port="${1:-22}"
+  removed_count=0
+  if ! command -v ufw >/dev/null 2>&1; then
+    echo "0"
+    return
+  fi
+
+  local line num rule normalized
+  local -a delete_nums=()
+  local -A seen_rules=()
+  while IFS= read -r line; do
+    num="$(echo "$line" | sed -n 's/^\[ *\([0-9][0-9]*\)\].*/\1/p')"
+    rule="$(echo "$line" | sed -n 's/^\[ *[0-9][0-9]*\] *//p')"
+    if [[ -z "$num" || -z "$rule" ]]; then
+      continue
+    fi
+    if ! echo "$rule" | grep -E "^${ssh_port}(/tcp)?[[:space:]]+ALLOW" >/dev/null 2>&1; then
+      continue
+    fi
+    normalized="$(echo "$rule" | tr -s ' ' ' ' | sed 's/^ //; s/ $//')"
+    if [[ -n "${seen_rules[$normalized]+x}" ]]; then
+      delete_nums+=("$num")
+    else
+      seen_rules["$normalized"]=1
+    fi
+  done < <(ufw status numbered 2>/dev/null || true)
+
+  if (( ${#delete_nums[@]} > 0 )); then
+    local sorted_num
+    while IFS= read -r sorted_num; do
+      [[ -z "$sorted_num" ]] && continue
+      ufw --force delete "$sorted_num" >/dev/null 2>&1 || true
+      removed_count=$((removed_count + 1))
+    done < <(printf '%s\n' "${delete_nums[@]}" | sort -rn)
+  fi
+  echo "$removed_count"
+}
+
 wait_for_controller_ready() {
   local timeout_seconds="${1:-20}"
   local port
@@ -123,6 +233,163 @@ run_security_maintenance_cleanup() {
   fi
 }
 
+show_admin_ssh_security_status() {
+  local ssh_service ssh_port client_ip pass_auth permit_root pubkey_auth
+  local risk_score risk_level fail2ban_bans_24h
+  ssh_service="$(detect_ssh_service)"
+  ssh_port="$(detect_sshd_port)"
+  client_ip="$(detect_current_ssh_client_ip)"
+  pass_auth="$(sshd -T 2>/dev/null | awk '/^passwordauthentication /{print $2; exit}' || true)"
+  permit_root="$(sshd -T 2>/dev/null | awk '/^permitrootlogin /{print $2; exit}' || true)"
+  pubkey_auth="$(sshd -T 2>/dev/null | awk '/^pubkeyauthentication /{print $2; exit}' || true)"
+  pass_auth="${pass_auth:-unknown}"
+  permit_root="${permit_root:-unknown}"
+  pubkey_auth="${pubkey_auth:-unknown}"
+  risk_score=0
+  fail2ban_bans_24h="-1"
+
+  echo "----- SSH 安全状态总览（管理服务器）-----"
+  echo "sshd 服务名: ${ssh_service}"
+  echo "sshd 端口: ${ssh_port}"
+  echo "当前会话来源 IP: ${client_ip:-未知}"
+  if systemctl is-active "$ssh_service" >/dev/null 2>&1; then
+    msg "SSH 服务状态：运行中"
+  else
+    risk_score=$((risk_score + 3))
+    warn "SSH 服务状态：未运行"
+  fi
+
+  echo ""
+  echo "----- SSH 策略（生效值）-----"
+  echo "PubkeyAuthentication: ${pubkey_auth}"
+  echo "PasswordAuthentication: ${pass_auth}"
+  echo "PermitRootLogin: ${permit_root}"
+  if [[ "$pubkey_auth" != "yes" ]]; then
+    risk_score=$((risk_score + 2))
+  fi
+  if [[ "$pass_auth" != "no" ]]; then
+    risk_score=$((risk_score + 2))
+  fi
+  if [[ "$permit_root" == "yes" ]]; then
+    risk_score=$((risk_score + 1))
+  fi
+
+  echo ""
+  echo "----- authorized_keys -----"
+  if has_authorized_keys_for_user root; then
+    msg "root 用户已检测到 authorized_keys。"
+  else
+    risk_score=$((risk_score + 3))
+    warn "root 用户未检测到 authorized_keys。"
+  fi
+
+  echo ""
+  echo "----- fail2ban（sshd）-----"
+  if command -v fail2ban-client >/dev/null 2>&1; then
+    if systemctl is-active fail2ban >/dev/null 2>&1; then
+      fail2ban-client status sshd 2>/dev/null || warn "未检测到 sshd jail（可能未启用）。"
+      fail2ban_bans_24h="$(get_fail2ban_ban_count_24h)"
+      if [[ "$fail2ban_bans_24h" =~ ^[0-9]+$ ]]; then
+        echo "近24小时封禁次数: ${fail2ban_bans_24h}"
+        if (( fail2ban_bans_24h >= 30 )); then
+          risk_score=$((risk_score + 1))
+        fi
+      fi
+    else
+      risk_score=$((risk_score + 1))
+      warn "fail2ban 服务未运行。"
+    fi
+  else
+    risk_score=$((risk_score + 1))
+    warn "系统未安装 fail2ban。"
+  fi
+
+  echo ""
+  echo "----- UFW SSH 放行 -----"
+  if command -v ufw >/dev/null 2>&1; then
+    local ufw_state
+    ufw_state="$(ufw status 2>/dev/null | head -n1 || true)"
+    echo "UFW 状态: ${ufw_state:-未知}"
+    if ! ufw status 2>/dev/null | grep -E "^ *${ssh_port}(/tcp)?[[:space:]]" >/dev/null; then
+      risk_score=$((risk_score + 2))
+      warn "未发现 SSH 端口(${ssh_port})放行规则。"
+    else
+      ufw status 2>/dev/null | grep -E "^ *${ssh_port}(/tcp)?[[:space:]]" || true
+    fi
+    if [[ -n "$client_ip" ]] && ! ufw_allows_ssh_for_ip "$client_ip" "$ssh_port"; then
+      risk_score=$((risk_score + 2))
+      warn "当前来源 IP(${client_ip}) 对 SSH 端口放行状态：不明确允许。"
+    fi
+  else
+    risk_score=$((risk_score + 1))
+    warn "系统未安装 UFW。"
+  fi
+
+  echo ""
+  echo "----- 风险评估 -----"
+  if (( risk_score >= 6 )); then
+    risk_level="高"
+  elif (( risk_score >= 3 )); then
+    risk_level="中"
+  else
+    risk_level="低"
+  fi
+  echo "风险等级: ${risk_level}（评分=${risk_score}）"
+  if [[ "$risk_level" == "低" ]]; then
+    msg "管理服务器 SSH 安全基线较好。"
+  elif [[ "$risk_level" == "中" ]]; then
+    warn "存在中等风险，建议先执行一键安全修复。"
+  else
+    warn "存在高风险，建议先执行一键安全修复并补齐密钥登录。"
+  fi
+}
+
+run_admin_ssh_security_quick_fix() {
+  local ssh_port client_ip ufw_state removed_ufw_rules
+  ssh_port="$(detect_sshd_port)"
+  client_ip="$(detect_current_ssh_client_ip)"
+  msg "开始执行管理服务器 SSH 半自动安全修复..."
+
+  if command -v ufw >/dev/null 2>&1; then
+    ufw allow "${ssh_port}/tcp" >/dev/null || true
+    if [[ -n "$client_ip" ]]; then
+      ufw allow from "$client_ip" to any port "$ssh_port" proto tcp >/dev/null || true
+      msg "已尝试放行当前来源 IP(${client_ip}) 到 SSH 端口 ${ssh_port}。"
+    fi
+    removed_ufw_rules="$(cleanup_ufw_duplicate_ssh_rules "$ssh_port")"
+    if [[ "$removed_ufw_rules" =~ ^[0-9]+$ ]] && (( removed_ufw_rules > 0 )); then
+      msg "已清理重复 SSH 防火墙规则：${removed_ufw_rules} 条。"
+    fi
+    ufw_state="$(ufw status 2>/dev/null | head -n1 || true)"
+    if [[ "$ufw_state" == *"inactive"* ]]; then
+      if confirm_action "检测到 UFW 未启用，是否立即启用？" "Y"; then
+        ufw --force enable >/dev/null
+        msg "UFW 已启用。"
+      else
+        warn "你选择不启用 UFW。"
+      fi
+    fi
+  else
+    warn "系统未安装 UFW，跳过防火墙修复。"
+  fi
+
+  if command -v fail2ban-client >/dev/null 2>&1 && systemctl is-active fail2ban >/dev/null 2>&1; then
+    msg "fail2ban 已运行。"
+  else
+    if confirm_action "fail2ban 未就绪，是否安装/启用？" "Y"; then
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get update -y >/dev/null 2>&1 || true
+      apt-get install -y fail2ban >/dev/null 2>&1 || true
+      systemctl enable --now fail2ban >/dev/null 2>&1 || true
+      msg "已尝试安装并启用 fail2ban。"
+    else
+      warn "你选择跳过 fail2ban 安装/启用。"
+    fi
+  fi
+
+  msg "半自动修复执行完成，建议查看菜单 17（SSH 安全状态总览）确认结果。"
+}
+
 show_config_guide() {
   echo "配置项用途说明："
   echo "  - CONTROLLER_PORT（controller 对外监听端口；节点 agent 需要访问）"
@@ -166,11 +433,13 @@ show_menu() {
 14. 安全加固向导（token轮换 + 8080收敛）
 15. 收敛 AUTH_TOKEN（新旧双token -> 单token）
 16. 手动安全清理（过期封禁 + 审计日志）
+17. SSH 安全状态总览（只读）
+18. SSH 一键安全修复（半自动）
 
 【系统级操作（谨慎）】
-17. 安装/更新（git pull + 依赖 + venv + 重启）
-18. 卸载
-19. 退出
+19. 安装/更新（git pull + 依赖 + venv + 重启）
+20. 卸载
+21. 退出
 ========================================
 EOF
 }
@@ -292,7 +561,7 @@ main() {
 
   while true; do
     show_menu
-    read -r -p "请输入选项 [1-19]: " action
+    read -r -p "请输入选项 [1-21]: " action
     case "$action" in
       1)
         configure_only
@@ -398,6 +667,14 @@ main() {
         pause
         ;;
       17)
+        show_admin_ssh_security_status
+        pause
+        ;;
+      18)
+        run_admin_ssh_security_quick_fix
+        pause
+        ;;
+      19)
         if confirm_action "确认执行安装/更新？" "N"; then
           install_or_update
         else
@@ -405,16 +682,16 @@ main() {
         fi
         pause
         ;;
-      18)
+      20)
         do_uninstall
         pause
         ;;
-      19)
+      21)
         msg "已退出。"
         exit 0
         ;;
       *)
-        warn "无效选项，请输入 1-19。"
+        warn "无效选项，请输入 1-21。"
         pause
         ;;
     esac
