@@ -6,6 +6,7 @@ import ipaddress
 import asyncio
 import shlex
 import subprocess
+import json
 from datetime import datetime
 from typing import Optional
 from urllib.parse import urlparse
@@ -3203,6 +3204,78 @@ async def get_admin_security_status_with_retry(
     return None, "读取订阅安全状态失败", 0
 
 
+def parse_audit_detail_dict(raw_detail: object) -> dict:
+    if isinstance(raw_detail, dict):
+        return raw_detail
+    if not isinstance(raw_detail, str):
+        return {}
+    text = raw_detail.strip()
+    if not text:
+        return {}
+    try:
+        parsed = json.loads(text)
+    except Exception:
+        return {}
+    if isinstance(parsed, dict):
+        return parsed
+    return {}
+
+
+def format_sub_policy_state(policy: object) -> str:
+    if not isinstance(policy, dict):
+        return "-"
+    sign_enabled = "签名开" if str(policy.get("SUB_LINK_REQUIRE_SIGNATURE", "0")) == "1" else "签名关"
+    rate_enabled = "限流开" if str(policy.get("API_RATE_LIMIT_ENABLED", "0")) == "1" else "限流关"
+    return f"{sign_enabled}/{rate_enabled}"
+
+
+async def get_latest_sub_policy_change_summary_lines() -> list:
+    audit_rows, error_message, _ = await controller_request("GET", "/admin/audit?limit=120")
+    if error_message:
+        return ["最近策略变更：读取失败（{0}）".format(localize_controller_error(error_message))]
+    if not isinstance(audit_rows, list):
+        return ["最近策略变更：暂无记录。"]
+
+    latest = None
+    for row in audit_rows:
+        action = str(row.get("action", "")).strip()
+        if action in ("bot.sub_policy.apply", "bot.sub_policy.apply_failed", "bot.sub_policy.noop"):
+            latest = row
+            break
+    if latest is None:
+        return ["最近策略变更：暂无记录。"]
+
+    detail = parse_audit_detail_dict(latest.get("detail"))
+    action = str(latest.get("action", "")).strip()
+    if action == "bot.sub_policy.apply":
+        result_text = "应用预设（成功）"
+    elif action == "bot.sub_policy.noop":
+        result_text = "无需变更（No-Op）"
+    elif bool(detail.get("rollback_env_restored")) and bool(detail.get("rollback_restart_ok")):
+        result_text = "应用预设失败（已回滚）"
+    else:
+        result_text = "应用预设失败（回滚未完成）"
+
+    created_at = int(latest.get("created_at", 0) or 0)
+    created_text = (
+        datetime.fromtimestamp(created_at).strftime("%Y-%m-%d %H:%M:%S") if created_at > 0 else "-"
+    )
+    mode_text = str(detail.get("mode_label") or detail.get("mode") or "-")
+    before_state = format_sub_policy_state(detail.get("before"))
+    final_state = format_sub_policy_state(detail.get("final"))
+    actor = str(latest.get("actor", "")).strip() or "-"
+    lines = [
+        "最近策略变更：",
+        f"- 时间：{created_text}",
+        f"- 结果：{result_text}",
+        f"- 预设：{mode_text}",
+        f"- 操作人：{actor}",
+    ]
+    if before_state != "-" or final_state != "-":
+        lines.append(f"- 策略：{before_state} -> {final_state}")
+    return lines
+
+
 async def run_admin_sub_policy_panel_action(
     query,
     notice: str = "",
@@ -3257,6 +3330,10 @@ async def run_admin_sub_policy_panel_action(
     if sign_key_enabled == "未设置":
         lines.append("")
         lines.append("提示：当前未设置 SUB_LINK_SIGN_KEY，签名相关预设将被拒绝。")
+    latest_change_lines = await get_latest_sub_policy_change_summary_lines()
+    if latest_change_lines:
+        lines.append("")
+        lines.extend(latest_change_lines[:8])
     await query.edit_message_text(
         "\n".join(lines),
         reply_markup=build_sub_policy_keyboard(),
@@ -3289,6 +3366,31 @@ async def apply_admin_sub_policy_action(query, mode: str) -> None:
         "SUB_LINK_REQUIRE_SIGNATURE": str(updates.get("SUB_LINK_REQUIRE_SIGNATURE", "0")),
         "API_RATE_LIMIT_ENABLED": str(updates.get("API_RATE_LIMIT_ENABLED", "0")),
     }
+    if before_policy == target_policy:
+        await write_admin_audit_event_best_effort(
+            action="bot.sub_policy.noop",
+            resource_type="security",
+            resource_id="subscription",
+            detail={
+                "mode": mode_key,
+                "mode_label": mode_name,
+                "before": before_policy,
+                "target": target_policy,
+                "final": before_policy,
+                "restart_ok": False,
+                "rollback_env_restored": False,
+            },
+            retry_attempts=2,
+            retry_delay_seconds=0.8,
+        )
+        await run_admin_sub_policy_panel_action(
+            query,
+            notice=f"无需变更：当前已是 {mode_name}（No-Op）",
+            retry_attempts=1,
+            retry_delay_seconds=0.5,
+        )
+        return
+
     if mode_key in ("strict", "signed") and not sign_key:
         await query.edit_message_text(
             "当前未设置 SUB_LINK_SIGN_KEY，无法启用签名预设。\n"
