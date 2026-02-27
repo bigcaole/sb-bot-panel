@@ -3,6 +3,7 @@ set -euo pipefail
 
 PROJECT_DIR="${PROJECT_DIR:-/root/sb-bot-panel}"
 ENV_FILE="${PROJECT_DIR}/.env"
+SCRIPT_ACTOR="harden-security"
 
 msg() { echo -e "\033[1;32m[信息]\033[0m $*"; }
 warn() { echo -e "\033[1;33m[警告]\033[0m $*"; }
@@ -94,6 +95,115 @@ normalize_whitelist_csv() {
     fi
   done
   echo "$result"
+}
+
+first_auth_token() {
+  local raw="${1:-}"
+  raw="${raw//$'\n'/}"
+  raw="${raw//$'\r'/}"
+  raw="$(echo "$raw" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+  if [[ "$raw" == *","* ]]; then
+    echo "$(echo "${raw%%,*}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+  else
+    echo "$raw"
+  fi
+}
+
+pick_working_auth_token() {
+  local controller_port="$1"
+  local raw="$2"
+  local trimmed=""
+  local code=""
+  local -a candidates=()
+  local -a raw_items=()
+  local item
+
+  raw="${raw//$'\n'/}"
+  raw="${raw//$'\r'/}"
+  if [[ -z "$raw" ]]; then
+    echo ""
+    return 0
+  fi
+
+  IFS=',' read -r -a raw_items <<<"$raw"
+  for item in "${raw_items[@]}"; do
+    trimmed="$(echo "$item" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    [[ -z "$trimmed" ]] && continue
+    candidates+=("$trimmed")
+  done
+  if (( ${#candidates[@]} == 0 )); then
+    echo ""
+    return 0
+  fi
+  if (( ${#candidates[@]} == 1 )); then
+    echo "${candidates[0]}"
+    return 0
+  fi
+
+  for item in "${candidates[@]}"; do
+    code="$(curl -sS -o /dev/null -w "%{http_code}" --max-time 3 \
+      -H "Authorization: Bearer ${item}" \
+      "http://127.0.0.1:${controller_port}/admin/security/status" || true)"
+    if [[ "$code" == "200" ]]; then
+      echo "$item"
+      return 0
+    fi
+  done
+
+  echo "${candidates[0]}"
+  return 1
+}
+
+sync_node_tokens_after_rotation() {
+  local controller_port="$1"
+  local auth_token_raw="$2"
+  local token=""
+  local response=""
+  local body=""
+  local http_code=""
+  local selected=""
+  local created=""
+  local deduplicated=""
+  local failed=""
+
+  token="$(pick_working_auth_token "$controller_port" "$auth_token_raw")" || {
+    warn "AUTH_TOKEN 多值模式下未探测到可用 token，回退使用第一个 token 执行节点同步。"
+  }
+  if [[ -z "$token" ]]; then
+    token="$(first_auth_token "$auth_token_raw")"
+  fi
+  if [[ -z "$token" ]]; then
+    warn "自动同步节点 token 已跳过：AUTH_TOKEN 为空。"
+    return
+  fi
+
+  response="$(
+    curl -sS --max-time 15 -X POST \
+      "http://127.0.0.1:${controller_port}/admin/auth/sync_node_tokens?include_disabled=1&force_new=1" \
+      -H "Authorization: Bearer ${token}" \
+      -H "X-Actor: ${SCRIPT_ACTOR}" \
+      -H "Content-Type: application/json" \
+      -w $'\n%{http_code}' 2>/dev/null || true
+  )"
+  http_code="${response##*$'\n'}"
+  body="${response%$'\n'*}"
+  if [[ "$http_code" != "200" ]]; then
+    warn "自动同步节点 token 失败（HTTP ${http_code:-unknown}）。可在 sb-admin 菜单手动执行。"
+    if [[ -n "$body" ]]; then
+      warn "返回：${body}"
+    fi
+    return
+  fi
+
+  if command -v jq >/dev/null 2>&1; then
+    selected="$(echo "$body" | jq -r '.selected // 0' 2>/dev/null || echo "0")"
+    created="$(echo "$body" | jq -r '.created // 0' 2>/dev/null || echo "0")"
+    deduplicated="$(echo "$body" | jq -r '.deduplicated // 0' 2>/dev/null || echo "0")"
+    failed="$(echo "$body" | jq -r '.failed // 0' 2>/dev/null || echo "0")"
+    msg "已自动同步节点 token：目标=${selected} 新建=${created} 去重=${deduplicated} 失败=${failed}"
+  else
+    msg "已自动触发节点 token 同步。"
+  fi
 }
 
 apply_ufw_rules() {
@@ -237,6 +347,7 @@ main() {
   echo "8080 策略: ${mode}"
   echo "8080 白名单: ${whitelist_final:-（空）}"
   if [[ -n "$new_token" ]]; then
+    sync_node_tokens_after_rotation "$controller_port" "$final_auth_token"
     echo ""
     warn "当前为 token 过渡模式（新,旧）。节点完成更新后，请将 AUTH_TOKEN 收敛为新 token。"
     echo "建议后续收敛为："
