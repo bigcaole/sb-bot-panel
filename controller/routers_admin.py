@@ -10,6 +10,14 @@ from fastapi.responses import JSONResponse
 
 from controller.audit import get_request_actor, get_source_ip_for_audit, write_audit_log
 from controller.db import BASE_DIR, get_connection
+from controller.db_migration import (
+    compare_snapshot_with_live,
+    export_db_snapshot,
+    get_db_integrity_status,
+    load_export_payload,
+    validate_export_payload,
+)
+from controller.schemas import VerifyDbExportRequest
 from controller.security import (
     API_RATE_LIMIT_ENABLED,
     API_RATE_LIMIT_MAX_REQUESTS,
@@ -120,6 +128,165 @@ def create_backup(
         "keep_count": BACKUP_RETENTION_COUNT,
         "created_at": created_at,
     }
+
+
+@router.post(
+    "/admin/db/export",
+    summary="Create logical DB export snapshot",
+    description=(
+        "AUTH_TOKEN 为空时不校验；非空时需要请求头 Authorization: Bearer <AUTH_TOKEN>。"
+        "用于后续跨数据库迁移前的一致性校验。"
+    ),
+    response_model=None,
+)
+def create_db_export(
+    request: Request,
+    authorization: Optional[str] = Header(default=None, alias="Authorization"),
+) -> Union[Dict[str, Union[bool, int, str, Dict]], JSONResponse]:
+    auth_error = verify_admin_authorization(authorization)
+    if auth_error is not None:
+        return auth_error
+
+    export_dir = Path("/var/backups/sb-controller")
+    fallback_dir = BASE_DIR / "data" / "exports"
+    try:
+        result = export_db_snapshot(export_dir=export_dir, keep_count=BACKUP_RETENTION_COUNT)
+    except OSError:
+        try:
+            result = export_db_snapshot(export_dir=fallback_dir, keep_count=BACKUP_RETENTION_COUNT)
+        except (OSError, ValueError) as exc:
+            raise HTTPException(status_code=500, detail="DB export failed: {0}".format(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=500, detail="DB export failed: {0}".format(exc)) from exc
+
+    with get_connection() as conn:
+        write_audit_log(
+            conn,
+            action="admin.db.export",
+            resource_type="db_export",
+            resource_id=str(Path(str(result.get("path", ""))).name),
+            detail={
+                "path": str(result.get("path", "")),
+                "size_bytes": int(result.get("size_bytes", 0) or 0),
+                "schema_version": int(result.get("schema_version", 0) or 0),
+                "cleaned_files": int(result.get("cleaned_files", 0) or 0),
+                "keep_count": int(result.get("keep_count", 1) or 1),
+            },
+            actor=get_request_actor(request),
+            source_ip=get_source_ip_for_audit(request),
+            created_at=int(result.get("created_at", int(time.time())) or int(time.time())),
+        )
+        conn.commit()
+
+    return {
+        "ok": True,
+        "path": str(result.get("path", "")),
+        "size_bytes": int(result.get("size_bytes", 0) or 0),
+        "created_at": int(result.get("created_at", 0) or 0),
+        "schema_version": int(result.get("schema_version", 0) or 0),
+        "table_summaries": result.get("table_summaries", {}),
+        "snapshot_sha256": str(result.get("snapshot_sha256", "")),
+        "cleaned_files": int(result.get("cleaned_files", 0) or 0),
+        "keep_count": int(result.get("keep_count", 1) or 1),
+    }
+
+
+@router.post(
+    "/admin/db/verify_export",
+    summary="Verify logical DB export snapshot",
+    description=(
+        "AUTH_TOKEN 为空时不校验；非空时需要请求头 Authorization: Bearer <AUTH_TOKEN>。"
+        "可校验快照格式与校验和，并可选与当前 SQLite 数据做一致性比对。"
+    ),
+    response_model=None,
+)
+def verify_db_export(
+    payload: VerifyDbExportRequest,
+    request: Request,
+    authorization: Optional[str] = Header(default=None, alias="Authorization"),
+) -> Union[Dict[str, Union[bool, int, str, List, Dict]], JSONResponse]:
+    auth_error = verify_admin_authorization(authorization)
+    if auth_error is not None:
+        return auth_error
+
+    export_path = Path(str(payload.path).strip())
+    if not export_path.exists():
+        raise HTTPException(status_code=404, detail="export file not found")
+    try:
+        export_payload = load_export_payload(export_path)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    validation = validate_export_payload(export_payload)
+    compare_live = bool(payload.compare_live)
+    live_match = False
+    mismatches: List = []
+    live_tables: Dict = {}
+
+    if compare_live and bool(validation.get("snapshot_valid")):
+        compare_result = compare_snapshot_with_live(export_payload)
+        live_match = bool(compare_result.get("live_match"))
+        mismatches = compare_result.get("mismatches", [])
+        live_tables = compare_result.get("live_tables", {})
+        ignored_tables = compare_result.get("ignored_tables", [])
+    else:
+        ignored_tables = []
+
+    ok = bool(validation.get("snapshot_valid")) and (not compare_live or live_match)
+    created_at = int(export_payload.get("created_at", int(time.time())) or int(time.time()))
+
+    with get_connection() as conn:
+        write_audit_log(
+            conn,
+            action="admin.db.verify_export",
+            resource_type="db_export",
+            resource_id=export_path.name,
+            detail={
+                "path": str(export_path),
+                "snapshot_valid": bool(validation.get("snapshot_valid")),
+                "compare_live": compare_live,
+                "live_match": live_match if compare_live else None,
+                "mismatch_count": len(mismatches) if isinstance(mismatches, list) else 0,
+            },
+            actor=get_request_actor(request),
+            source_ip=get_source_ip_for_audit(request),
+            created_at=int(time.time()),
+        )
+        conn.commit()
+
+    return {
+        "ok": ok,
+        "path": str(export_path),
+        "created_at": created_at,
+        "snapshot_valid": bool(validation.get("snapshot_valid")),
+        "format_ok": bool(validation.get("format_ok")),
+        "table_results": validation.get("table_results", {}),
+        "errors": validation.get("errors", []),
+        "compare_live": compare_live,
+        "live_match": live_match if compare_live else None,
+        "mismatches": mismatches if compare_live else [],
+        "live_tables": live_tables if compare_live else {},
+        "ignored_tables": ignored_tables if compare_live else [],
+    }
+
+
+@router.get(
+    "/admin/db/integrity",
+    summary="Check SQLite integrity status",
+    description=(
+        "AUTH_TOKEN 为空时不校验；非空时需要请求头 Authorization: Bearer <AUTH_TOKEN>。"
+        "可用于迁移前后快速确认 DB 完整性。"
+    ),
+    response_model=None,
+)
+def get_db_integrity(
+    include_checksums: int = 0,
+    authorization: Optional[str] = Header(default=None, alias="Authorization"),
+) -> Union[Dict[str, Union[bool, int, str, Dict]], JSONResponse]:
+    auth_error = verify_admin_authorization(authorization)
+    if auth_error is not None:
+        return auth_error
+    return get_db_integrity_status(include_checksums=bool(include_checksums))
 
 
 @router.post(

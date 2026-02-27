@@ -14,6 +14,7 @@ INSTALL_SCRIPT="${PROJECT_DIR}/scripts/admin/install_admin.sh"
 EXPORT_SCRIPT="${PROJECT_DIR}/scripts/admin/sb_migrate_export.sh"
 IMPORT_SCRIPT="${PROJECT_DIR}/scripts/admin/sb_migrate_import.sh"
 SMOKE_SCRIPT="${PROJECT_DIR}/scripts/admin/smoke_test.sh"
+DB_CHECK_SCRIPT="${PROJECT_DIR}/scripts/admin/db_consistency_check.sh"
 
 msg() { echo -e "\033[1;32m[信息]\033[0m $*"; }
 warn() { echo -e "\033[1;33m[警告]\033[0m $*"; }
@@ -68,8 +69,9 @@ show_menu() {
 11. 迁移：导出迁移包
 12. 迁移：导入迁移包
 13. 一键验收自检（语法/单测/API）
-14. 卸载
-15. 退出
+14. 数据库一致性校验（迁移前建议）
+15. 卸载
+16. 退出
 ========================================
 EOF
 }
@@ -191,7 +193,7 @@ main() {
 
   while true; do
     show_menu
-    read -r -p "请输入选项 [1-15]: " action
+    read -r -p "请输入选项 [1-16]: " action
     case "$action" in
       1)
         install_or_update
@@ -263,15 +265,23 @@ main() {
         pause
         ;;
       14)
-        do_uninstall
+        if [[ -f "$DB_CHECK_SCRIPT" ]]; then
+          bash "$DB_CHECK_SCRIPT"
+        else
+          err "未找到校验脚本: $DB_CHECK_SCRIPT"
+        fi
         pause
         ;;
       15)
+        do_uninstall
+        pause
+        ;;
+      16)
         msg "已退出。"
         exit 0
         ;;
       *)
-        warn "无效选项，请输入 1-15。"
+        warn "无效选项，请输入 1-16。"
         pause
         ;;
     esac

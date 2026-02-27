@@ -68,3 +68,8 @@ class UpdateNodeRequest(BaseModel):
     supports_tuic: Optional[int] = None
     monitor_enabled: Optional[int] = None
     note: Optional[str] = None
+
+
+class VerifyDbExportRequest(BaseModel):
+    path: str = Field(min_length=1)
+    compare_live: bool = True

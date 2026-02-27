@@ -266,8 +266,9 @@ sb-admin
 11. 迁移：导出迁移包
 12. 迁移：导入迁移包
 13. 一键验收自检（语法/单测/API）
-14. 卸载
-15. 退出
+14. 数据库一致性校验（迁移前建议）
+15. 卸载
+16. 退出
 
 统一验收命令（管理服务器）：
 
@@ -280,6 +281,17 @@ bash /root/sb-bot-panel/scripts/admin/smoke_test.sh --require-api
 - 默认会读取 `.env` 中的 `CONTROLLER_PORT` / `AUTH_TOKEN`
 - 检查项：Python 语法、`tests/` 单元测试、controller API 鉴权冒烟
 - 退出码：`0=通过`，`10=代码检查失败`，`20=API检查失败`，`30=代码+API均失败`
+
+数据库迁移前一致性校验（管理服务器）：
+
+```bash
+bash /root/sb-bot-panel/scripts/admin/db_consistency_check.sh
+```
+
+说明：
+
+- 会依次执行：`/admin/db/export` -> `/admin/db/verify_export`（与当前库比对）-> `/admin/db/integrity`
+- 任何一步失败会返回非 0 退出码，避免带问题做迁移
 
 ## GitHub 自动验收（CI）
 
@@ -423,6 +435,10 @@ scp root@旧IP:/var/backups/sb-migrate/sb-migrate-xxxx.tar.gz root@新IP:/root/
   - `API_RATE_LIMIT_ENABLED=1` 后，会对高风险管理路径按 IP+路径限流，超限返回 429
 - 安全状态检查：
   - `GET /admin/security/status` 可查看当前鉴权、订阅签名、XFF 信任、限流等配置状态与告警提示
+- 数据库迁移检查：
+  - `POST /admin/db/export` 生成逻辑导出快照（json.gz）
+  - `POST /admin/db/verify_export` 校验快照并可选对比当前数据库
+  - `GET /admin/db/integrity` 查看 SQLite 完整性与外键状态
 - 节点同步接口 `/nodes/{node_code}/sync` 已支持来源 IP 白名单：
   - 在节点创建/编辑时设置 `agent_ip`
   - `agent_ip` 已设置时，只有该 IP 才能拉取该节点 sync（其余返回 403）

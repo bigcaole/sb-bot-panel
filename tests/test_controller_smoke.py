@@ -151,6 +151,10 @@ class ControllerSmokeTestCase(unittest.TestCase):
             self.assertEqual(200, admin_sec.status_code)
             self.assertTrue(bool(admin_sec.json().get("auth_enabled")))
 
+            db_integrity = client.get("/admin/db/integrity", headers=self._auth_header())
+            self.assertEqual(200, db_integrity.status_code)
+            self.assertTrue(bool(db_integrity.json().get("ok")))
+
     def test_subscription_sign_and_access_smoke(self) -> None:
         with TestClient(app_module.app) as client:
             direct = client.get("/sub/links/u1001")
@@ -171,6 +175,26 @@ class ControllerSmokeTestCase(unittest.TestCase):
             body = signed_resp.text
             self.assertIn("vless://", body)
             self.assertIn("tuic://", body)
+
+    def test_db_export_and_verify_smoke(self) -> None:
+        with TestClient(app_module.app) as client:
+            export_resp = client.post("/admin/db/export", headers=self._auth_header())
+            self.assertEqual(200, export_resp.status_code)
+            export_payload = export_resp.json()
+            self.assertTrue(bool(export_payload.get("ok")))
+            export_path = str(export_payload.get("path", ""))
+            self.assertTrue(export_path.endswith(".json.gz"))
+
+            verify_resp = client.post(
+                "/admin/db/verify_export",
+                headers=self._auth_header(),
+                json={"path": export_path, "compare_live": True},
+            )
+            self.assertEqual(200, verify_resp.status_code)
+            verify_payload = verify_resp.json()
+            self.assertTrue(bool(verify_payload.get("ok")))
+            self.assertTrue(bool(verify_payload.get("snapshot_valid")))
+            self.assertTrue(bool(verify_payload.get("live_match")))
 
 
 if __name__ == "__main__":
