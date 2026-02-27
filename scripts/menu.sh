@@ -200,6 +200,7 @@ show_fail2ban_status() {
 
 show_ssh_security_status() {
   local ssh_service ssh_port client_ip pass_auth permit_root pubkey_auth
+  local fail2ban_bans_24h
   local risk_score risk_level
   local root_has_keys=0
   local fail2ban_ok=0
@@ -217,12 +218,14 @@ show_ssh_security_status() {
   local need_open_ssh_port=0
   local need_allow_current_ip=0
   local need_install_ufw=0
+  local need_reduce_attack_surface=0
   ssh_service="$(detect_ssh_service)"
   ssh_port="$(detect_sshd_port)"
   client_ip="$(detect_current_ssh_client_ip)"
   pass_auth="unknown"
   permit_root="unknown"
   pubkey_auth="unknown"
+  fail2ban_bans_24h="-1"
   risk_score=0
   risk_level="低"
 
@@ -286,6 +289,17 @@ show_ssh_security_status() {
     if systemctl is-active fail2ban >/dev/null 2>&1; then
       fail2ban_ok=1
       fail2ban-client status sshd 2>/dev/null || warn "未检测到 sshd jail（可能未启用）。"
+      fail2ban_bans_24h="$(get_fail2ban_ban_count_24h)"
+      if [[ "$fail2ban_bans_24h" =~ ^[0-9]+$ ]]; then
+        echo "近24小时封禁次数: ${fail2ban_bans_24h}"
+        if (( fail2ban_bans_24h >= 30 )); then
+          risk_score=$((risk_score + 1))
+          need_reduce_attack_surface=1
+          warn "近24小时封禁次数较高，建议收敛 SSH 暴露面（来源IP白名单/变更端口）。"
+        fi
+      else
+        warn "未能统计近24小时封禁次数（journalctl 可能不可用）。"
+      fi
     else
       risk_score=$((risk_score + 1))
       need_start_fail2ban=1
@@ -346,7 +360,7 @@ show_ssh_security_status() {
     warn "存在高风险，暂不建议切换仅密钥登录。"
   fi
 
-  if (( need_root_keys + need_enable_pubkey + need_disable_password + need_fix_permit_root + need_fix_ssh_service + need_install_ufw + need_open_ssh_port + need_allow_current_ip + need_install_fail2ban + need_start_fail2ban > 0 )); then
+  if (( need_root_keys + need_enable_pubkey + need_disable_password + need_fix_permit_root + need_fix_ssh_service + need_install_ufw + need_open_ssh_port + need_allow_current_ip + need_install_fail2ban + need_start_fail2ban + need_reduce_attack_surface > 0 )); then
     echo ""
     echo "----- 修复建议（按顺序）-----"
     local i=1
@@ -390,6 +404,10 @@ show_ssh_security_status() {
       echo "${i}) 启动 fail2ban：菜单 11（安装/启用 fail2ban）"
       i=$((i + 1))
     fi
+    if (( need_reduce_attack_surface == 1 )); then
+      echo "${i}) 收敛 SSH 暴露面：仅放行管理来源IP，必要时变更 SSH 端口并启用自动封禁。"
+      i=$((i + 1))
+    fi
   fi
 
   # Keep variables referenced for shellcheck clarity.
@@ -397,7 +415,7 @@ show_ssh_security_status() {
 }
 
 run_ssh_security_quick_fix() {
-  local ssh_port client_ip ufw_state
+  local ssh_port client_ip ufw_state removed_ufw_rules
   ssh_port="$(detect_sshd_port)"
   client_ip="$(detect_current_ssh_client_ip)"
 
@@ -411,6 +429,10 @@ run_ssh_security_quick_fix() {
     if [[ -n "$client_ip" ]]; then
       ufw allow from "$client_ip" to any port "$ssh_port" proto tcp >/dev/null || true
       msg "已尝试放行当前来源 IP(${client_ip}) 到 SSH 端口 ${ssh_port}。"
+    fi
+    removed_ufw_rules="$(cleanup_ufw_duplicate_ssh_rules "$ssh_port")"
+    if [[ "$removed_ufw_rules" =~ ^[0-9]+$ ]] && (( removed_ufw_rules > 0 )); then
+      msg "已清理重复 SSH 防火墙规则：${removed_ufw_rules} 条。"
     fi
     ufw_state="$(ufw status 2>/dev/null | head -n1 || true)"
     if [[ "$ufw_state" == *"inactive"* ]]; then
@@ -455,6 +477,61 @@ unban_fail2ban_ip() {
   fi
   fail2ban-client set sshd unbanip "$ip"
   msg "已尝试从 sshd jail 解封: $ip"
+}
+
+get_fail2ban_ban_count_24h() {
+  if ! command -v journalctl >/dev/null 2>&1; then
+    echo "-1"
+    return
+  fi
+  journalctl -u fail2ban --since "24 hours ago" --no-pager 2>/dev/null | awk '
+    / Ban / {count++}
+    END {print count + 0}
+  '
+}
+
+cleanup_ufw_duplicate_ssh_rules() {
+  local ssh_port removed_count
+  ssh_port="${1:-22}"
+  removed_count=0
+
+  if ! command -v ufw >/dev/null 2>&1; then
+    echo "0"
+    return
+  fi
+
+  local line num rule normalized
+  local -a delete_nums=()
+  local -A seen_rules=()
+
+  while IFS= read -r line; do
+    num="$(echo "$line" | sed -n 's/^\[ *\([0-9][0-9]*\)\].*/\1/p')"
+    rule="$(echo "$line" | sed -n 's/^\[ *[0-9][0-9]*\] *//p')"
+    if [[ -z "$num" || -z "$rule" ]]; then
+      continue
+    fi
+    if ! echo "$rule" | grep -E "^${ssh_port}(/tcp)?[[:space:]]+ALLOW" >/dev/null 2>&1; then
+      continue
+    fi
+    normalized="$(echo "$rule" | tr -s ' ' ' ' | sed 's/^ //; s/ $//')"
+    if [[ -n "${seen_rules[$normalized]+x}" ]]; then
+      delete_nums+=("$num")
+    else
+      seen_rules["$normalized"]=1
+    fi
+  done < <(ufw status numbered 2>/dev/null || true)
+
+  if (( ${#delete_nums[@]} > 0 )); then
+    local sorted_num
+    while IFS= read -r sorted_num; do
+      if [[ -n "$sorted_num" ]]; then
+        ufw --force delete "$sorted_num" >/dev/null 2>&1 || true
+        removed_count=$((removed_count + 1))
+      fi
+    done < <(printf '%s\n' "${delete_nums[@]}" | sort -rn)
+  fi
+
+  echo "$removed_count"
 }
 
 generate_ssh_keypair() {
