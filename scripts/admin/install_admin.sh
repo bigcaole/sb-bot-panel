@@ -25,6 +25,7 @@ VENV_DIR=""
 ENV_FILE=""
 PYTHON_BIN=""
 MIGRATE_DIR_DEFAULT="/var/backups/sb-migrate"
+BOT_TOKEN_PLACEHOLDER="__REPLACE_WITH_TELEGRAM_BOT_TOKEN__"
 
 CONTROLLER_PORT="8080"
 CONTROLLER_PORT_WHITELIST=""
@@ -96,6 +97,11 @@ ask_yes_no() {
   read -r -p "$prompt $hint: " answer
   answer="${answer:-$default}"
   [[ "$answer" =~ ^[Yy]$ ]]
+}
+
+is_bot_token_configured() {
+  local token="$1"
+  [[ -n "$token" && "$token" != "$BOT_TOKEN_PLACEHOLDER" ]]
 }
 
 get_public_ipv4() {
@@ -425,7 +431,7 @@ load_existing_env_defaults() {
   else
     AUTH_TOKEN="$(generate_auth_token)"
   fi
-  BOT_TOKEN="${old_bot:-}"
+  BOT_TOKEN="${old_bot:-$BOT_TOKEN_PLACEHOLDER}"
   ADMIN_CHAT_IDS="${old_admin:-}"
   VIEW_ADMIN_CHAT_IDS="${old_view_admin:-}"
   OPS_ADMIN_CHAT_IDS="${old_ops_admin:-}"
@@ -568,7 +574,7 @@ prompt_env_config() {
   echo "  - HTTPS_ACME_EMAIL：证书账号邮箱（可选，建议填写）"
   echo "  - CONTROLLER_URL：bot 调用 controller 的地址（通常 127.0.0.1）"
   echo "  - AUTH_TOKEN：可选；用于保护 controller 接口（除 /health、/sub/*、文档页），默认自动生成随机串（输入 - 可关闭）"
-  echo "  - BOT_TOKEN：必填；Telegram 机器人 token"
+  echo "  - BOT_TOKEN：建议填写；留空将使用占位值并跳过启动 sb-bot"
   echo "  - ADMIN_CHAT_IDS：可选；用于限制谁可操作 bot"
   echo "  - VIEW/OPS/SUPER_ADMIN_CHAT_IDS：可选；细分只读/运维/超级管理员权限"
   echo "  - MIGRATE_DIR：迁移包/备份包输出目录"
@@ -670,13 +676,11 @@ prompt_env_config() {
     AUTH_TOKEN="${input_auth:-$AUTH_TOKEN}"
   fi
 
-  while [[ -z "$BOT_TOKEN" ]]; do
-    read -r -p "BOT_TOKEN（必填；Telegram 机器人 token） [保持现值请直接回车]: " input_bot
-    BOT_TOKEN="${input_bot:-$BOT_TOKEN}"
-    if [[ -z "$BOT_TOKEN" ]]; then
-      warn "BOT_TOKEN 不能为空。"
-    fi
-  done
+  read -r -p "BOT_TOKEN（建议填写；Telegram 机器人 token，直接回车使用默认占位） [${BOT_TOKEN}]: " input_bot
+  BOT_TOKEN="${input_bot:-$BOT_TOKEN}"
+  if ! is_bot_token_configured "$BOT_TOKEN"; then
+    warn "BOT_TOKEN 当前为占位值。脚本会完成安装，但不会启动 sb-bot，需后续在配置向导中填入真实 token。"
+  fi
 
   read -r -p "ADMIN_CHAT_IDS（可选；逗号分隔，限制谁能操作 bot） [${ADMIN_CHAT_IDS}]: " input_admin
   ADMIN_CHAT_IDS="${input_admin:-$ADMIN_CHAT_IDS}"
@@ -1065,9 +1069,15 @@ restart_caddy_with_diagnostics() {
 restart_services() {
   systemctl daemon-reload
   systemctl enable sb-controller >/dev/null
-  systemctl enable sb-bot >/dev/null
   systemctl restart sb-controller
-  systemctl restart sb-bot
+  if is_bot_token_configured "$BOT_TOKEN"; then
+    systemctl enable sb-bot >/dev/null
+    systemctl restart sb-bot
+  else
+    systemctl disable sb-bot >/dev/null 2>&1 || true
+    systemctl stop sb-bot >/dev/null 2>&1 || true
+    warn "已跳过 sb-bot 启动：BOT_TOKEN 仍为占位值。"
+  fi
   if [[ "$ENABLE_HTTPS" == "1" ]]; then
     restart_caddy_with_diagnostics
   fi
@@ -1106,7 +1116,11 @@ run_self_checks() {
   check_env_key "CONTROLLER_PORT"
   check_env_key "CONTROLLER_URL"
   check_env_key "PANEL_BASE_URL"
-  check_env_key "BOT_TOKEN"
+  if is_bot_token_configured "$BOT_TOKEN"; then
+    check_ok ".env 参数存在：BOT_TOKEN"
+  else
+    check_warn "BOT_TOKEN 仍为占位值（sb-bot 未启动）"
+  fi
   check_env_key "MIGRATE_DIR"
   check_env_key "BACKUP_RETENTION_COUNT"
   check_env_key "MIGRATE_RETENTION_COUNT"
@@ -1149,10 +1163,14 @@ run_self_checks() {
   else
     check_warn "sb-controller 未启用开机启动"
   fi
-  if systemctl is-enabled sb-bot >/dev/null 2>&1; then
-    check_ok "sb-bot 已设为开机启动"
+  if is_bot_token_configured "$BOT_TOKEN"; then
+    if systemctl is-enabled sb-bot >/dev/null 2>&1; then
+      check_ok "sb-bot 已设为开机启动"
+    else
+      check_warn "sb-bot 未启用开机启动"
+    fi
   else
-    check_warn "sb-bot 未启用开机启动"
+    check_warn "BOT_TOKEN 未配置，已按预期跳过 sb-bot 开机启动"
   fi
 
   if systemctl is-active sb-controller >/dev/null 2>&1; then
@@ -1160,10 +1178,14 @@ run_self_checks() {
   else
     check_fail "sb-controller 未运行"
   fi
-  if systemctl is-active sb-bot >/dev/null 2>&1; then
-    check_ok "sb-bot 运行中"
+  if is_bot_token_configured "$BOT_TOKEN"; then
+    if systemctl is-active sb-bot >/dev/null 2>&1; then
+      check_ok "sb-bot 运行中"
+    else
+      check_fail "sb-bot 未运行"
+    fi
   else
-    check_fail "sb-bot 未运行"
+    check_warn "BOT_TOKEN 未配置，已按预期跳过 sb-bot 运行检查"
   fi
 
   if wait_for_controller_ready 30; then
@@ -1251,6 +1273,11 @@ show_summary() {
   echo "BOT_NODE_MONITOR_INTERVAL: ${BOT_NODE_MONITOR_INTERVAL}"
   echo "BOT_NODE_OFFLINE_THRESHOLD: ${BOT_NODE_OFFLINE_THRESHOLD}"
   echo "BOT_MUTATION_COOLDOWN: ${BOT_MUTATION_COOLDOWN}"
+  if is_bot_token_configured "$BOT_TOKEN"; then
+    echo "BOT_TOKEN: 已配置（sb-bot 已启用）"
+  else
+    echo "BOT_TOKEN: 占位值（sb-bot 未启用，需在配置向导填写真实 token）"
+  fi
   echo "TRUST_X_FORWARDED_FOR: ${TRUST_X_FORWARDED_FOR}"
   echo "NODE_TASK_RUNNING_TIMEOUT: ${NODE_TASK_RUNNING_TIMEOUT}"
   echo "NODE_TASK_RETENTION_SECONDS: ${NODE_TASK_RETENTION_SECONDS}"

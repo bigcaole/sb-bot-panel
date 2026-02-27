@@ -27,6 +27,19 @@ pause() {
   read -r -p "按回车继续..." _
 }
 
+confirm_action() {
+  local prompt="$1"
+  local default="${2:-N}"
+  local answer
+  local hint="[y/N]"
+  if [[ "$default" == "Y" ]]; then
+    hint="[Y/n]"
+  fi
+  read -r -p "${prompt} ${hint}: " answer
+  answer="${answer:-$default}"
+  [[ "$answer" =~ ^[Yy]$ ]]
+}
+
 require_root() {
   if [[ "${EUID}" -ne 0 ]]; then
     err "请使用 root 权限运行菜单，例如：sudo bash scripts/menu.sh"
@@ -334,7 +347,7 @@ show_menu() {
   echo "========================================"
   echo " sb-agent 中文管理菜单"
   echo "========================================"
-  echo " 1) 更新同步（保留原配置，自动 git pull）"
+  echo "【运行与配置】"
   echo " 2) 配置（修改 /etc/sb-agent/config.json）"
   echo " 3) 启动 sb-agent"
   echo " 4) 停止 sb-agent"
@@ -345,13 +358,18 @@ show_menu() {
   echo " 9) 查看 sing-box 状态与最近日志"
   echo "10) 证书状态检查"
   echo "11) 触发证书重新申请/刷新（先备份）"
-  echo "12) 卸载"
+  echo ""
+  echo "【安全工具】"
   echo "13) 安装/启用 fail2ban（SSH 防爆破）"
   echo "14) 查看 fail2ban 状态与封禁列表"
   echo "15) 解封 fail2ban 封禁 IP"
   echo "16) 生成 SSH 密钥（ed25519）"
   echo "17) 启用 SSH 仅密钥登录（禁用密码）"
   echo "18) 恢复 SSH 密码登录（应急）"
+  echo ""
+  echo "【系统级操作（谨慎）】"
+  echo " 1) 更新同步（保留原配置，自动 git pull）"
+  echo "12) 卸载"
   echo " 0) 退出"
   echo "========================================"
 }
@@ -363,7 +381,11 @@ main() {
     read -r -p "请选择操作 [0-18]: " choice
     case "$choice" in
       1)
-        run_install
+        if confirm_action "确认执行更新同步？" "N"; then
+          run_install
+        else
+          warn "已取消更新同步。"
+        fi
         pause
         ;;
       2)
@@ -438,8 +460,10 @@ main() {
         pause
         ;;
       0)
-        msg "已退出。"
-        exit 0
+        if confirm_action "确认退出菜单？" "Y"; then
+          msg "已退出。"
+          exit 0
+        fi
         ;;
       *)
         warn "无效选项，请输入 0-18。"

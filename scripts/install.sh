@@ -464,22 +464,20 @@ prompt_config() {
     NODE_CODE="$(echo "$NODE_CODE" | tr -d '[:space:]')"
   done
 
-  read -r -p "3) 请输入 auth_token（用于拉取 sync） [${old_token}]: " AUTH_TOKEN
-  AUTH_TOKEN="${AUTH_TOKEN:-$old_token}"
+  read -r -p "3) 请输入 auth_token（用于拉取 sync） [${old_token:-devtoken123}]: " AUTH_TOKEN
+  AUTH_TOKEN="${AUTH_TOKEN:-${old_token:-devtoken123}}"
 
   read -r -p "4) 请输入 tuic_domain（例如 jp1.cwzs.de；留空=不启用TUIC） [${old_domain}]: " TUIC_DOMAIN
   TUIC_DOMAIN="${TUIC_DOMAIN:-$old_domain}"
   TUIC_DOMAIN="${TUIC_DOMAIN//[$'\r\n']}"
 
   if [[ -n "$TUIC_DOMAIN" ]]; then
-    while [[ -z "$ACME_EMAIL" ]]; do
-      read -r -p "5) 请输入 acme_email（例如 admin@cwzs.de） [${old_email}]: " ACME_EMAIL
-      ACME_EMAIL="${ACME_EMAIL:-$old_email}"
-      ACME_EMAIL="$(echo "$ACME_EMAIL" | tr -d '[:space:]')"
-      if [[ -z "$ACME_EMAIL" ]]; then
-        warn "启用 TUIC 时，acme_email 不能为空。"
-      fi
-    done
+    read -r -p "5) 请输入 acme_email（例如 admin@cwzs.de） [${old_email:-admin@example.com}]: " ACME_EMAIL
+    ACME_EMAIL="${ACME_EMAIL:-${old_email:-admin@example.com}}"
+    ACME_EMAIL="$(echo "$ACME_EMAIL" | tr -d '[:space:]')"
+    if [[ "$ACME_EMAIL" == "admin@example.com" ]]; then
+      warn "当前 acme_email 使用默认占位邮箱，建议后续改为你的真实邮箱。"
+    fi
   else
     ACME_EMAIL=""
     msg "已选择不启用 TUIC，跳过证书邮箱。"

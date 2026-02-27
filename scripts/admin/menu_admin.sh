@@ -34,6 +34,19 @@ pause() {
   read -r -p "按回车继续..." _
 }
 
+confirm_action() {
+  local prompt="$1"
+  local default="${2:-N}"
+  local answer
+  local hint="[y/N]"
+  if [[ "$default" == "Y" ]]; then
+    hint="[Y/n]"
+  fi
+  read -r -p "${prompt} ${hint}: " answer
+  answer="${answer:-$default}"
+  [[ "$answer" =~ ^[Yy]$ ]]
+}
+
 get_controller_port() {
   local env_file="${PROJECT_DIR}/.env"
   local port="8080"
@@ -120,7 +133,7 @@ show_config_guide() {
   echo "  - HTTPS_ACME_EMAIL（可选，证书账号邮箱）"
   echo "  - AUTH_TOKEN（可选；用于保护 controller 接口；默认建议随机串，不建议弱口令）"
   echo "  - SECURITY_EVENTS_EXCLUDE_LOCAL（是否过滤本机测试来源，建议 1）"
-  echo "  - BOT_TOKEN（必填；Telegram 机器人 token）"
+  echo "  - BOT_TOKEN（建议填写；留空将使用占位值并跳过启动 sb-bot）"
   echo "  - ADMIN_CHAT_IDS（可选；限制谁能使用 bot）"
   echo "  - MIGRATE_DIR（迁移包/备份包输出目录）"
   echo "  - BOT_MENU_TTL（bot 菜单按钮自动清理秒数）"
@@ -136,7 +149,7 @@ show_menu() {
 ========================================
  sb-bot-panel 管理服务器菜单
 ========================================
-1. 安装/更新（git pull + 依赖 + venv + 重启）
+【日常运维】
 2. 配置向导（修改端口/域名/token 等参数）
 3. 启动 controller
 4. 停止 controller
@@ -153,6 +166,9 @@ show_menu() {
 15. 安全加固向导（token轮换 + 8080收敛）
 16. 收敛 AUTH_TOKEN（新旧双token -> 单token）
 17. 手动安全清理（过期封禁 + 审计日志）
+
+【系统级操作（谨慎）】
+1. 安装/更新（git pull + 依赖 + venv + 重启）
 18. 卸载
 19. 退出
 ========================================
@@ -279,7 +295,11 @@ main() {
     read -r -p "请输入选项 [1-19]: " action
     case "$action" in
       1)
-        install_or_update
+        if confirm_action "确认执行安装/更新？" "N"; then
+          install_or_update
+        else
+          warn "已取消安装/更新。"
+        fi
         pause
         ;;
       2)
@@ -333,7 +353,16 @@ main() {
         ;;
       12)
         if [[ -f "$IMPORT_SCRIPT" ]]; then
-          read -r -p "请输入迁移包路径: " pkg_path
+          local default_pkg migrate_dir_env
+          migrate_dir_env="$(grep -E '^MIGRATE_DIR=' "${PROJECT_DIR}/.env" 2>/dev/null | tail -n1 | cut -d= -f2- || true)"
+          default_pkg="$(ls -1t "${migrate_dir_env:-/var/backups/sb-migrate}"/sb-migrate-*.tar.gz 2>/dev/null | head -n1 || true)"
+          read -r -p "请输入迁移包路径 [${default_pkg}]: " pkg_path
+          pkg_path="${pkg_path:-$default_pkg}"
+          if [[ -z "$pkg_path" ]]; then
+            warn "未提供迁移包路径。"
+            pause
+            continue
+          fi
           bash "$IMPORT_SCRIPT" "$pkg_path"
         else
           err "未找到导入脚本: $IMPORT_SCRIPT"
@@ -381,8 +410,10 @@ main() {
         pause
         ;;
       19)
-        msg "已退出。"
-        exit 0
+        if confirm_action "确认退出菜单？" "Y"; then
+          msg "已退出。"
+          exit 0
+        fi
         ;;
       *)
         warn "无效选项，请输入 1-19。"

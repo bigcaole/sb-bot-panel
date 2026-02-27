@@ -48,7 +48,7 @@ sudo bash /path/to/sb-bot-panel/scripts/menu.sh
 
 菜单项：
 
-1. 更新同步（保留原配置，自动 `git pull`，无交互）
+【日常运维】
 2. 配置（重写 `/etc/sb-agent/config.json`）
 3. 启动 sb-agent
 4. 停止 sb-agent
@@ -59,13 +59,17 @@ sudo bash /path/to/sb-bot-panel/scripts/menu.sh
 9. 查看 sing-box 状态与最近日志
 10. 证书状态检查
 11. 触发证书重新申请/刷新（先备份再清理）
-12. 卸载
+【安全工具】
 13. 安装/启用 fail2ban（SSH 防爆破）
 14. 查看 fail2ban 状态与封禁列表
 15. 解封 fail2ban 封禁 IP
 16. 生成 SSH 密钥（ed25519）
 17. 启用 SSH 仅密钥登录（禁用密码）
 18. 恢复 SSH 密码登录（应急）
+【系统级操作（谨慎）】
+1. 更新同步（保留原配置，自动 `git pull`，无交互）
+12. 卸载
+0. 退出
 
 说明：
 
@@ -262,7 +266,7 @@ sb-admin
 
 菜单项：
 
-1. 安装/更新（git pull + 依赖 + venv + 重启）
+【日常运维】
 2. 配置向导（修改参数并重启）
 3. 启动 controller
 4. 停止 controller
@@ -278,8 +282,11 @@ sb-admin
 14. 数据库一致性校验（迁移前建议）
 15. 安全加固向导（token 轮换 + 8080 收敛）
 16. 收敛 AUTH_TOKEN（新旧双token -> 单token）
-17. 卸载
-18. 退出
+17. 手动安全清理（过期封禁 + 审计日志）
+【系统级操作（谨慎）】
+1. 安装/更新（git pull + 依赖 + venv + 重启）
+18. 卸载
+19. 退出
 
 统一验收命令（管理服务器）：
 
@@ -390,7 +397,7 @@ scp root@旧IP:/var/backups/sb-migrate/sb-migrate-xxxx.tar.gz root@新IP:/root/
 - `AUDIT_LOG_RETENTION_DAYS=30`（可选；审计日志保留天数）
 - `AUDIT_LOG_CLEANUP_INTERVAL_SECONDS=3600`（可选；审计日志自动清理周期）
 - `AUDIT_LOG_CLEANUP_BATCH_SIZE=2000`（可选；单次清理批量）
-- `BOT_TOKEN=xxxxxxxx`（必填）
+- `BOT_TOKEN=xxxxxxxx`（建议填写；留空会写入占位值并跳过启动 sb-bot）
 - `ADMIN_CHAT_IDS=123,456`（可空）
 - `VIEW_ADMIN_CHAT_IDS=`（可选，只读管理员）
 - `OPS_ADMIN_CHAT_IDS=`（可选，运维管理员）
