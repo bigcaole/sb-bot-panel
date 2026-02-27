@@ -247,6 +247,17 @@ class ControllerSmokeTestCase(unittest.TestCase):
             self.assertTrue(bool(audit_event_payload.get("ok")))
             self.assertEqual("bot.sub_policy.apply", str(audit_event_payload.get("action")))
 
+            sync_tokens_resp = client.post(
+                "/admin/auth/sync_node_tokens",
+                headers=self._auth_header(),
+            )
+            self.assertEqual(200, sync_tokens_resp.status_code)
+            sync_tokens_payload = sync_tokens_resp.json()
+            self.assertTrue(bool(sync_tokens_payload.get("ok")))
+            self.assertEqual(1, int(sync_tokens_payload.get("selected", 0) or 0))
+            self.assertIn("created", sync_tokens_payload)
+            self.assertIn("deduplicated", sync_tokens_payload)
+
             sec_events = client.get(
                 "/admin/security/events?window_seconds=3600&top=3",
                 headers=self._auth_header(),

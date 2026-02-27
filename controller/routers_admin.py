@@ -25,9 +25,11 @@ from controller.db_migration import (
     load_export_payload,
     validate_export_payload,
 )
+from controller.node_runtime_service import create_node_task_service
 from controller.schemas import (
     AuditEventRequest,
     BlockIpRequest,
+    CreateNodeTaskRequest,
     UnblockIpRequest,
     VerifyDbExportRequest,
 )
@@ -51,6 +53,8 @@ from controller.settings import (
     CONTROLLER_PORT,
     MIGRATE_RETENTION_COUNT,
     NODE_TASK_MAX_PENDING_PER_NODE,
+    NODE_TASK_RETENTION_SECONDS,
+    NODE_TASK_RUNNING_TIMEOUT_SECONDS,
     NODE_MONITOR_OFFLINE_THRESHOLD_SECONDS,
     SECURITY_AUTO_BLOCK_DURATION_SECONDS,
     SECURITY_AUTO_BLOCK_ENABLED,
@@ -71,6 +75,116 @@ from controller.subscription import build_signed_subscription_urls
 router = APIRouter(tags=["admin"])
 # Compatibility alias for existing tests/tools that import controller.routers_admin.AUTH_TOKEN.
 AUTH_TOKEN = SECURITY_AUTH_TOKEN
+
+
+@router.post(
+    "/admin/auth/sync_node_tokens",
+    summary="Enqueue config_set(auth_token) for nodes",
+    description=(
+        "AUTH_TOKEN 为空时不校验；非空时需要请求头 Authorization: Bearer <AUTH_TOKEN>。"
+        "使用当前主 token（AUTH_TOKEN 第一个）为节点下发 config_set(auth_token) 任务。"
+    ),
+    response_model=None,
+)
+def sync_node_auth_tokens(
+    request: Request,
+    include_disabled: int = 0,
+    force_new: int = 0,
+    authorization: Optional[str] = Header(default=None, alias="Authorization"),
+) -> Union[Dict[str, Union[bool, int, str, List[Dict[str, str]]]], JSONResponse]:
+    auth_error = verify_admin_authorization(authorization)
+    if auth_error is not None:
+        return auth_error
+
+    tokens = get_auth_tokens()
+    if not tokens:
+        raise HTTPException(status_code=400, detail="AUTH_TOKEN 未配置")
+    primary_token = str(tokens[0]).strip()
+    if not primary_token:
+        raise HTTPException(status_code=400, detail="AUTH_TOKEN 主 token 为空")
+
+    include_disabled_flag = int(include_disabled) == 1
+    force_new_flag = int(force_new) == 1
+    now_ts = int(time.time())
+
+    with get_connection() as conn:
+        if include_disabled_flag:
+            node_rows = conn.execute(
+                "SELECT node_code, enabled FROM nodes ORDER BY node_code ASC LIMIT 500"
+            ).fetchall()
+        else:
+            node_rows = conn.execute(
+                "SELECT node_code, enabled FROM nodes WHERE enabled = 1 ORDER BY node_code ASC LIMIT 500"
+            ).fetchall()
+
+    selected = len(node_rows)
+    created = 0
+    deduplicated = 0
+    failed = 0
+    failures: List[Dict[str, str]] = []
+
+    payload = CreateNodeTaskRequest(
+        task_type="config_set",
+        payload={"auth_token": primary_token},
+        max_attempts=1,
+        force_new=force_new_flag,
+    )
+    for row in node_rows:
+        node_code = str(row["node_code"] or "").strip()
+        if not node_code:
+            continue
+        try:
+            task_data = create_node_task_service(
+                node_code=node_code,
+                payload=payload,
+                request=request,
+                running_timeout_seconds=NODE_TASK_RUNNING_TIMEOUT_SECONDS,
+                retention_seconds=NODE_TASK_RETENTION_SECONDS,
+                max_pending_per_node=NODE_TASK_MAX_PENDING_PER_NODE,
+            )
+            if bool(task_data.get("deduplicated")):
+                deduplicated += 1
+            else:
+                created += 1
+        except HTTPException as exc:
+            failed += 1
+            failures.append(
+                {
+                    "node_code": node_code,
+                    "error": str(exc.detail),
+                }
+            )
+
+    with get_connection() as conn:
+        write_audit_log(
+            conn,
+            action="admin.auth.sync_node_tokens",
+            resource_type="security",
+            resource_id="nodes",
+            detail={
+                "selected": selected,
+                "created": created,
+                "deduplicated": deduplicated,
+                "failed": failed,
+                "include_disabled": include_disabled_flag,
+                "force_new": force_new_flag,
+            },
+            actor=get_request_actor(request),
+            source_ip=get_source_ip_for_audit(request),
+            created_at=now_ts,
+        )
+        conn.commit()
+
+    return {
+        "ok": True,
+        "selected": selected,
+        "created": created,
+        "deduplicated": deduplicated,
+        "failed": failed,
+        "include_disabled": include_disabled_flag,
+        "force_new": force_new_flag,
+        "failures": failures[:20],
+    }
 
 
 def build_unauthorized_events_snapshot(

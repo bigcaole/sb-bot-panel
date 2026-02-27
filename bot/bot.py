@@ -271,6 +271,7 @@ SUBMENUS = {
         "buttons": [
             ("🛡 安全事件(1h)", "action:maintain_security_events"),
             ("🧩 订阅安全预设", "action:maintain_sub_policy"),
+            ("🔁 同步节点Token", "action:maintain_sync_node_tokens"),
             ("🧱 访问安全", "action:maintain_acl_status"),
             ("🔑 收敛AUTH_TOKEN", "action:maintain_token_collapse"),
             ("⬅️ 返回管理服务器", "menu:maintain"),
@@ -353,6 +354,7 @@ PRIVILEGED_CALLBACK_EXACT = {
     "action:maintain_sub_policy": ROLE_OPERATOR,
     "action:maintain_controller_start": ROLE_OPERATOR,
     "action:maintain_https_reload": ROLE_OPERATOR,
+    "action:maintain_sync_node_tokens": ROLE_SUPER,
     "action:user_delete": ROLE_SUPER,
     "action:node_ops": ROLE_SUPER,
     "action:maintain_update": ROLE_SUPER,
@@ -407,6 +409,7 @@ MUTATION_CALLBACK_EXACT = {
     "action:maintain_migrate_export",
     "action:maintain_migrate_import",
     "maintain:token_collapse:confirm",
+    "action:maintain_sync_node_tokens",
 }
 
 MUTATION_CALLBACK_PREFIXES = (
@@ -3337,6 +3340,58 @@ async def run_admin_sub_policy_panel_action(
     await query.edit_message_text(
         "\n".join(lines),
         reply_markup=build_sub_policy_keyboard(),
+    )
+
+
+async def run_admin_sync_node_tokens_action(query) -> None:
+    result, error_message, _ = await controller_request(
+        "POST",
+        "/admin/auth/sync_node_tokens",
+    )
+    if error_message:
+        await query.edit_message_text(
+            "同步节点 Token 失败：{0}".format(localize_controller_error(error_message)),
+            reply_markup=build_back_keyboard("menu:maintain"),
+        )
+        return
+    if not isinstance(result, dict):
+        await query.edit_message_text(
+            "同步节点 Token 失败：返回格式异常。",
+            reply_markup=build_back_keyboard("menu:maintain"),
+        )
+        return
+
+    selected = int(result.get("selected", 0) or 0)
+    created = int(result.get("created", 0) or 0)
+    deduplicated = int(result.get("deduplicated", 0) or 0)
+    failed = int(result.get("failed", 0) or 0)
+    include_disabled = bool(result.get("include_disabled"))
+    force_new = bool(result.get("force_new"))
+    failures = result.get("failures", [])
+
+    lines = [
+        "节点 Token 同步完成",
+        "",
+        f"目标节点数：{selected}",
+        f"新建任务：{created}",
+        f"去重任务：{deduplicated}",
+        f"失败数：{failed}",
+        f"包含禁用节点：{'是' if include_disabled else '否'}",
+        f"强制新建任务：{'是' if force_new else '否'}",
+        "",
+        "说明：已为节点下发 config_set(auth_token=主 token) 任务，节点在下一次轮询时会应用。",
+    ]
+    if isinstance(failures, list) and failures:
+        lines.append("")
+        lines.append("失败节点（最多 8 条）：")
+        for item in failures[:8]:
+            node_code = str(item.get("node_code", "")).strip() or "-"
+            err = str(item.get("error", "")).strip() or "unknown"
+            lines.append(f"- {node_code}: {err}")
+
+    await query.edit_message_text(
+        "\n".join(lines),
+        reply_markup=build_back_keyboard("menu:maintain"),
     )
 
 
@@ -6485,6 +6540,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     if callback_data == "action:maintain_log_archive":
         await run_admin_log_archive_action(query, "menu:maintain")
+        return
+
+    if callback_data == "action:maintain_sync_node_tokens":
+        await run_admin_sync_node_tokens_action(query)
         return
 
     if callback_data == "action:maintain_update":
