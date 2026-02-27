@@ -328,6 +328,10 @@ PRIVILEGED_CALLBACK_PREFIXES = {
     "nodeops:": ROLE_SUPER,
     "maintain:logs:": ROLE_OPERATOR,
     "maintain:logsdate:": ROLE_OPERATOR,
+    "sb:bl:": ROLE_OPERATOR,
+    "sb:bi:": ROLE_SUPER,
+    "sb:ba:": ROLE_SUPER,
+    "sb:bu:": ROLE_SUPER,
 }
 
 MUTATION_CALLBACK_EXACT = {
@@ -357,6 +361,8 @@ MUTATION_CALLBACK_PREFIXES = (
     "node:apply_edit:",
     "node:reality_apply:",
     "nodeops:run:",
+    "sb:ba:",
+    "sb:bu:",
 )
 MAINTAIN_ALLOWED_ENV_KEYS = [
     "CONTROLLER_PORT",
@@ -389,6 +395,7 @@ MAINTAIN_ALLOWED_ENV_KEYS = [
     "API_RATE_LIMIT_WINDOW_SECONDS",
     "API_RATE_LIMIT_MAX_REQUESTS",
     "SECURITY_EVENTS_EXCLUDE_LOCAL",
+    "UNAUTHORIZED_AUDIT_SAMPLE_SECONDS",
 ]
 
 
@@ -1332,22 +1339,107 @@ def build_back_keyboard(callback_data: str) -> InlineKeyboardMarkup:
     )
 
 
-def build_security_events_keyboard(include_local: bool) -> InlineKeyboardMarkup:
+def security_events_mode_callback(include_local: bool) -> str:
+    if include_local:
+        return "action:maintain_security_events_local"
+    return "action:maintain_security_events"
+
+
+def encode_ip_token(source_ip: str) -> str:
+    return str(source_ip or "").strip().replace(":", "_")
+
+
+def decode_ip_token(token: str) -> str:
+    raw_value = str(token or "").strip().replace("_", ":")
+    if not raw_value:
+        return ""
+    try:
+        return str(ipaddress.ip_address(raw_value))
+    except ValueError:
+        return ""
+
+
+def shorten_ip_for_button(source_ip: str, limit: int = 18) -> str:
+    text = str(source_ip or "").strip()
+    if len(text) <= limit:
+        return text
+    if limit <= 6:
+        return text[:limit]
+    return text[: limit - 3] + "..."
+
+
+def build_security_events_keyboard(include_local: bool, top_ips: list) -> InlineKeyboardMarkup:
+    mode_flag = "1" if include_local else "0"
+    rows = [
+        [
+            InlineKeyboardButton(
+                "过滤本机视角",
+                callback_data="action:maintain_security_events",
+            ),
+            InlineKeyboardButton(
+                "包含本机视角",
+                callback_data="action:maintain_security_events_local",
+            ),
+        ],
+    ]
+    for source_ip in top_ips[:3]:
+        token = encode_ip_token(str(source_ip))
+        button_ip = shorten_ip_for_button(str(source_ip))
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    f"封1h {button_ip}",
+                    callback_data=f"sb:bi:3600:{mode_flag}:{token}",
+                ),
+                InlineKeyboardButton(
+                    f"封24h {button_ip}",
+                    callback_data=f"sb:bi:86400:{mode_flag}:{token}",
+                ),
+            ]
+        )
+    rows.append([InlineKeyboardButton("查看封禁列表", callback_data=f"sb:bl:{mode_flag}")])
+    rows.append([InlineKeyboardButton("返回", callback_data="menu:maintain")])
+    return InlineKeyboardMarkup(rows)
+
+
+def build_security_blocklist_keyboard(include_local: bool, blocked_ips: list) -> InlineKeyboardMarkup:
+    mode_flag = "1" if include_local else "0"
+    rows = []
+    for source_ip in blocked_ips[:8]:
+        token = encode_ip_token(str(source_ip))
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    "解封 {0}".format(shorten_ip_for_button(str(source_ip), limit=28)),
+                    callback_data=f"sb:bu:{mode_flag}:{token}",
+                )
+            ]
+        )
+    rows.append(
+        [
+            InlineKeyboardButton("刷新列表", callback_data=f"sb:bl:{mode_flag}"),
+            InlineKeyboardButton("返回安全事件", callback_data=security_events_mode_callback(include_local)),
+        ]
+    )
+    rows.append([InlineKeyboardButton("返回维护菜单", callback_data="menu:maintain")])
+    return InlineKeyboardMarkup(rows)
+
+
+def build_security_block_confirm_keyboard(include_local: bool, duration_seconds: int, source_ip: str) -> InlineKeyboardMarkup:
+    mode_flag = "1" if include_local else "0"
+    token = encode_ip_token(source_ip)
     return InlineKeyboardMarkup(
         [
             [
                 InlineKeyboardButton(
-                    "过滤本机视角",
-                    callback_data="action:maintain_security_events",
+                    "确认封禁",
+                    callback_data=f"sb:ba:{int(duration_seconds)}:{mode_flag}:{token}",
                 ),
                 InlineKeyboardButton(
-                    "包含本机视角",
-                    callback_data="action:maintain_security_events_local",
+                    "取消",
+                    callback_data=security_events_mode_callback(include_local),
                 ),
-            ],
-            [
-                InlineKeyboardButton("返回", callback_data="menu:maintain"),
-            ],
+            ]
         ]
     )
 
@@ -2935,6 +3027,7 @@ async def run_admin_security_events_action(query, include_local: bool) -> None:
     unauthorized_count = 0
     include_local_effective = include_local
     top_lines = []
+    top_source_ips = []
     if isinstance(events_result, dict):
         try:
             unauthorized_count = int(events_result.get("unauthorized", 0) or 0)
@@ -2951,6 +3044,8 @@ async def run_admin_security_events_action(query, include_local: bool) -> None:
                     hit_count = int(item.get("count", 0) or 0)
                 except (TypeError, ValueError):
                     hit_count = 0
+                if source_ip and source_ip != "-" and decode_ip_token(encode_ip_token(source_ip)):
+                    top_source_ips.append(source_ip)
                 top_lines.append(f"{index}. {source_ip} -> {hit_count} 次")
 
     token_count_text = "-"
@@ -3022,7 +3117,143 @@ async def run_admin_security_events_action(query, include_local: bool) -> None:
 
     await query.edit_message_text(
         "\n".join(lines),
-        reply_markup=build_security_events_keyboard(include_local_effective),
+        reply_markup=build_security_events_keyboard(
+            include_local_effective, top_source_ips
+        ),
+    )
+
+
+async def run_admin_security_block_list_action(query, include_local: bool) -> None:
+    result, error_message, _ = await controller_request("GET", "/admin/security/blocked_ips")
+    if error_message:
+        await query.edit_message_text(
+            "读取封禁列表失败：{0}".format(localize_controller_error(error_message)),
+            reply_markup=build_back_keyboard(security_events_mode_callback(include_local)),
+        )
+        return
+    if not isinstance(result, dict):
+        await query.edit_message_text(
+            "封禁列表返回异常。",
+            reply_markup=build_back_keyboard(security_events_mode_callback(include_local)),
+        )
+        return
+
+    items = result.get("items", [])
+    if not isinstance(items, list):
+        items = []
+    cleanup_released = int(result.get("cleanup_released", 0) or 0)
+    cleanup_failed = result.get("cleanup_failed", [])
+    if not isinstance(cleanup_failed, list):
+        cleanup_failed = []
+
+    lines = [
+        "已封禁来源IP列表",
+        f"当前数量：{int(result.get('count', 0) or 0)}",
+    ]
+    if cleanup_released > 0:
+        lines.append(f"已自动清理过期封禁：{cleanup_released}")
+    if cleanup_failed:
+        lines.append(
+            "过期清理失败：{0}".format(", ".join(str(x) for x in cleanup_failed[:5]))
+        )
+    lines.append("")
+    lines.append("封禁项：")
+    blocked_ips = []
+    if items:
+        for item in items[:10]:
+            source_ip = str(item.get("source_ip", "")).strip()
+            if not source_ip:
+                continue
+            blocked_ips.append(source_ip)
+            expire_at = int(item.get("expire_at", 0) or 0)
+            if expire_at > 0:
+                expire_text = datetime.fromtimestamp(expire_at).strftime("%Y-%m-%d %H:%M:%S")
+            else:
+                expire_text = "永久"
+            lines.append(f"- {source_ip} | 到期：{expire_text}")
+    else:
+        lines.append("- （暂无）")
+
+    await query.edit_message_text(
+        "\n".join(lines),
+        reply_markup=build_security_blocklist_keyboard(include_local, blocked_ips),
+    )
+
+
+async def run_admin_security_block_ip_action(
+    query, include_local: bool, source_ip: str, duration_seconds: int
+) -> None:
+    payload = {
+        "source_ip": source_ip,
+        "duration_seconds": int(duration_seconds),
+        "reason": "bot-security-events",
+    }
+    result, error_message, status_code = await controller_request(
+        "POST", "/admin/security/block_ip", payload=payload
+    )
+    if error_message:
+        localized = localize_controller_error(error_message)
+        if status_code == 400:
+            localized = f"参数或保护策略拦截：{localized}"
+        await query.edit_message_text(
+            f"封禁失败：{localized}",
+            reply_markup=build_back_keyboard(security_events_mode_callback(include_local)),
+        )
+        return
+
+    if not isinstance(result, dict):
+        await query.edit_message_text(
+            "封禁返回异常。",
+            reply_markup=build_back_keyboard(security_events_mode_callback(include_local)),
+        )
+        return
+
+    expire_at = int(result.get("expire_at", 0) or 0)
+    expire_text = (
+        datetime.fromtimestamp(expire_at).strftime("%Y-%m-%d %H:%M:%S")
+        if expire_at > 0
+        else "永久"
+    )
+    await query.edit_message_text(
+        "封禁成功\n\n"
+        f"IP：{source_ip}\n"
+        f"作用端口：{int(result.get('controller_port', CONTROLLER_PORT_HINT) or CONTROLLER_PORT_HINT)}\n"
+        f"封禁时长：{int(duration_seconds)} 秒\n"
+        f"到期时间：{expire_text}",
+        reply_markup=InlineKeyboardMarkup(
+            [
+                [InlineKeyboardButton("查看封禁列表", callback_data=f"sb:bl:{1 if include_local else 0}")],
+                [InlineKeyboardButton("返回安全事件", callback_data=security_events_mode_callback(include_local))],
+            ]
+        ),
+    )
+
+
+async def run_admin_security_unblock_ip_action(query, include_local: bool, source_ip: str) -> None:
+    result, error_message, _ = await controller_request(
+        "POST",
+        "/admin/security/unblock_ip",
+        payload={"source_ip": source_ip, "reason": "bot-security-events"},
+    )
+    if error_message:
+        await query.edit_message_text(
+            f"解封失败：{localize_controller_error(error_message)}",
+            reply_markup=build_back_keyboard(f"sb:bl:{1 if include_local else 0}"),
+        )
+        return
+    removed_rules = 0
+    if isinstance(result, dict):
+        removed_rules = int(result.get("removed_rules", 0) or 0)
+    await query.edit_message_text(
+        "解封成功\n\n"
+        f"IP：{source_ip}\n"
+        f"删除规则数：{removed_rules}",
+        reply_markup=InlineKeyboardMarkup(
+            [
+                [InlineKeyboardButton("返回封禁列表", callback_data=f"sb:bl:{1 if include_local else 0}")],
+                [InlineKeyboardButton("返回安全事件", callback_data=security_events_mode_callback(include_local))],
+            ]
+        ),
     )
 
 
@@ -5538,6 +5769,103 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             f"controller /health：{health_text}\n\n"
             f"{overview_text}",
             reply_markup=build_back_keyboard("menu:maintain"),
+        )
+        return
+
+    if callback_data.startswith("sb:bl:"):
+        parts = callback_data.split(":", maxsplit=2)
+        include_local = len(parts) == 3 and parts[2] == "1"
+        await run_admin_security_block_list_action(query, include_local=include_local)
+        return
+
+    if callback_data.startswith("sb:bi:"):
+        parts = callback_data.split(":", maxsplit=4)
+        if len(parts) != 5:
+            await query.edit_message_text(
+                "封禁请求参数无效。",
+                reply_markup=build_back_keyboard("menu:maintain"),
+            )
+            return
+        try:
+            duration_seconds = int(parts[2])
+        except ValueError:
+            duration_seconds = -1
+        include_local = parts[3] == "1"
+        source_ip = decode_ip_token(parts[4])
+        if duration_seconds < 0 or not source_ip:
+            await query.edit_message_text(
+                "封禁请求参数无效。",
+                reply_markup=build_back_keyboard("menu:maintain"),
+            )
+            return
+        if duration_seconds == 0:
+            duration_text = "永久"
+        elif duration_seconds % 3600 == 0:
+            duration_text = f"{duration_seconds // 3600} 小时"
+        else:
+            duration_text = f"{duration_seconds} 秒"
+        await query.edit_message_text(
+            "请确认封禁来源 IP：\n\n"
+            f"IP：{source_ip}\n"
+            f"时长：{duration_text}\n"
+            f"作用范围：controller 端口 {CONTROLLER_PORT_HINT}/tcp\n\n"
+            "提示：仅建议封禁明确的扫描来源。",
+            reply_markup=build_security_block_confirm_keyboard(
+                include_local=include_local,
+                duration_seconds=duration_seconds,
+                source_ip=source_ip,
+            ),
+        )
+        return
+
+    if callback_data.startswith("sb:ba:"):
+        parts = callback_data.split(":", maxsplit=4)
+        if len(parts) != 5:
+            await query.edit_message_text(
+                "封禁请求参数无效。",
+                reply_markup=build_back_keyboard("menu:maintain"),
+            )
+            return
+        try:
+            duration_seconds = int(parts[2])
+        except ValueError:
+            duration_seconds = -1
+        include_local = parts[3] == "1"
+        source_ip = decode_ip_token(parts[4])
+        if duration_seconds < 0 or not source_ip:
+            await query.edit_message_text(
+                "封禁请求参数无效。",
+                reply_markup=build_back_keyboard("menu:maintain"),
+            )
+            return
+        await run_admin_security_block_ip_action(
+            query,
+            include_local=include_local,
+            source_ip=source_ip,
+            duration_seconds=duration_seconds,
+        )
+        return
+
+    if callback_data.startswith("sb:bu:"):
+        parts = callback_data.split(":", maxsplit=3)
+        if len(parts) != 4:
+            await query.edit_message_text(
+                "解封请求参数无效。",
+                reply_markup=build_back_keyboard("menu:maintain"),
+            )
+            return
+        include_local = parts[2] == "1"
+        source_ip = decode_ip_token(parts[3])
+        if not source_ip:
+            await query.edit_message_text(
+                "解封请求参数无效。",
+                reply_markup=build_back_keyboard("menu:maintain"),
+            )
+            return
+        await run_admin_security_unblock_ip_action(
+            query,
+            include_local=include_local,
+            source_ip=source_ip,
         )
         return
 

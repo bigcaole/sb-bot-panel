@@ -74,3 +74,14 @@ class UpdateNodeRequest(BaseModel):
 class VerifyDbExportRequest(BaseModel):
     path: str = Field(min_length=1)
     compare_live: bool = True
+
+
+class BlockIpRequest(BaseModel):
+    source_ip: str = Field(min_length=1)
+    duration_seconds: int = Field(default=3600, ge=0, le=30 * 86400)
+    reason: str = ""
+
+
+class UnblockIpRequest(BaseModel):
+    source_ip: str = Field(min_length=1)
+    reason: str = ""

@@ -30,6 +30,7 @@ class ControllerSmokeTestCase(unittest.TestCase):
             "routers_admin.SUB_LINK_SIGN_KEY": admin_router_module.SUB_LINK_SIGN_KEY,
             "routers_admin.SUB_LINK_REQUIRE_SIGNATURE": admin_router_module.SUB_LINK_REQUIRE_SIGNATURE,
             "routers_admin.SUB_LINK_DEFAULT_TTL_SECONDS": admin_router_module.SUB_LINK_DEFAULT_TTL_SECONDS,
+            "routers_admin.run_ufw_command": getattr(admin_router_module, "run_ufw_command", None),
             "routers_nodes.NODE_TASK_MAX_PENDING_PER_NODE": nodes_router_module.NODE_TASK_MAX_PENDING_PER_NODE,
         }
 
@@ -43,6 +44,7 @@ class ControllerSmokeTestCase(unittest.TestCase):
         admin_router_module.SUB_LINK_SIGN_KEY = "sign-key"
         admin_router_module.SUB_LINK_REQUIRE_SIGNATURE = True
         admin_router_module.SUB_LINK_DEFAULT_TTL_SECONDS = 600
+        admin_router_module.run_ufw_command = lambda args, timeout_seconds=20: (0, "ok", "")
         nodes_router_module.NODE_TASK_MAX_PENDING_PER_NODE = 2
 
         db_module.init_db()
@@ -126,6 +128,7 @@ class ControllerSmokeTestCase(unittest.TestCase):
         admin_router_module.SUB_LINK_DEFAULT_TTL_SECONDS = self._old_values[
             "routers_admin.SUB_LINK_DEFAULT_TTL_SECONDS"
         ]
+        admin_router_module.run_ufw_command = self._old_values["routers_admin.run_ufw_command"]
         nodes_router_module.NODE_TASK_MAX_PENDING_PER_NODE = self._old_values[
             "routers_nodes.NODE_TASK_MAX_PENDING_PER_NODE"
         ]
@@ -244,6 +247,33 @@ class ControllerSmokeTestCase(unittest.TestCase):
             self.assertTrue(bool(verify_payload.get("ok")))
             self.assertTrue(bool(verify_payload.get("snapshot_valid")))
             self.assertTrue(bool(verify_payload.get("live_match")))
+
+    def test_security_block_unblock_smoke(self) -> None:
+        with TestClient(app_module.app) as client:
+            block_resp = client.post(
+                "/admin/security/block_ip",
+                headers=self._auth_header(),
+                json={"source_ip": "198.51.100.10", "duration_seconds": 3600, "reason": "smoke"},
+            )
+            self.assertEqual(200, block_resp.status_code)
+            block_data = block_resp.json()
+            self.assertTrue(bool(block_data.get("ok")))
+            self.assertEqual("198.51.100.10", str(block_data.get("source_ip")))
+
+            list_resp = client.get("/admin/security/blocked_ips", headers=self._auth_header())
+            self.assertEqual(200, list_resp.status_code)
+            list_data = list_resp.json()
+            self.assertTrue(bool(list_data.get("ok")))
+            items = list_data.get("items", [])
+            self.assertTrue(any(str(item.get("source_ip")) == "198.51.100.10" for item in items))
+
+            unblock_resp = client.post(
+                "/admin/security/unblock_ip",
+                headers=self._auth_header(),
+                json={"source_ip": "198.51.100.10", "reason": "smoke"},
+            )
+            self.assertEqual(200, unblock_resp.status_code)
+            self.assertTrue(bool(unblock_resp.json().get("ok")))
 
     def test_node_task_deduplicate_smoke(self) -> None:
         with TestClient(app_module.app) as client:

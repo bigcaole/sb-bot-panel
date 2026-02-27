@@ -1,10 +1,11 @@
 import ipaddress
+import subprocess
 import shutil
 import tarfile
 import tempfile
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional, Tuple, Union
 
 from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -18,7 +19,7 @@ from controller.db_migration import (
     load_export_payload,
     validate_export_payload,
 )
-from controller.schemas import VerifyDbExportRequest
+from controller.schemas import BlockIpRequest, UnblockIpRequest, VerifyDbExportRequest
 from controller.security import (
     AUTH_TOKEN as SECURITY_AUTH_TOKEN,
     API_RATE_LIMIT_ENABLED,
@@ -33,6 +34,7 @@ from controller.security import (
 from controller.settings import (
     BACKUP_RETENTION_COUNT,
     CONTROLLER_PORT_WHITELIST_ITEMS,
+    CONTROLLER_PORT,
     MIGRATE_RETENTION_COUNT,
     NODE_TASK_MAX_PENDING_PER_NODE,
     NODE_MONITOR_OFFLINE_THRESHOLD_SECONDS,
@@ -114,6 +116,19 @@ def build_unauthorized_events_snapshot(
 
 def build_security_status_payload() -> Dict[str, Union[bool, int, List[str]]]:
     auth_tokens = get_auth_tokens()
+    now_ts = int(time.time())
+    with get_connection() as conn:
+        active_block_count = int(
+            conn.execute(
+                """
+                SELECT COUNT(*) AS c
+                FROM security_ip_blocks
+                WHERE expire_at = 0 OR expire_at > ?
+                """,
+                (now_ts,),
+            ).fetchone()["c"]
+            or 0
+        )
     warnings: List[str] = []
     if not auth_tokens:
         warnings.append("AUTH_TOKEN 未设置：管理接口未启用鉴权")
@@ -147,10 +162,174 @@ def build_security_status_payload() -> Dict[str, Union[bool, int, List[str]]]:
         "api_rate_limit_max_requests": API_RATE_LIMIT_MAX_REQUESTS,
         "unauthorized_audit_sample_seconds": UNAUTHORIZED_AUDIT_SAMPLE_SECONDS,
         "unauthorized_audit_sampling_enabled": bool(UNAUTHORIZED_AUDIT_SAMPLE_SECONDS > 0),
+        "blocked_ip_count": active_block_count,
         "security_events_exclude_local": bool(SECURITY_EVENTS_EXCLUDE_LOCAL),
         "node_task_max_pending_per_node": NODE_TASK_MAX_PENDING_PER_NODE,
         "warnings": warnings,
     }
+
+
+def normalize_source_ip(value: str) -> str:
+    raw_value = str(value or "").strip()
+    if not raw_value:
+        raise HTTPException(status_code=400, detail="source_ip is required")
+    try:
+        return str(ipaddress.ip_address(raw_value))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="source_ip must be valid IPv4/IPv6") from exc
+
+
+def run_ufw_command(args: List[str], timeout_seconds: int = 20) -> Tuple[int, str, str]:
+    try:
+        proc = subprocess.run(  # nosec B603
+            args,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+            check=False,
+        )
+        return int(proc.returncode or 0), str(proc.stdout or ""), str(proc.stderr or "")
+    except FileNotFoundError:
+        return 127, "", "ufw not found"
+    except subprocess.TimeoutExpired as exc:
+        stdout_text = str(exc.stdout or "")
+        stderr_text = str(exc.stderr or "")
+        return 124, stdout_text, stderr_text or "ufw command timeout"
+
+
+def apply_ufw_ip_block(source_ip: str) -> Dict[str, Union[bool, str]]:
+    args = [
+        "ufw",
+        "--force",
+        "deny",
+        "from",
+        source_ip,
+        "to",
+        "any",
+        "port",
+        str(CONTROLLER_PORT),
+        "proto",
+        "tcp",
+    ]
+    code, stdout, stderr = run_ufw_command(args)
+    merged = "{0}\n{1}".format(stdout, stderr).strip().lower()
+    if code == 0:
+        return {"ok": True, "result": (stdout or stderr or "ok").strip()}
+    if "skip" in merged and "existing" in merged:
+        return {"ok": True, "result": (stdout or stderr or "existing").strip()}
+    if code == 127:
+        raise HTTPException(status_code=503, detail="ufw is not available on controller host")
+    raise HTTPException(
+        status_code=500,
+        detail="ufw deny failed: {0}".format((stderr or stdout or "unknown error").strip()),
+    )
+
+
+def remove_ufw_ip_block(source_ip: str) -> Dict[str, Union[int, str]]:
+    removed = 0
+    last_output = ""
+    for _ in range(6):
+        args = [
+            "ufw",
+            "--force",
+            "delete",
+            "deny",
+            "from",
+            source_ip,
+            "to",
+            "any",
+            "port",
+            str(CONTROLLER_PORT),
+            "proto",
+            "tcp",
+        ]
+        code, stdout, stderr = run_ufw_command(args)
+        merged = "{0}\n{1}".format(stdout, stderr).strip()
+        merged_lower = merged.lower()
+        last_output = merged
+        if code == 0:
+            removed += 1
+            continue
+        if code == 127:
+            raise HTTPException(status_code=503, detail="ufw is not available on controller host")
+        if "non-existent" in merged_lower or "not found" in merged_lower:
+            break
+        raise HTTPException(
+            status_code=500,
+            detail="ufw delete failed: {0}".format((stderr or stdout or "unknown error").strip()),
+        )
+    return {"removed": int(removed), "result": last_output}
+
+
+def get_protected_source_ips(conn, request_source_ip: str) -> List[str]:
+    protected = {
+        "127.0.0.1",
+        "::1",
+        "::ffff:127.0.0.1",
+    }
+    request_ip = str(request_source_ip or "").strip()
+    if request_ip:
+        try:
+            protected.add(str(ipaddress.ip_address(request_ip)))
+        except ValueError:
+            protected.add(request_ip)
+
+    rows = conn.execute(
+        """
+        SELECT agent_ip
+        FROM nodes
+        WHERE enabled = 1
+          AND agent_ip IS NOT NULL
+          AND TRIM(agent_ip) != ''
+        """
+    ).fetchall()
+    for row in rows:
+        value = str(row["agent_ip"] or "").strip()
+        if not value:
+            continue
+        try:
+            protected.add(str(ipaddress.ip_address(value)))
+        except ValueError:
+            continue
+
+    for item in CONTROLLER_PORT_WHITELIST_ITEMS:
+        raw = str(item or "").strip()
+        if not raw:
+            continue
+        try:
+            network = ipaddress.ip_network(raw, strict=False)
+            if int(network.num_addresses) == 1:
+                protected.add(str(network.network_address))
+        except ValueError:
+            continue
+
+    return sorted(protected)
+
+
+def cleanup_expired_ip_blocks(conn, now_ts: int) -> Dict[str, Union[int, List[str]]]:
+    expired_rows = conn.execute(
+        """
+        SELECT source_ip
+        FROM security_ip_blocks
+        WHERE expire_at > 0 AND expire_at <= ?
+        ORDER BY expire_at ASC, source_ip ASC
+        LIMIT 200
+        """,
+        (int(now_ts),),
+    ).fetchall()
+    released = 0
+    failed_items: List[str] = []
+    for row in expired_rows:
+        source_ip = str(row["source_ip"] or "").strip()
+        if not source_ip:
+            continue
+        try:
+            remove_ufw_ip_block(source_ip)
+            conn.execute("DELETE FROM security_ip_blocks WHERE source_ip = ?", (source_ip,))
+            released += 1
+        except HTTPException:
+            failed_items.append(source_ip)
+    return {"released": int(released), "failed": failed_items}
 
 
 def build_admin_overview_payload(now_ts: int) -> Dict[str, Union[int, Dict, List]]:
@@ -780,6 +959,172 @@ def get_admin_security_status(
     if auth_error is not None:
         return auth_error
     return build_security_status_payload()
+
+
+@router.post(
+    "/admin/security/block_ip",
+    summary="Block source IP on controller port",
+    description="AUTH_TOKEN 为空时不校验；非空时需要请求头 Authorization: Bearer <AUTH_TOKEN>。",
+    response_model=None,
+)
+def block_security_source_ip(
+    payload: BlockIpRequest,
+    request: Request,
+    authorization: Optional[str] = Header(default=None, alias="Authorization"),
+) -> Union[Dict[str, Union[bool, int, str]], JSONResponse]:
+    auth_error = verify_admin_authorization(authorization)
+    if auth_error is not None:
+        return auth_error
+
+    source_ip = normalize_source_ip(payload.source_ip)
+    duration_seconds = int(payload.duration_seconds or 0)
+    if duration_seconds < 0:
+        duration_seconds = 0
+    now_ts = int(time.time())
+    expire_at = 0 if duration_seconds == 0 else int(now_ts + duration_seconds)
+    reason = str(payload.reason or "").strip()
+    request_ip = get_source_ip_for_audit(request)
+
+    with get_connection() as conn:
+        cleanup_expired_ip_blocks(conn, now_ts=now_ts)
+        protected_ips = set(get_protected_source_ips(conn, request_source_ip=request_ip))
+        if source_ip in protected_ips:
+            raise HTTPException(status_code=400, detail="该IP受保护，拒绝封禁")
+        apply_ufw_ip_block(source_ip)
+        conn.execute(
+            """
+            INSERT INTO security_ip_blocks(source_ip, created_at, expire_at, reason, operator)
+            VALUES(?, ?, ?, ?, ?)
+            ON CONFLICT(source_ip) DO UPDATE SET
+                created_at=excluded.created_at,
+                expire_at=excluded.expire_at,
+                reason=excluded.reason,
+                operator=excluded.operator
+            """,
+            (
+                source_ip,
+                now_ts,
+                expire_at,
+                reason,
+                get_request_actor(request),
+            ),
+        )
+        write_audit_log(
+            conn,
+            action="admin.security.block_ip",
+            resource_type="ip",
+            resource_id=source_ip,
+            detail={
+                "duration_seconds": duration_seconds,
+                "expire_at": int(expire_at),
+                "controller_port": int(CONTROLLER_PORT),
+            },
+            actor=get_request_actor(request),
+            source_ip=request_ip,
+        )
+        conn.commit()
+    return {
+        "ok": True,
+        "source_ip": source_ip,
+        "duration_seconds": duration_seconds,
+        "expire_at": int(expire_at),
+        "controller_port": int(CONTROLLER_PORT),
+    }
+
+
+@router.post(
+    "/admin/security/unblock_ip",
+    summary="Unblock source IP on controller port",
+    description="AUTH_TOKEN 为空时不校验；非空时需要请求头 Authorization: Bearer <AUTH_TOKEN>。",
+    response_model=None,
+)
+def unblock_security_source_ip(
+    payload: UnblockIpRequest,
+    request: Request,
+    authorization: Optional[str] = Header(default=None, alias="Authorization"),
+) -> Union[Dict[str, Union[bool, int, str]], JSONResponse]:
+    auth_error = verify_admin_authorization(authorization)
+    if auth_error is not None:
+        return auth_error
+
+    source_ip = normalize_source_ip(payload.source_ip)
+    reason = str(payload.reason or "").strip()
+    request_ip = get_source_ip_for_audit(request)
+    with get_connection() as conn:
+        remove_result = remove_ufw_ip_block(source_ip)
+        conn.execute("DELETE FROM security_ip_blocks WHERE source_ip = ?", (source_ip,))
+        write_audit_log(
+            conn,
+            action="admin.security.unblock_ip",
+            resource_type="ip",
+            resource_id=source_ip,
+            detail={
+                "reason": reason,
+                "removed_rules": int(remove_result.get("removed", 0) or 0),
+                "controller_port": int(CONTROLLER_PORT),
+            },
+            actor=get_request_actor(request),
+            source_ip=request_ip,
+        )
+        conn.commit()
+    return {
+        "ok": True,
+        "source_ip": source_ip,
+        "removed_rules": int(remove_result.get("removed", 0) or 0),
+    }
+
+
+@router.get(
+    "/admin/security/blocked_ips",
+    summary="List blocked source IPs",
+    description="AUTH_TOKEN 为空时不校验；非空时需要请求头 Authorization: Bearer <AUTH_TOKEN>。",
+    response_model=None,
+)
+def list_security_blocked_ips(
+    cleanup_expired: int = 1,
+    authorization: Optional[str] = Header(default=None, alias="Authorization"),
+) -> Union[Dict[str, Union[int, List[Dict[str, Union[int, str]]]]], JSONResponse]:
+    auth_error = verify_admin_authorization(authorization)
+    if auth_error is not None:
+        return auth_error
+    now_ts = int(time.time())
+    cleanup_report: Dict[str, Union[int, List[str]]] = {"released": 0, "failed": []}
+    with get_connection() as conn:
+        if int(cleanup_expired) == 1:
+            cleanup_report = cleanup_expired_ip_blocks(conn, now_ts=now_ts)
+        rows = conn.execute(
+            """
+            SELECT source_ip, created_at, expire_at, reason, operator
+            FROM security_ip_blocks
+            WHERE expire_at = 0 OR expire_at > ?
+            ORDER BY created_at DESC, source_ip ASC
+            LIMIT 200
+            """,
+            (now_ts,),
+        ).fetchall()
+        conn.commit()
+    items: List[Dict[str, Union[int, str]]] = []
+    for row in rows:
+        expire_at = int(row["expire_at"] or 0)
+        remaining_seconds = 0 if expire_at == 0 else max(0, expire_at - now_ts)
+        items.append(
+            {
+                "source_ip": str(row["source_ip"] or ""),
+                "created_at": int(row["created_at"] or 0),
+                "expire_at": expire_at,
+                "remaining_seconds": int(remaining_seconds),
+                "reason": str(row["reason"] or ""),
+                "operator": str(row["operator"] or ""),
+            }
+        )
+    return {
+        "ok": True,
+        "controller_port": int(CONTROLLER_PORT),
+        "count": len(items),
+        "items": items,
+        "cleanup_released": int(cleanup_report.get("released", 0) or 0),
+        "cleanup_failed": cleanup_report.get("failed", []),
+    }
 
 
 @router.get(

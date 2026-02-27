@@ -136,6 +136,17 @@ def init_db() -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS security_ip_blocks(
+                source_ip TEXT PRIMARY KEY,
+                created_at INTEGER NOT NULL,
+                expire_at INTEGER NOT NULL,
+                reason TEXT,
+                operator TEXT
+            )
+            """
+        )
         node_task_columns = conn.execute("PRAGMA table_info(node_tasks)").fetchall()
         node_task_column_names = set(row["name"] for row in node_task_columns)
         if "attempts" not in node_task_column_names:
@@ -184,6 +195,12 @@ def init_db() -> None:
             """
             CREATE INDEX IF NOT EXISTS idx_audit_logs_action_created_at
             ON audit_logs(action, created_at DESC)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_security_ip_blocks_expire_at
+            ON security_ip_blocks(expire_at ASC)
             """
         )
         conn.commit()
