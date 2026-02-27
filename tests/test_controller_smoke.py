@@ -232,6 +232,21 @@ class ControllerSmokeTestCase(unittest.TestCase):
             self.assertEqual(200, db_integrity.status_code)
             self.assertTrue(bool(db_integrity.json().get("ok")))
 
+            audit_event_resp = client.post(
+                "/admin/audit/event",
+                headers=self._auth_header(),
+                json={
+                    "action": "bot.sub_policy.apply",
+                    "resource_type": "security",
+                    "resource_id": "subscription",
+                    "detail": {"mode": "strict"},
+                },
+            )
+            self.assertEqual(200, audit_event_resp.status_code)
+            audit_event_payload = audit_event_resp.json()
+            self.assertTrue(bool(audit_event_payload.get("ok")))
+            self.assertEqual("bot.sub_policy.apply", str(audit_event_payload.get("action")))
+
             sec_events = client.get(
                 "/admin/security/events?window_seconds=3600&top=3",
                 headers=self._auth_header(),

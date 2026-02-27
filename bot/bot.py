@@ -2538,6 +2538,45 @@ async def controller_request(
         return None, "", response.status_code
 
 
+async def write_admin_audit_event_best_effort(
+    action: str,
+    resource_type: str,
+    resource_id: str,
+    detail: dict,
+    retry_attempts: int = 3,
+    retry_delay_seconds: float = 1.0,
+) -> bool:
+    payload = {
+        "action": str(action or "").strip(),
+        "resource_type": str(resource_type or "").strip() or "bot",
+        "resource_id": str(resource_id or "").strip(),
+        "detail": detail if isinstance(detail, dict) else {},
+    }
+    attempts = retry_attempts if retry_attempts >= 1 else 1
+    last_error = ""
+    for index in range(attempts):
+        _, error_message, status_code = await controller_request(
+            "POST",
+            "/admin/audit/event",
+            payload=payload,
+        )
+        if not error_message:
+            return True
+        last_error = str(error_message)
+        is_connection_issue = last_error.startswith("无法连接控制器接口")
+        is_last = index >= attempts - 1
+        if is_last or not is_connection_issue:
+            break
+        await asyncio.sleep(retry_delay_seconds if retry_delay_seconds > 0 else 0.5)
+    logger.warning(
+        "write_admin_audit_event failed action=%s status=%s error=%s",
+        payload["action"],
+        status_code if "status_code" in locals() else 0,
+        last_error,
+    )
+    return False
+
+
 async def close_controller_http_client(application: Application) -> None:
     del application
     global _controller_http_client
@@ -3241,6 +3280,15 @@ async def apply_admin_sub_policy_action(query, mode: str) -> None:
     mode_name, updates = mode_map[mode_key]
     env_map = load_env_map()
     sign_key = str(env_map.get("SUB_LINK_SIGN_KEY", "")).strip()
+    before_policy = {
+        "SUB_LINK_REQUIRE_SIGNATURE": str(env_map.get("SUB_LINK_REQUIRE_SIGNATURE", "")).strip()
+        or "0",
+        "API_RATE_LIMIT_ENABLED": str(env_map.get("API_RATE_LIMIT_ENABLED", "")).strip() or "0",
+    }
+    target_policy = {
+        "SUB_LINK_REQUIRE_SIGNATURE": str(updates.get("SUB_LINK_REQUIRE_SIGNATURE", "0")),
+        "API_RATE_LIMIT_ENABLED": str(updates.get("API_RATE_LIMIT_ENABLED", "0")),
+    }
     if mode_key in ("strict", "signed") and not sign_key:
         await query.edit_message_text(
             "当前未设置 SUB_LINK_SIGN_KEY，无法启用签名预设。\n"
@@ -3282,6 +3330,26 @@ async def apply_admin_sub_policy_action(query, mode: str) -> None:
             )
         rollback_raw = (rollback_restart_stdout or "").strip() or (rollback_restart_stderr or "").strip()
         if rollback_ok and rollback_restart_code == 0:
+            await write_admin_audit_event_best_effort(
+                action="bot.sub_policy.apply_failed",
+                resource_type="security",
+                resource_id="subscription",
+                detail={
+                    "mode": mode_key,
+                    "mode_label": mode_name,
+                    "backup_path": backup_path,
+                    "before": before_policy,
+                    "target": target_policy,
+                    "final": before_policy,
+                    "rollback_env_restored": True,
+                    "rollback_restart_ok": True,
+                    "restart_error": format_recent_log_output(
+                        raw, line_limit=12, char_limit=500
+                    ),
+                },
+                retry_attempts=6,
+                retry_delay_seconds=1.0,
+            )
             await query.edit_message_text(
                 "预设切换失败，已自动回滚并恢复 controller。\n\n"
                 f"预设：{mode_name}\n"
@@ -3297,6 +3365,25 @@ async def apply_admin_sub_policy_action(query, mode: str) -> None:
             rollback_detail = "已恢复 .env，但 controller 回滚重启失败：{0}".format(
                 format_recent_log_output(rollback_raw, line_limit=30, char_limit=1200)
             )
+        await write_admin_audit_event_best_effort(
+            action="bot.sub_policy.apply_failed",
+            resource_type="security",
+            resource_id="subscription",
+            detail={
+                "mode": mode_key,
+                "mode_label": mode_name,
+                "backup_path": backup_path,
+                "before": before_policy,
+                "target": target_policy,
+                "final": target_policy if not rollback_ok else before_policy,
+                "rollback_env_restored": bool(rollback_ok),
+                "rollback_restart_ok": bool(rollback_ok and rollback_restart_code == 0),
+                "restart_error": format_recent_log_output(raw, line_limit=12, char_limit=500),
+                "rollback_error": str(rollback_detail or "")[:500],
+            },
+            retry_attempts=2,
+            retry_delay_seconds=0.8,
+        )
         await query.edit_message_text(
             "预设切换失败，且自动回滚未完全成功。\n\n"
             f"预设：{mode_name}\n"
@@ -3308,6 +3395,23 @@ async def apply_admin_sub_policy_action(query, mode: str) -> None:
         )
         return
 
+    await write_admin_audit_event_best_effort(
+        action="bot.sub_policy.apply",
+        resource_type="security",
+        resource_id="subscription",
+        detail={
+            "mode": mode_key,
+            "mode_label": mode_name,
+            "backup_path": backup_path,
+            "before": before_policy,
+            "target": target_policy,
+            "final": target_policy,
+            "restart_ok": True,
+            "rollback_env_restored": False,
+        },
+        retry_attempts=6,
+        retry_delay_seconds=1.0,
+    )
     await run_admin_sub_policy_panel_action(
         query,
         notice=f"已应用预设：{mode_name}（controller 已重启，备份：{backup_path}）",

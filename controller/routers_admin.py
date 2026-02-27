@@ -25,7 +25,12 @@ from controller.db_migration import (
     load_export_payload,
     validate_export_payload,
 )
-from controller.schemas import BlockIpRequest, UnblockIpRequest, VerifyDbExportRequest
+from controller.schemas import (
+    AuditEventRequest,
+    BlockIpRequest,
+    UnblockIpRequest,
+    VerifyDbExportRequest,
+)
 from controller.security import (
     AUTH_TOKEN as SECURITY_AUTH_TOKEN,
     API_RATE_LIMIT_ENABLED,
@@ -1829,6 +1834,52 @@ def list_admin_audit_logs(
                 (limit,),
             ).fetchall()
     return [dict(row) for row in rows]
+
+
+@router.post(
+    "/admin/audit/event",
+    summary="Write custom admin audit event",
+    description=(
+        "AUTH_TOKEN 为空时不校验；非空时需要请求头 Authorization: Bearer <AUTH_TOKEN>。"
+        "用于 bot 或运维脚本写入自定义审计事件（action 需以 bot. 开头）。"
+    ),
+    response_model=None,
+)
+def write_admin_audit_event(
+    payload: AuditEventRequest,
+    request: Request,
+    authorization: Optional[str] = Header(default=None, alias="Authorization"),
+) -> Union[Dict[str, Union[bool, int, str]], JSONResponse]:
+    auth_error = verify_admin_authorization(authorization)
+    if auth_error is not None:
+        return auth_error
+
+    action_value = str(payload.action or "").strip()
+    if not action_value.startswith("bot."):
+        raise HTTPException(status_code=400, detail="action must start with bot.")
+
+    resource_type = str(payload.resource_type or "bot").strip() or "bot"
+    resource_id = str(payload.resource_id or "").strip()
+    detail_obj = payload.detail if isinstance(payload.detail, dict) else {}
+
+    with get_connection() as conn:
+        write_audit_log(
+            conn,
+            action=action_value,
+            resource_type=resource_type,
+            resource_id=resource_id,
+            detail=detail_obj,
+            actor=get_request_actor(request),
+            source_ip=get_source_ip_for_audit(request),
+        )
+        conn.commit()
+
+    return {
+        "ok": True,
+        "action": action_value,
+        "resource_type": resource_type,
+        "resource_id": resource_id,
+    }
 
 
 @router.get(

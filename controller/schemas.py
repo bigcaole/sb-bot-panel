@@ -85,3 +85,10 @@ class BlockIpRequest(BaseModel):
 class UnblockIpRequest(BaseModel):
     source_ip: str = Field(min_length=1)
     reason: str = ""
+
+
+class AuditEventRequest(BaseModel):
+    action: str = Field(min_length=3, max_length=80)
+    resource_type: str = Field(default="bot", min_length=1, max_length=40)
+    resource_id: str = Field(default="", max_length=120)
+    detail: Optional[Dict[str, Any]] = None
