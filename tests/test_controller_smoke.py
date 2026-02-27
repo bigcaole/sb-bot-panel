@@ -162,6 +162,7 @@ class ControllerSmokeTestCase(unittest.TestCase):
             self.assertIn("security_events_exclude_local", admin_sec.json())
             self.assertIn("controller_port_whitelist_count", admin_sec.json())
             self.assertIn("unauthorized_audit_sample_seconds", admin_sec.json())
+            self.assertIn("security_block_cleanup_interval_seconds", admin_sec.json())
 
             overview_resp = client.get("/admin/overview", headers=self._auth_header())
             self.assertEqual(200, overview_resp.status_code)

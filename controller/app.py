@@ -5,11 +5,12 @@ from fastapi.responses import JSONResponse
 
 from controller.audit import get_request_actor, get_source_ip_for_audit, write_audit_log
 from controller.db import get_connection, init_db
-from controller.routers_admin import router as admin_router
+from controller.routers_admin import cleanup_expired_ip_blocks_once, router as admin_router
 from controller.routers_misc import router as misc_router
 from controller.routers_nodes import router as nodes_router
 from controller.routers_sub import router as sub_router
 from controller.routers_users import router as users_router
+from controller.settings import SECURITY_BLOCK_CLEANUP_INTERVAL_SECONDS
 from controller.security import (
     API_RATE_LIMIT_ENABLED,
     AUTH_TOKEN,
@@ -24,10 +25,20 @@ from controller.security import (
 
 
 app = FastAPI()
+_SECURITY_BLOCK_CLEANUP_LAST_AT = 0
 
 
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
+    global _SECURITY_BLOCK_CLEANUP_LAST_AT
+    now_ts = int(time.time())
+    if now_ts - int(_SECURITY_BLOCK_CLEANUP_LAST_AT) >= SECURITY_BLOCK_CLEANUP_INTERVAL_SECONDS:
+        try:
+            cleanup_expired_ip_blocks_once(now_ts=now_ts)
+        except Exception:
+            pass
+        _SECURITY_BLOCK_CLEANUP_LAST_AT = now_ts
+
     if not AUTH_TOKEN:
         return await call_next(request)
     if is_auth_exempt_path(request.url.path):

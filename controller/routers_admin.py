@@ -38,6 +38,7 @@ from controller.settings import (
     MIGRATE_RETENTION_COUNT,
     NODE_TASK_MAX_PENDING_PER_NODE,
     NODE_MONITOR_OFFLINE_THRESHOLD_SECONDS,
+    SECURITY_BLOCK_CLEANUP_INTERVAL_SECONDS,
     SECURITY_EVENTS_EXCLUDE_LOCAL,
     SUB_LINK_DEFAULT_TTL_SECONDS,
     SUB_LINK_REQUIRE_SIGNATURE,
@@ -162,6 +163,7 @@ def build_security_status_payload() -> Dict[str, Union[bool, int, List[str]]]:
         "api_rate_limit_max_requests": API_RATE_LIMIT_MAX_REQUESTS,
         "unauthorized_audit_sample_seconds": UNAUTHORIZED_AUDIT_SAMPLE_SECONDS,
         "unauthorized_audit_sampling_enabled": bool(UNAUTHORIZED_AUDIT_SAMPLE_SECONDS > 0),
+        "security_block_cleanup_interval_seconds": SECURITY_BLOCK_CLEANUP_INTERVAL_SECONDS,
         "blocked_ip_count": active_block_count,
         "security_events_exclude_local": bool(SECURITY_EVENTS_EXCLUDE_LOCAL),
         "node_task_max_pending_per_node": NODE_TASK_MAX_PENDING_PER_NODE,
@@ -372,6 +374,13 @@ def cleanup_expired_ip_blocks(conn, now_ts: int) -> Dict[str, Union[int, List[st
         except HTTPException:
             failed_items.append(source_ip)
     return {"released": int(released), "failed": failed_items}
+
+
+def cleanup_expired_ip_blocks_once(now_ts: int) -> Dict[str, Union[int, List[str]]]:
+    with get_connection() as conn:
+        result = cleanup_expired_ip_blocks(conn, now_ts=int(now_ts))
+        conn.commit()
+    return result
 
 
 def build_admin_overview_payload(now_ts: int) -> Dict[str, Union[int, Dict, List]]:
