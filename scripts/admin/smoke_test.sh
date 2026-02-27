@@ -156,7 +156,13 @@ run_api_checks() {
   local controller_port="${CONTROLLER_PORT:-8080}"
   local api_url="${API_BASE_URL:-http://127.0.0.1:${controller_port}}"
   local auth_token="${AUTH_TOKEN:-}"
+  local require_node_lock="${SMOKE_REQUIRE_NODE_LOCK:-0}"
   local code
+  local node_access_status
+  local node_access_metrics
+  local enabled_nodes
+  local unlocked_enabled_nodes
+  local whitelist_missing_count
 
   msg "3/3 运行 API 冒烟检查（${api_url}）..."
 
@@ -217,6 +223,39 @@ run_api_checks() {
       FAIL_API=1
       record_fail "AUTH_TOKEN 为空时 /admin/overview 应可访问，期望 200，实际 ${code}"
     fi
+  fi
+
+  if [[ -n "$auth_token" ]]; then
+    node_access_status="$(http_code "${api_url}/admin/node_access/status" -H "Authorization: Bearer ${auth_token}")"
+  else
+    node_access_status="$(http_code "${api_url}/admin/node_access/status")"
+  fi
+  if [[ "$node_access_status" == "200" ]]; then
+    if node_access_metrics="$("$PYTHON_BIN" - <<'PY'
+import json
+from pathlib import Path
+
+payload = json.loads(Path("/tmp/sb_smoke_resp.txt").read_text(encoding="utf-8"))
+enabled = int(payload.get("enabled_nodes", 0) or 0)
+unlocked_enabled = int(payload.get("unlocked_enabled_nodes", 0) or 0)
+missing = int(payload.get("whitelist_missing_count", 0) or 0)
+print(f"{enabled},{unlocked_enabled},{missing}")
+PY
+    )"; then
+      IFS=',' read -r enabled_nodes unlocked_enabled_nodes whitelist_missing_count <<<"$node_access_metrics"
+      if [[ "${unlocked_enabled_nodes:-0}" =~ ^[0-9]+$ ]] && (( unlocked_enabled_nodes > 0 )); then
+        if [[ "${require_node_lock}" == "1" ]]; then
+          FAIL_API=1
+          record_fail "访问收敛检查失败：启用节点未锁定来源IP=${unlocked_enabled_nodes}（enabled_nodes=${enabled_nodes}，whitelist_missing=${whitelist_missing_count}）"
+        else
+          record_warn "访问收敛检查告警：启用节点未锁定来源IP=${unlocked_enabled_nodes}（enabled_nodes=${enabled_nodes}，whitelist_missing=${whitelist_missing_count}）"
+        fi
+      fi
+    else
+      record_warn "访问收敛检查告警：/admin/node_access/status 响应解析失败"
+    fi
+  else
+    record_warn "访问收敛检查告警：/admin/node_access/status HTTP=${node_access_status}"
   fi
 
   if (( FAIL_API == 0 )); then

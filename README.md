@@ -282,6 +282,7 @@ bash /root/sb-bot-panel/scripts/admin/smoke_test.sh --require-api
 
 - 默认会读取 `.env` 中的 `CONTROLLER_PORT` / `AUTH_TOKEN`
 - 检查项：Python 语法、`tests/` 单元测试、controller API 鉴权冒烟
+- 访问收敛检查：会读取 `/admin/node_access/status`，默认仅告警；若设置 `SMOKE_REQUIRE_NODE_LOCK=1`，当存在“启用但未锁定来源IP”的节点会直接判失败
 - 退出码：`0=通过`，`10=代码检查失败`，`20=API检查失败`，`30=代码+API均失败`
 
 数据库迁移前一致性校验（管理服务器）：
