@@ -49,33 +49,33 @@ sudo bash /path/to/sb-bot-panel/scripts/menu.sh
 菜单项：
 
 【日常运维】
-2. 配置（重写 `/etc/sb-agent/config.json`）
-3. 启动 sb-agent
-4. 停止 sb-agent
-5. 重启 sb-agent
-6. 查看 sb-agent 状态
-7. 查看 sb-agent 日志（tail -f）
-8. 重启 sing-box
-9. 查看 sing-box 状态与最近日志
-10. 证书状态检查
-11. 触发证书重新申请/刷新（先备份再清理）
+1. 配置（重写 `/etc/sb-agent/config.json`）
+2. 启动 sb-agent
+3. 停止 sb-agent
+4. 重启 sb-agent
+5. 查看 sb-agent 状态
+6. 查看 sb-agent 日志（tail -f）
+7. 重启 sing-box
+8. 查看 sing-box 状态与最近日志
+9. 证书状态检查
+10. 触发证书重新申请/刷新（先备份再清理）
 【安全工具】
-13. 安装/启用 fail2ban（SSH 防爆破）
-14. 查看 fail2ban 状态与封禁列表
-15. 解封 fail2ban 封禁 IP
-16. 生成 SSH 密钥（ed25519）
-17. 启用 SSH 仅密钥登录（禁用密码）
-18. 恢复 SSH 密码登录（应急）
+11. 安装/启用 fail2ban（SSH 防爆破）
+12. 查看 fail2ban 状态与封禁列表
+13. 解封 fail2ban 封禁 IP
+14. 生成 SSH 密钥（ed25519）
+15. 启用 SSH 仅密钥登录（禁用密码）
+16. 恢复 SSH 密码登录（应急）
 【系统级操作（谨慎）】
-1. 更新同步（保留原配置，自动 `git pull`，无交互）
-12. 卸载
-0. 退出
+17. 更新同步（保留原配置，自动 `git pull`，无交互）
+18. 卸载
+19. 退出
 
 说明：
 
-- 首次安装后，后续更新建议直接用菜单 `1`，不会重复询问端口/域名等参数。
-- 需要改参数时才用菜单 `2`。
-- 安全建议：先用菜单 `16` 生成并部署公钥，再执行菜单 `17` 启用仅密钥登录。
+- 首次安装后，后续更新建议直接用菜单 `17`，不会重复询问端口/域名等参数。
+- 需要改参数时用菜单 `1`。
+- 安全建议：先用菜单 `14` 生成并部署公钥，再执行菜单 `15` 启用仅密钥登录。
 - 也可命令行直接执行：
 
 ```bash
@@ -153,7 +153,7 @@ REALITY 密钥策略：
   - 域名 A 记录是否指向当前公网 IP
   - Cloudflare 代理是否关闭（小黄云置灰）
   - UDP/TCP 端口是否放行
-- 可通过菜单 `11` 执行“备份 + 刷新重申领”。
+- 可通过菜单 `10` 执行“备份 + 刷新重申领”。
 
 ### 3) 域名解析不对
 
@@ -178,7 +178,7 @@ REALITY 密钥策略：
 git clone <你的仓库地址> sb-bot-panel && cd sb-bot-panel && sudo bash scripts/admin/menu_admin.sh
 ```
 
-菜单里选择 `1) 安装/更新` 即可完成：
+菜单里选择 `17) 安装/更新` 即可完成：
 
 - 依赖安装（apt）
 - venv 创建与 `pip install -r requirements.txt`
@@ -188,7 +188,7 @@ git clone <你的仓库地址> sb-bot-panel && cd sb-bot-panel && sudo bash scri
   - `sb-controller.service`
   - `sb-bot.service`
 
-说明：菜单 `1) 安装/更新` 默认复用现有 `.env` 配置，不会每次重复询问端口/域名/token/chat_id。需要改参数时使用菜单 `2) 配置向导`。
+说明：菜单 `17) 安装/更新` 默认复用现有 `.env` 配置，不会每次重复询问端口/域名/token/chat_id。需要改参数时使用菜单 `1) 配置向导`。
 
 ### 仅重新配置（改 token/chat id）
 
@@ -267,24 +267,24 @@ sb-admin
 菜单项：
 
 【日常运维】
-2. 配置向导（修改参数并重启）
-3. 启动 controller
-4. 停止 controller
-5. 启动 bot
-6. 停止 bot
-7. 状态查看（controller/bot）
-8. 查看日志（controller/bot）
-9. HTTPS 证书状态（Caddy）
-10. HTTPS 证书刷新（重载 Caddy）
-11. 迁移：导出迁移包
-12. 迁移：导入迁移包
-13. 一键验收自检（语法/单测/API）
-14. 数据库一致性校验（迁移前建议）
-15. 安全加固向导（token 轮换 + 8080 收敛）
-16. 收敛 AUTH_TOKEN（新旧双token -> 单token）
-17. 手动安全清理（过期封禁 + 审计日志）
+1. 配置向导（修改参数并重启）
+2. 启动 controller
+3. 停止 controller
+4. 启动 bot
+5. 停止 bot
+6. 状态查看（controller/bot）
+7. 查看日志（controller/bot）
+8. HTTPS 证书状态（Caddy）
+9. HTTPS 证书刷新（重载 Caddy）
+10. 迁移：导出迁移包
+11. 迁移：导入迁移包
+12. 一键验收自检（语法/单测/API）
+13. 数据库一致性校验（迁移前建议）
+14. 安全加固向导（token 轮换 + 8080 收敛）
+15. 收敛 AUTH_TOKEN（新旧双token -> 单token）
+16. 手动安全清理（过期封禁 + 审计日志）
 【系统级操作（谨慎）】
-1. 安装/更新（git pull + 依赖 + venv + 重启）
+17. 安装/更新（git pull + 依赖 + venv + 重启）
 18. 卸载
 19. 退出
 

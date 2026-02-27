@@ -348,29 +348,29 @@ show_menu() {
   echo " sb-agent 中文管理菜单"
   echo "========================================"
   echo "【运行与配置】"
-  echo " 2) 配置（修改 /etc/sb-agent/config.json）"
-  echo " 3) 启动 sb-agent"
-  echo " 4) 停止 sb-agent"
-  echo " 5) 重启 sb-agent"
-  echo " 6) 查看 sb-agent 状态"
-  echo " 7) 查看 sb-agent 日志（tail -f）"
-  echo " 8) 重启 sing-box"
-  echo " 9) 查看 sing-box 状态与最近日志"
-  echo "10) 证书状态检查"
-  echo "11) 触发证书重新申请/刷新（先备份）"
+  echo " 1) 配置（修改 /etc/sb-agent/config.json）"
+  echo " 2) 启动 sb-agent"
+  echo " 3) 停止 sb-agent"
+  echo " 4) 重启 sb-agent"
+  echo " 5) 查看 sb-agent 状态"
+  echo " 6) 查看 sb-agent 日志（tail -f）"
+  echo " 7) 重启 sing-box"
+  echo " 8) 查看 sing-box 状态与最近日志"
+  echo " 9) 证书状态检查"
+  echo "10) 触发证书重新申请/刷新（先备份）"
   echo ""
   echo "【安全工具】"
-  echo "13) 安装/启用 fail2ban（SSH 防爆破）"
-  echo "14) 查看 fail2ban 状态与封禁列表"
-  echo "15) 解封 fail2ban 封禁 IP"
-  echo "16) 生成 SSH 密钥（ed25519）"
-  echo "17) 启用 SSH 仅密钥登录（禁用密码）"
-  echo "18) 恢复 SSH 密码登录（应急）"
+  echo "11) 安装/启用 fail2ban（SSH 防爆破）"
+  echo "12) 查看 fail2ban 状态与封禁列表"
+  echo "13) 解封 fail2ban 封禁 IP"
+  echo "14) 生成 SSH 密钥（ed25519）"
+  echo "15) 启用 SSH 仅密钥登录（禁用密码）"
+  echo "16) 恢复 SSH 密码登录（应急）"
   echo ""
   echo "【系统级操作（谨慎）】"
-  echo " 1) 更新同步（保留原配置，自动 git pull）"
-  echo "12) 卸载"
-  echo " 0) 退出"
+  echo "17) 更新同步（保留原配置，自动 git pull）"
+  echo "18) 卸载"
+  echo "19) 退出"
   echo "========================================"
 }
 
@@ -378,9 +378,76 @@ main() {
   require_root
   while true; do
     show_menu
-    read -r -p "请选择操作 [0-18]: " choice
+    read -r -p "请选择操作 [1-19]: " choice
     case "$choice" in
       1)
+        run_reconfigure
+        pause
+        ;;
+      2)
+        systemctl start "$AGENT_SERVICE" || true
+        msg "已执行启动。"
+        pause
+        ;;
+      3)
+        systemctl stop "$AGENT_SERVICE" || true
+        msg "已执行停止。"
+        pause
+        ;;
+      4)
+        systemctl restart "$AGENT_SERVICE" || true
+        msg "已执行重启。"
+        pause
+        ;;
+      5)
+        show_agent_status
+        pause
+        ;;
+      6)
+        tail_agent_log
+        ;;
+      7)
+        systemctl restart "$SINGBOX_SERVICE" || true
+        msg "已执行 sing-box 重启。"
+        pause
+        ;;
+      8)
+        show_singbox_status_logs
+        pause
+        ;;
+      9)
+        run_cert_check
+        pause
+        ;;
+      10)
+        refresh_certificate
+        pause
+        ;;
+      11)
+        install_or_enable_fail2ban
+        pause
+        ;;
+      12)
+        show_fail2ban_status
+        pause
+        ;;
+      13)
+        unban_fail2ban_ip
+        pause
+        ;;
+      14)
+        generate_ssh_keypair
+        pause
+        ;;
+      15)
+        enable_ssh_key_only_login
+        pause
+        ;;
+      16)
+        disable_ssh_key_only_login
+        pause
+        ;;
+      17)
         if confirm_action "确认执行更新同步？" "N"; then
           run_install
         else
@@ -388,85 +455,18 @@ main() {
         fi
         pause
         ;;
-      2)
-        run_reconfigure
-        pause
-        ;;
-      3)
-        systemctl start "$AGENT_SERVICE" || true
-        msg "已执行启动。"
-        pause
-        ;;
-      4)
-        systemctl stop "$AGENT_SERVICE" || true
-        msg "已执行停止。"
-        pause
-        ;;
-      5)
-        systemctl restart "$AGENT_SERVICE" || true
-        msg "已执行重启。"
-        pause
-        ;;
-      6)
-        show_agent_status
-        pause
-        ;;
-      7)
-        tail_agent_log
-        ;;
-      8)
-        systemctl restart "$SINGBOX_SERVICE" || true
-        msg "已执行 sing-box 重启。"
-        pause
-        ;;
-      9)
-        show_singbox_status_logs
-        pause
-        ;;
-      10)
-        run_cert_check
-        pause
-        ;;
-      11)
-        refresh_certificate
-        pause
-        ;;
-      12)
+      18)
         uninstall_all
         pause
         ;;
-      13)
-        install_or_enable_fail2ban
-        pause
-        ;;
-      14)
-        show_fail2ban_status
-        pause
-        ;;
-      15)
-        unban_fail2ban_ip
-        pause
-        ;;
-      16)
-        generate_ssh_keypair
-        pause
-        ;;
-      17)
-        enable_ssh_key_only_login
-        pause
-        ;;
-      18)
-        disable_ssh_key_only_login
-        pause
-        ;;
-      0)
+      19)
         if confirm_action "确认退出菜单？" "Y"; then
           msg "已退出。"
           exit 0
         fi
         ;;
       *)
-        warn "无效选项，请输入 0-18。"
+        warn "无效选项，请输入 1-19。"
         pause
         ;;
     esac

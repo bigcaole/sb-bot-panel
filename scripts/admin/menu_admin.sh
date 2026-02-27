@@ -150,25 +150,25 @@ show_menu() {
  sb-bot-panel 管理服务器菜单
 ========================================
 【日常运维】
-2. 配置向导（修改端口/域名/token 等参数）
-3. 启动 controller
-4. 停止 controller
-5. 启动 bot
-6. 停止 bot
-7. 状态查看（controller/bot）
-8. 查看日志（controller/bot）
-9. HTTPS 证书状态（Caddy）
-10. HTTPS 证书刷新（重载 Caddy）
-11. 迁移：导出迁移包
-12. 迁移：导入迁移包
-13. 一键验收自检（语法/单测/API）
-14. 数据库一致性校验（迁移前建议）
-15. 安全加固向导（token轮换 + 8080收敛）
-16. 收敛 AUTH_TOKEN（新旧双token -> 单token）
-17. 手动安全清理（过期封禁 + 审计日志）
+1. 配置向导（修改端口/域名/token 等参数）
+2. 启动 controller
+3. 停止 controller
+4. 启动 bot
+5. 停止 bot
+6. 状态查看（controller/bot）
+7. 查看日志（controller/bot）
+8. HTTPS 证书状态（Caddy）
+9. HTTPS 证书刷新（重载 Caddy）
+10. 迁移：导出迁移包
+11. 迁移：导入迁移包
+12. 一键验收自检（语法/单测/API）
+13. 数据库一致性校验（迁移前建议）
+14. 安全加固向导（token轮换 + 8080收敛）
+15. 收敛 AUTH_TOKEN（新旧双token -> 单token）
+16. 手动安全清理（过期封禁 + 审计日志）
 
 【系统级操作（谨慎）】
-1. 安装/更新（git pull + 依赖 + venv + 重启）
+17. 安装/更新（git pull + 依赖 + venv + 重启）
 18. 卸载
 19. 退出
 ========================================
@@ -295,55 +295,47 @@ main() {
     read -r -p "请输入选项 [1-19]: " action
     case "$action" in
       1)
-        if confirm_action "确认执行安装/更新？" "N"; then
-          install_or_update
-        else
-          warn "已取消安装/更新。"
-        fi
-        pause
-        ;;
-      2)
         configure_only
         pause
         ;;
-      3)
+      2)
         systemctl start sb-controller || true
         wait_for_controller_ready 20 || true
         msg "已执行启动 controller。"
         pause
         ;;
-      4)
+      3)
         systemctl stop sb-controller || true
         msg "已执行停止 controller。"
         pause
         ;;
-      5)
+      4)
         systemctl start sb-bot || true
         msg "已执行启动 bot。"
         pause
         ;;
-      6)
+      5)
         systemctl stop sb-bot || true
         msg "已执行停止 bot。"
         pause
         ;;
-      7)
+      6)
         show_status
         pause
         ;;
-      8)
+      7)
         show_logs
         pause
         ;;
-      9)
+      8)
         show_https_status
         pause
         ;;
-      10)
+      9)
         reload_https_cert
         pause
         ;;
-      11)
+      10)
         if [[ -f "$EXPORT_SCRIPT" ]]; then
           bash "$EXPORT_SCRIPT"
         else
@@ -351,7 +343,7 @@ main() {
         fi
         pause
         ;;
-      12)
+      11)
         if [[ -f "$IMPORT_SCRIPT" ]]; then
           local default_pkg migrate_dir_env
           migrate_dir_env="$(grep -E '^MIGRATE_DIR=' "${PROJECT_DIR}/.env" 2>/dev/null | tail -n1 | cut -d= -f2- || true)"
@@ -369,7 +361,7 @@ main() {
         fi
         pause
         ;;
-      13)
+      12)
         if [[ -f "$SMOKE_SCRIPT" ]]; then
           bash "$SMOKE_SCRIPT" --require-api
         else
@@ -377,7 +369,7 @@ main() {
         fi
         pause
         ;;
-      14)
+      13)
         if [[ -f "$DB_CHECK_SCRIPT" ]]; then
           bash "$DB_CHECK_SCRIPT"
         else
@@ -385,7 +377,7 @@ main() {
         fi
         pause
         ;;
-      15)
+      14)
         if [[ -f "$HARDEN_SCRIPT" ]]; then
           bash "$HARDEN_SCRIPT"
         else
@@ -393,7 +385,7 @@ main() {
         fi
         pause
         ;;
-      16)
+      15)
         if [[ -f "$TOKEN_COLLAPSE_SCRIPT" ]]; then
           bash "$TOKEN_COLLAPSE_SCRIPT"
         else
@@ -401,8 +393,16 @@ main() {
         fi
         pause
         ;;
-      17)
+      16)
         run_security_maintenance_cleanup
+        pause
+        ;;
+      17)
+        if confirm_action "确认执行安装/更新？" "N"; then
+          install_or_update
+        else
+          warn "已取消安装/更新。"
+        fi
         pause
         ;;
       18)
