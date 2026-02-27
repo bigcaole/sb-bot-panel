@@ -199,6 +199,9 @@ class ControllerSmokeTestCase(unittest.TestCase):
             node_access_payload = node_access.json()
             self.assertIn("controller_port_whitelist", node_access_payload)
             self.assertIn("whitelist_missing_nodes", node_access_payload)
+            self.assertIn("enabled_nodes", node_access_payload)
+            self.assertIn("locked_enabled_nodes", node_access_payload)
+            self.assertIn("unlocked_enabled_nodes", node_access_payload)
 
     def test_subscription_sign_and_access_smoke(self) -> None:
         with TestClient(app_module.app) as client:

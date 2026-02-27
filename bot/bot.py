@@ -2778,10 +2778,15 @@ async def run_admin_node_access_status_action(query, back_menu_callback: str) ->
         return
 
     total_nodes = int(result.get("total_nodes", 0) or 0)
+    enabled_nodes = int(result.get("enabled_nodes", 0) or 0)
     locked_nodes = int(result.get("locked_nodes", 0) or 0)
     unlocked_nodes = int(result.get("unlocked_nodes", 0) or 0)
+    locked_enabled_nodes = int(result.get("locked_enabled_nodes", 0) or 0)
+    unlocked_enabled_nodes = int(result.get("unlocked_enabled_nodes", 0) or 0)
+    unlocked_disabled_nodes = int(result.get("unlocked_disabled_nodes", 0) or 0)
     locked_items = result.get("locked_items", [])
     unlocked_items = result.get("unlocked_items", [])
+    unlocked_enabled_items = result.get("unlocked_enabled_items", [])
     whitelist_items = result.get("controller_port_whitelist", [])
     whitelist_invalid_items = result.get("whitelist_invalid_items", [])
     whitelist_missing_nodes = result.get("whitelist_missing_nodes", [])
@@ -2790,8 +2795,11 @@ async def run_admin_node_access_status_action(query, back_menu_callback: str) ->
     lines = [
         "节点访问安全状态",
         f"总节点数：{total_nodes}",
-        f"已锁定来源IP：{locked_nodes}",
-        f"未锁定来源IP：{unlocked_nodes}",
+        f"已启用节点：{enabled_nodes}",
+        f"启用且已锁定来源IP：{locked_enabled_nodes}",
+        f"启用但未锁定来源IP：{unlocked_enabled_nodes}",
+        f"未锁定来源IP（含禁用节点）：{unlocked_nodes}（其中禁用 {unlocked_disabled_nodes}）",
+        f"已锁定来源IP（全部）：{locked_nodes}",
         f"白名单缺口：{whitelist_missing_count}",
     ]
     if isinstance(whitelist_items, list) and whitelist_items:
@@ -2825,13 +2833,22 @@ async def run_admin_node_access_status_action(query, back_menu_callback: str) ->
         lines.append("- （暂无）")
 
     lines.append("")
-    lines.append("未锁定节点：")
-    if isinstance(unlocked_items, list) and unlocked_items:
-        for item in unlocked_items[:20]:
+    lines.append("未锁定节点（仅启用）：")
+    if isinstance(unlocked_enabled_items, list) and unlocked_enabled_items:
+        for item in unlocked_enabled_items[:20]:
             node_code = str(item.get("node_code", ""))
             lines.append(f"- {node_code}")
     else:
         lines.append("- （暂无）")
+
+    if isinstance(unlocked_items, list) and unlocked_items and unlocked_disabled_nodes > 0:
+        lines.append("")
+        lines.append("未锁定节点（禁用，仅供排查）：")
+        for item in unlocked_items[:20]:
+            if int(item.get("enabled", 0) or 0) != 0:
+                continue
+            node_code = str(item.get("node_code", ""))
+            lines.append(f"- {node_code}")
 
     lines.append("")
     security_result, security_error, _ = await controller_request("GET", "/admin/security/status")

@@ -645,6 +645,9 @@ def get_node_access_status(
 
     locked_nodes = []
     unlocked_nodes = []
+    locked_enabled_nodes = []
+    unlocked_enabled_nodes = []
+    unlocked_disabled_nodes = []
     whitelist_networks = []
     whitelist_invalid = []
     for item in CONTROLLER_PORT_WHITELIST_ITEMS:
@@ -665,6 +668,7 @@ def get_node_access_status(
         if agent_ip:
             locked_nodes.append(item)
             if int(row["enabled"] or 0) == 1:
+                locked_enabled_nodes.append(item)
                 try:
                     agent_ip_obj = ipaddress.ip_address(agent_ip)
                     covered = any(agent_ip_obj in network for network in whitelist_networks)
@@ -678,13 +682,29 @@ def get_node_access_status(
                     )
         else:
             unlocked_nodes.append(item)
+            if int(row["enabled"] or 0) == 1:
+                unlocked_enabled_nodes.append(item)
+            else:
+                unlocked_disabled_nodes.append(item)
+
+    enabled_total_nodes = 0
+    for row in rows:
+        if int(row["enabled"] or 0) == 1:
+            enabled_total_nodes += 1
 
     return {
         "total_nodes": len(rows),
+        "enabled_nodes": enabled_total_nodes,
         "locked_nodes": len(locked_nodes),
         "unlocked_nodes": len(unlocked_nodes),
+        "locked_enabled_nodes": len(locked_enabled_nodes),
+        "unlocked_enabled_nodes": len(unlocked_enabled_nodes),
+        "unlocked_disabled_nodes": len(unlocked_disabled_nodes),
         "locked_items": locked_nodes,
         "unlocked_items": unlocked_nodes,
+        "locked_enabled_items": locked_enabled_nodes,
+        "unlocked_enabled_items": unlocked_enabled_nodes,
+        "unlocked_disabled_items": unlocked_disabled_nodes,
         "controller_port_whitelist": CONTROLLER_PORT_WHITELIST_ITEMS,
         "whitelist_invalid_items": whitelist_invalid,
         "whitelist_missing_nodes": whitelist_missing_nodes,
