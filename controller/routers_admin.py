@@ -38,6 +38,139 @@ from controller.subscription import build_signed_subscription_urls
 
 
 router = APIRouter(tags=["admin"])
+OVERVIEW_NODE_OFFLINE_THRESHOLD_SECONDS = 120
+
+
+def build_security_status_payload() -> Dict[str, Union[bool, int, List[str]]]:
+    warnings: List[str] = []
+    if not AUTH_TOKEN:
+        warnings.append("AUTH_TOKEN 未设置：管理接口未启用鉴权")
+    if not SUB_LINK_SIGN_KEY:
+        warnings.append("SUB_LINK_SIGN_KEY 未设置：订阅签名功能不可用")
+    if SUB_LINK_SIGN_KEY and not SUB_LINK_REQUIRE_SIGNATURE:
+        warnings.append("已设置 SUB_LINK_SIGN_KEY，但未强制签名（兼容模式）")
+    if TRUST_X_FORWARDED_FOR and not TRUSTED_PROXY_IPS:
+        warnings.append("已启用 XFF 信任，但 TRUSTED_PROXY_IPS 为空")
+    if not API_RATE_LIMIT_ENABLED:
+        warnings.append("轻量限流未启用")
+
+    return {
+        "auth_enabled": bool(AUTH_TOKEN),
+        "trust_x_forwarded_for": TRUST_X_FORWARDED_FOR,
+        "trusted_proxy_ips": sorted(TRUSTED_PROXY_IPS),
+        "sub_link_sign_enabled": bool(SUB_LINK_SIGN_KEY),
+        "sub_link_require_signature": SUB_LINK_REQUIRE_SIGNATURE,
+        "sub_link_default_ttl_seconds": SUB_LINK_DEFAULT_TTL_SECONDS,
+        "api_rate_limit_enabled": API_RATE_LIMIT_ENABLED,
+        "api_rate_limit_window_seconds": API_RATE_LIMIT_WINDOW_SECONDS,
+        "api_rate_limit_max_requests": API_RATE_LIMIT_MAX_REQUESTS,
+        "warnings": warnings,
+    }
+
+
+def build_admin_overview_payload(now_ts: int) -> Dict[str, Union[int, Dict, List]]:
+    with get_connection() as conn:
+        users_total = int(conn.execute("SELECT COUNT(*) AS c FROM users").fetchone()["c"] or 0)
+        nodes_total = int(conn.execute("SELECT COUNT(*) AS c FROM nodes").fetchone()["c"] or 0)
+        nodes_enabled = int(
+            conn.execute("SELECT COUNT(*) AS c FROM nodes WHERE enabled = 1").fetchone()["c"] or 0
+        )
+        bindings_total = int(
+            conn.execute("SELECT COUNT(*) AS c FROM user_nodes").fetchone()["c"] or 0
+        )
+        monitor_rows = conn.execute(
+            """
+            SELECT node_code, last_seen_at
+            FROM nodes
+            WHERE monitor_enabled = 1
+            ORDER BY node_code
+            """
+        ).fetchall()
+        task_rows = conn.execute(
+            """
+            SELECT status, COUNT(*) AS c
+            FROM node_tasks
+            GROUP BY status
+            """
+        ).fetchall()
+        pending_by_node_rows = conn.execute(
+            """
+            SELECT node_code, COUNT(*) AS c
+            FROM node_tasks
+            WHERE status = 'pending' AND attempts < max_attempts
+            GROUP BY node_code
+            ORDER BY c DESC, node_code ASC
+            LIMIT 10
+            """
+        ).fetchall()
+
+    monitor_enabled_count = len(monitor_rows)
+    monitor_online = 0
+    monitor_offline = 0
+    monitor_never_seen = 0
+    offline_items: List[Dict[str, Union[str, int]]] = []
+    for row in monitor_rows:
+        node_code = str(row["node_code"] or "")
+        try:
+            last_seen_at = int(row["last_seen_at"] or 0)
+        except (TypeError, ValueError):
+            last_seen_at = 0
+        is_online = (
+            last_seen_at > 0
+            and (now_ts - last_seen_at) <= OVERVIEW_NODE_OFFLINE_THRESHOLD_SECONDS
+        )
+        if is_online:
+            monitor_online += 1
+            continue
+        monitor_offline += 1
+        if last_seen_at <= 0:
+            monitor_never_seen += 1
+        offline_items.append({"node_code": node_code, "last_seen_at": last_seen_at})
+
+    task_counts: Dict[str, int] = {
+        "pending": 0,
+        "running": 0,
+        "failed": 0,
+        "timeout": 0,
+        "success": 0,
+    }
+    for row in task_rows:
+        status_value = str(row["status"] or "").strip().lower()
+        if status_value in task_counts:
+            task_counts[status_value] = int(row["c"] or 0)
+
+    pending_by_node: List[Dict[str, Union[str, int]]] = []
+    for row in pending_by_node_rows:
+        pending_by_node.append(
+            {"node_code": str(row["node_code"] or ""), "pending": int(row["c"] or 0)}
+        )
+
+    return {
+        "generated_at": now_ts,
+        "totals": {
+            "users": users_total,
+            "nodes": nodes_total,
+            "enabled_nodes": nodes_enabled,
+            "bindings": bindings_total,
+        },
+        "monitor": {
+            "threshold_seconds": OVERVIEW_NODE_OFFLINE_THRESHOLD_SECONDS,
+            "enabled_nodes": monitor_enabled_count,
+            "online_nodes": monitor_online,
+            "offline_nodes": monitor_offline,
+            "never_seen_nodes": monitor_never_seen,
+            "offline_items": offline_items,
+        },
+        "tasks": {
+            "pending": int(task_counts.get("pending", 0)),
+            "running": int(task_counts.get("running", 0)),
+            "failed": int(task_counts.get("failed", 0)),
+            "timeout": int(task_counts.get("timeout", 0)),
+            "success": int(task_counts.get("success", 0)),
+            "pending_by_node": pending_by_node,
+        },
+        "security": build_security_status_payload(),
+    }
 
 
 def cleanup_archives_by_count(
@@ -420,6 +553,24 @@ def get_node_access_status(
 
 
 @router.get(
+    "/admin/overview",
+    summary="Admin overview status",
+    description=(
+        "AUTH_TOKEN 为空时不校验；非空时需要请求头 Authorization: Bearer <AUTH_TOKEN>。"
+        "返回控制面概览（用户/节点/任务队列/节点心跳/安全配置）。"
+    ),
+    response_model=None,
+)
+def get_admin_overview(
+    authorization: Optional[str] = Header(default=None, alias="Authorization")
+) -> Union[Dict[str, Union[int, Dict, List]], JSONResponse]:
+    auth_error = verify_admin_authorization(authorization)
+    if auth_error is not None:
+        return auth_error
+    return build_admin_overview_payload(now_ts=int(time.time()))
+
+
+@router.get(
     "/admin/security/status",
     summary="Security configuration status",
     description="AUTH_TOKEN 为空时不校验；非空时需要请求头 Authorization: Bearer <AUTH_TOKEN>。",
@@ -431,31 +582,7 @@ def get_admin_security_status(
     auth_error = verify_admin_authorization(authorization)
     if auth_error is not None:
         return auth_error
-
-    warnings: List[str] = []
-    if not AUTH_TOKEN:
-        warnings.append("AUTH_TOKEN 未设置：管理接口未启用鉴权")
-    if not SUB_LINK_SIGN_KEY:
-        warnings.append("SUB_LINK_SIGN_KEY 未设置：订阅签名功能不可用")
-    if SUB_LINK_SIGN_KEY and not SUB_LINK_REQUIRE_SIGNATURE:
-        warnings.append("已设置 SUB_LINK_SIGN_KEY，但未强制签名（兼容模式）")
-    if TRUST_X_FORWARDED_FOR and not TRUSTED_PROXY_IPS:
-        warnings.append("已启用 XFF 信任，但 TRUSTED_PROXY_IPS 为空")
-    if not API_RATE_LIMIT_ENABLED:
-        warnings.append("轻量限流未启用")
-
-    return {
-        "auth_enabled": bool(AUTH_TOKEN),
-        "trust_x_forwarded_for": TRUST_X_FORWARDED_FOR,
-        "trusted_proxy_ips": sorted(TRUSTED_PROXY_IPS),
-        "sub_link_sign_enabled": bool(SUB_LINK_SIGN_KEY),
-        "sub_link_require_signature": SUB_LINK_REQUIRE_SIGNATURE,
-        "sub_link_default_ttl_seconds": SUB_LINK_DEFAULT_TTL_SECONDS,
-        "api_rate_limit_enabled": API_RATE_LIMIT_ENABLED,
-        "api_rate_limit_window_seconds": API_RATE_LIMIT_WINDOW_SECONDS,
-        "api_rate_limit_max_requests": API_RATE_LIMIT_MAX_REQUESTS,
-        "warnings": warnings,
-    }
+    return build_security_status_payload()
 
 
 @router.get(

@@ -1413,6 +1413,101 @@ def format_admin_audit_text(items: list, line_limit: int = 50, char_limit: int =
     return text
 
 
+def format_admin_overview_text(overview: dict) -> str:
+    if not isinstance(overview, dict):
+        return "控制面概览：数据格式异常"
+
+    generated_at = 0
+    try:
+        generated_at = int(overview.get("generated_at", 0) or 0)
+    except (TypeError, ValueError):
+        generated_at = 0
+    generated_text = (
+        datetime.fromtimestamp(generated_at).strftime("%Y-%m-%d %H:%M:%S")
+        if generated_at > 0
+        else "-"
+    )
+
+    totals = overview.get("totals", {})
+    if not isinstance(totals, dict):
+        totals = {}
+    monitor = overview.get("monitor", {})
+    if not isinstance(monitor, dict):
+        monitor = {}
+    tasks = overview.get("tasks", {})
+    if not isinstance(tasks, dict):
+        tasks = {}
+    security = overview.get("security", {})
+    if not isinstance(security, dict):
+        security = {}
+
+    offline_items = monitor.get("offline_items", [])
+    if not isinstance(offline_items, list):
+        offline_items = []
+    offline_codes = []
+    for item in offline_items[:5]:
+        if not isinstance(item, dict):
+            continue
+        node_code = str(item.get("node_code", "")).strip()
+        if node_code:
+            offline_codes.append(node_code)
+
+    pending_by_node = tasks.get("pending_by_node", [])
+    if not isinstance(pending_by_node, list):
+        pending_by_node = []
+    pending_parts = []
+    for item in pending_by_node[:5]:
+        if not isinstance(item, dict):
+            continue
+        node_code = str(item.get("node_code", "")).strip()
+        try:
+            pending_count = int(item.get("pending", 0) or 0)
+        except (TypeError, ValueError):
+            pending_count = 0
+        if node_code:
+            pending_parts.append(f"{node_code}({pending_count})")
+
+    warnings = security.get("warnings", [])
+    if not isinstance(warnings, list):
+        warnings = []
+
+    lines = [
+        "控制面概览：",
+        f"生成时间：{generated_text}",
+        "用户/节点(启用)：{0}/{1}({2})".format(
+            int(totals.get("users", 0) or 0),
+            int(totals.get("nodes", 0) or 0),
+            int(totals.get("enabled_nodes", 0) or 0),
+        ),
+        "绑定关系：{0}".format(int(totals.get("bindings", 0) or 0)),
+        "节点监控：启用 {0}，在线 {1}，离线 {2}，未上报 {3}（阈值 {4} 秒）".format(
+            int(monitor.get("enabled_nodes", 0) or 0),
+            int(monitor.get("online_nodes", 0) or 0),
+            int(monitor.get("offline_nodes", 0) or 0),
+            int(monitor.get("never_seen_nodes", 0) or 0),
+            int(monitor.get("threshold_seconds", 0) or 0),
+        ),
+        "任务队列：pending {0} / running {1} / failed {2} / timeout {3}".format(
+            int(tasks.get("pending", 0) or 0),
+            int(tasks.get("running", 0) or 0),
+            int(tasks.get("failed", 0) or 0),
+            int(tasks.get("timeout", 0) or 0),
+        ),
+        "安全告警：{0} 条".format(len(warnings)),
+    ]
+
+    if offline_codes:
+        lines.append("离线节点（最多 5 个）：{0}".format(", ".join(offline_codes)))
+    if pending_parts:
+        lines.append("待执行节点（最多 5 个）：{0}".format(", ".join(pending_parts)))
+    if warnings:
+        lines.append("告警摘要：")
+        for warning in warnings[:3]:
+            lines.append("- {0}".format(str(warning)))
+
+    return "\n".join(lines)
+
+
 def get_maintain_log_unit(target: str) -> str:
     unit_map = {
         "controller": "sb-controller",
@@ -5166,15 +5261,23 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         bot_code, bot_out, _ = await run_local_shell("systemctl is-active sb-bot", timeout=15)
         caddy_code, caddy_out, _ = await run_local_shell("systemctl is-active caddy", timeout=15)
         health, error_message, _ = await controller_request("GET", "/health")
+        overview, overview_error, _ = await controller_request("GET", "/admin/overview")
         health_text = "异常"
         if not error_message and isinstance(health, dict) and health.get("ok"):
             health_text = "正常"
+        if overview_error:
+            overview_text = "控制面概览获取失败：{0}".format(
+                localize_controller_error(overview_error)
+            )
+        else:
+            overview_text = format_admin_overview_text(overview if isinstance(overview, dict) else {})
         await query.edit_message_text(
             "服务状态检查：\n"
             f"controller(systemd)：{(ctl_out or '').strip() if ctl_code == 0 else 'unknown'}\n"
             f"bot(systemd)：{(bot_out or '').strip() if bot_code == 0 else 'unknown'}\n"
             f"caddy(systemd)：{(caddy_out or '').strip() if caddy_code == 0 else 'unknown'}\n"
-            f"controller /health：{health_text}",
+            f"controller /health：{health_text}\n\n"
+            f"{overview_text}",
             reply_markup=build_back_keyboard("menu:maintain"),
         )
         return

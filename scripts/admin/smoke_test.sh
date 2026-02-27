@@ -174,6 +174,11 @@ run_api_checks() {
       FAIL_API=1
       record_fail "管理接口校验异常：带 token 访问 /admin/security/status 期望 200，实际 ${code}"
     fi
+    code="$(http_code "${api_url}/admin/overview" -H "Authorization: Bearer ${auth_token}")"
+    if [[ "$code" != "200" ]]; then
+      FAIL_API=1
+      record_fail "管理接口校验异常：带 token 访问 /admin/overview 期望 200，实际 ${code}"
+    fi
     code="$(http_code "${api_url}/admin/db/integrity" -H "Authorization: Bearer ${auth_token}")"
     if [[ "$code" != "200" ]]; then
       FAIL_API=1
@@ -189,6 +194,11 @@ run_api_checks() {
     if [[ "$code" != "200" ]]; then
       FAIL_API=1
       record_fail "AUTH_TOKEN 为空时 /admin/db/integrity 应可访问，期望 200，实际 ${code}"
+    fi
+    code="$(http_code "${api_url}/admin/overview")"
+    if [[ "$code" != "200" ]]; then
+      FAIL_API=1
+      record_fail "AUTH_TOKEN 为空时 /admin/overview 应可访问，期望 200，实际 ${code}"
     fi
   fi
 

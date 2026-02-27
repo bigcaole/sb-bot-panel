@@ -151,6 +151,16 @@ class ControllerSmokeTestCase(unittest.TestCase):
             self.assertEqual(200, admin_sec.status_code)
             self.assertTrue(bool(admin_sec.json().get("auth_enabled")))
 
+            overview_resp = client.get("/admin/overview", headers=self._auth_header())
+            self.assertEqual(200, overview_resp.status_code)
+            overview_payload = overview_resp.json()
+            self.assertIn("totals", overview_payload)
+            self.assertEqual(1, int(overview_payload["totals"]["users"]))
+            self.assertEqual(1, int(overview_payload["totals"]["nodes"]))
+            self.assertIn("monitor", overview_payload)
+            self.assertIn("tasks", overview_payload)
+            self.assertIn("security", overview_payload)
+
             db_integrity = client.get("/admin/db/integrity", headers=self._auth_header())
             self.assertEqual(200, db_integrity.status_code)
             self.assertTrue(bool(db_integrity.json().get("ok")))
