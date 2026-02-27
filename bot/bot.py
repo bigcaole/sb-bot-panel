@@ -585,6 +585,39 @@ def write_env_updates(updates: dict, env_path: str = ADMIN_ENV_FILE) -> tuple:
     return True, ""
 
 
+def backup_env_file(prefix: str = "env-backup", env_path: str = ADMIN_ENV_FILE) -> tuple:
+    if not os.path.exists(env_path):
+        return "", ".env 不存在：{0}".format(env_path)
+    timestamp = int(time.time())
+    safe_prefix = re.sub(r"[^a-zA-Z0-9_-]+", "-", str(prefix or "env-backup")).strip("-")
+    if not safe_prefix:
+        safe_prefix = "env-backup"
+    backup_path = "/tmp/sb-bot-{0}-{1}.env.bak".format(safe_prefix, timestamp)
+    try:
+        with open(env_path, "rb") as src:
+            data = src.read()
+        with open(backup_path, "wb") as dst:
+            dst.write(data)
+    except OSError as exc:
+        return "", "备份 .env 失败: {0}".format(exc)
+    return backup_path, ""
+
+
+def restore_env_file(backup_path: str, env_path: str = ADMIN_ENV_FILE) -> tuple:
+    if not backup_path:
+        return False, "未提供备份路径"
+    if not os.path.exists(backup_path):
+        return False, "备份文件不存在：{0}".format(backup_path)
+    try:
+        with open(backup_path, "rb") as src:
+            data = src.read()
+        with open(env_path, "wb") as dst:
+            dst.write(data)
+    except OSError as exc:
+        return False, "回滚 .env 失败: {0}".format(exc)
+    return True, ""
+
+
 def normalize_simple_url(raw_value: str, default_scheme: str = "http") -> str:
     value = str(raw_value or "").strip()
     if not value:
@@ -3189,6 +3222,14 @@ async def apply_admin_sub_policy_action(query, mode: str) -> None:
         )
         return
 
+    backup_path, backup_error = backup_env_file(prefix="subpolicy")
+    if backup_error:
+        await query.edit_message_text(
+            "切换预设前备份失败：{0}".format(backup_error),
+            reply_markup=build_back_keyboard("action:maintain_sub_policy"),
+        )
+        return
+
     ok, err_text = write_env_updates(updates)
     if not ok:
         await query.edit_message_text(
@@ -3203,18 +3244,48 @@ async def apply_admin_sub_policy_action(query, mode: str) -> None:
     )
     if restart_code != 0:
         raw = (restart_stdout or "").strip() or (restart_stderr or "").strip()
+        rollback_ok, rollback_error = restore_env_file(backup_path)
+        rollback_restart_code = -1
+        rollback_restart_stdout = ""
+        rollback_restart_stderr = ""
+        if rollback_ok:
+            rollback_restart_code, rollback_restart_stdout, rollback_restart_stderr = await run_local_shell(
+                "systemctl restart sb-controller",
+                timeout=60,
+            )
+        rollback_raw = (rollback_restart_stdout or "").strip() or (rollback_restart_stderr or "").strip()
+        if rollback_ok and rollback_restart_code == 0:
+            await query.edit_message_text(
+                "预设切换失败，已自动回滚并恢复 controller。\n\n"
+                f"预设：{mode_name}\n"
+                f".env 备份：{backup_path}\n"
+                "失败输出：\n"
+                f"{format_recent_log_output(raw, line_limit=40, char_limit=1700)}",
+                reply_markup=build_back_keyboard("action:maintain_sub_policy"),
+            )
+            return
+
+        rollback_detail = rollback_error
+        if rollback_ok and rollback_restart_code != 0:
+            rollback_detail = "已恢复 .env，但 controller 回滚重启失败：{0}".format(
+                format_recent_log_output(rollback_raw, line_limit=30, char_limit=1200)
+            )
         await query.edit_message_text(
-            "预设已写入 .env，但重启 controller 失败。\n\n"
+            "预设切换失败，且自动回滚未完全成功。\n\n"
             f"预设：{mode_name}\n"
-            f"输出：\n{format_recent_log_output(raw, line_limit=50, char_limit=2400)}",
+            f".env 备份：{backup_path}\n"
+            "失败输出：\n"
+            f"{format_recent_log_output(raw, line_limit=35, char_limit=1400)}\n\n"
+            f"回滚状态：{rollback_detail or '未知错误'}",
             reply_markup=build_back_keyboard("action:maintain_sub_policy"),
         )
         return
 
     await run_admin_sub_policy_panel_action(
         query,
-        notice=f"已应用预设：{mode_name}（controller 已重启）",
+        notice=f"已应用预设：{mode_name}（controller 已重启，备份：{backup_path}）",
     )
+    return
 
 
 async def run_admin_node_access_status_action(query, back_menu_callback: str) -> None:
