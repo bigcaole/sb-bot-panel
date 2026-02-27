@@ -144,6 +144,11 @@ main() {
 
   if [[ "$auth_raw" != *","* ]]; then
     msg "AUTH_TOKEN 已是单值，无需收敛。"
+    if wait_for_controller_ready "$controller_port" 15; then
+      sync_node_tokens_after_collapse "$controller_port" "$primary_token"
+    else
+      warn "controller 未就绪，已跳过节点 token 对齐同步。"
+    fi
     exit 0
   fi
 

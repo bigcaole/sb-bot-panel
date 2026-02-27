@@ -336,6 +336,7 @@ sb-admin
 
 说明：执行 `安全加固向导` 并轮换 `AUTH_TOKEN` 后，脚本会自动触发一次节点 token 同步任务（`/admin/auth/sync_node_tokens`，默认包含禁用节点并强制新建），降低节点鉴权不同步风险。
 同样地，执行 `收敛 AUTH_TOKEN` 后也会自动触发一次节点 token 同步任务，进一步降低节点掉线风险。
+当 `AUTH_TOKEN` 本身已是单值（No-Op）时，脚本也会尝试执行一次节点 token 对齐同步。
 
 统一验收命令（管理服务器）：
 
