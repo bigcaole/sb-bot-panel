@@ -4,6 +4,7 @@ set -euo pipefail
 PROJECT_DIR_DEFAULT="/root/sb-bot-panel"
 PROJECT_DIR="${PROJECT_DIR:-$PROJECT_DIR_DEFAULT}"
 ENV_FILE="${PROJECT_DIR}/.env"
+SCRIPT_ACTOR="db-check"
 
 msg() { echo -e "\033[1;32m[信息]\033[0m $*"; }
 warn() { echo -e "\033[1;33m[警告]\033[0m $*"; }
@@ -24,9 +25,23 @@ load_env() {
   fi
 }
 
+first_auth_token() {
+  local raw="${1:-}"
+  raw="${raw//$'\n'/}"
+  raw="${raw//$'\r'/}"
+  raw="$(echo "$raw" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+  if [[ "$raw" == *","* ]]; then
+    echo "$(echo "${raw%%,*}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+  else
+    echo "$raw"
+  fi
+}
+
 build_auth_header() {
-  if [[ -n "${AUTH_TOKEN:-}" ]]; then
-    echo "Authorization: Bearer ${AUTH_TOKEN}"
+  local token
+  token="$(first_auth_token "${AUTH_TOKEN:-}")"
+  if [[ -n "$token" ]]; then
+    echo "Authorization: Bearer ${token}"
   fi
 }
 
@@ -39,10 +54,12 @@ api_post() {
   if [[ -n "$auth_header" ]]; then
     curl -fsSL -X POST "$url" \
       -H "$auth_header" \
+      -H "X-Actor: ${SCRIPT_ACTOR}" \
       -H "Content-Type: application/json" \
       -d "$payload"
   else
     curl -fsSL -X POST "$url" \
+      -H "X-Actor: ${SCRIPT_ACTOR}" \
       -H "Content-Type: application/json" \
       -d "$payload"
   fi
@@ -54,9 +71,9 @@ api_get() {
   local auth_header
   auth_header="$(build_auth_header)"
   if [[ -n "$auth_header" ]]; then
-    curl -fsSL "$url" -H "$auth_header"
+    curl -fsSL "$url" -H "$auth_header" -H "X-Actor: ${SCRIPT_ACTOR}"
   else
-    curl -fsSL "$url"
+    curl -fsSL "$url" -H "X-Actor: ${SCRIPT_ACTOR}"
   fi
 }
 
@@ -66,6 +83,9 @@ main() {
   load_env
 
   CONTROLLER_URL="${CONTROLLER_URL:-http://127.0.0.1:8080}"
+  if [[ -n "${AUTH_TOKEN:-}" && "${AUTH_TOKEN:-}" == *","* ]]; then
+    warn "检测到 AUTH_TOKEN 多 token 过渡模式，脚本将使用第一个 token。"
+  fi
   msg "controller: ${CONTROLLER_URL}"
 
   msg "1) 创建逻辑导出快照..."

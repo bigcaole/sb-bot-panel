@@ -12,6 +12,7 @@ FAIL_ITEMS=()
 WARN_ITEMS=()
 FAIL_PY=0
 FAIL_API=0
+SMOKE_ACTOR="smoke-test"
 
 msg() { echo -e "\033[1;32m[信息]\033[0m $*"; }
 warn() { echo -e "\033[1;33m[警告]\033[0m $*"; }
@@ -188,7 +189,7 @@ run_py_checks() {
 http_code() {
   local url="$1"
   shift || true
-  curl -sS -o /tmp/sb_smoke_resp.txt -w "%{http_code}" "$@" "$url" || true
+  curl -sS -o /tmp/sb_smoke_resp.txt -w "%{http_code}" -H "X-Actor: ${SMOKE_ACTOR}" "$@" "$url" || true
 }
 
 wait_api_ready() {
