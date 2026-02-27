@@ -3145,8 +3145,35 @@ async def run_admin_log_archive_action(query, back_menu_callback: str) -> None:
     )
 
 
-async def run_admin_sub_policy_panel_action(query, notice: str = "") -> None:
-    status_result, error_message, _ = await controller_request("GET", "/admin/security/status")
+async def get_admin_security_status_with_retry(
+    retry_attempts: int = 1, retry_delay_seconds: float = 1.0
+) -> tuple:
+    attempts = retry_attempts if retry_attempts >= 1 else 1
+    for index in range(attempts):
+        status_result, error_message, status_code = await controller_request(
+            "GET", "/admin/security/status"
+        )
+        if not error_message:
+            return status_result, "", status_code
+
+        is_connection_issue = str(error_message).startswith("无法连接控制器接口")
+        is_last = index >= attempts - 1
+        if is_last or not is_connection_issue:
+            return status_result, error_message, status_code
+        await asyncio.sleep(retry_delay_seconds if retry_delay_seconds > 0 else 0.5)
+    return None, "读取订阅安全状态失败", 0
+
+
+async def run_admin_sub_policy_panel_action(
+    query,
+    notice: str = "",
+    retry_attempts: int = 1,
+    retry_delay_seconds: float = 1.0,
+) -> None:
+    status_result, error_message, _ = await get_admin_security_status_with_retry(
+        retry_attempts=retry_attempts,
+        retry_delay_seconds=retry_delay_seconds,
+    )
     if error_message:
         await query.edit_message_text(
             "读取订阅安全状态失败：{0}".format(localize_controller_error(error_message)),
@@ -3284,6 +3311,8 @@ async def apply_admin_sub_policy_action(query, mode: str) -> None:
     await run_admin_sub_policy_panel_action(
         query,
         notice=f"已应用预设：{mode_name}（controller 已重启，备份：{backup_path}）",
+        retry_attempts=10,
+        retry_delay_seconds=1.0,
     )
     return
 
