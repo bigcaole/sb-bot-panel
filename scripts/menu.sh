@@ -355,15 +355,15 @@ show_ssh_security_status() {
       i=$((i + 1))
     fi
     if (( need_enable_pubkey == 1 )); then
-      echo "${i}) 启用公钥认证：菜单 16（启用仅密钥登录）或在 sshd 配置中设置 PubkeyAuthentication yes"
+      echo "${i}) 启用公钥认证：菜单 17（启用仅密钥登录）或在 sshd 配置中设置 PubkeyAuthentication yes"
       i=$((i + 1))
     fi
     if (( need_disable_password == 1 )); then
-      echo "${i}) 禁用密码登录：菜单 16（启用仅密钥登录）后验证 PasswordAuthentication=no"
+      echo "${i}) 禁用密码登录：菜单 17（启用仅密钥登录）后验证 PasswordAuthentication=no"
       i=$((i + 1))
     fi
     if (( need_fix_permit_root == 1 )); then
-      echo "${i}) 建议将 PermitRootLogin 调整为 prohibit-password（菜单 16 会自动处理）"
+      echo "${i}) 建议将 PermitRootLogin 调整为 prohibit-password（菜单 17 会自动处理）"
       i=$((i + 1))
     fi
     if (( need_fix_ssh_service == 1 )); then
@@ -394,6 +394,51 @@ show_ssh_security_status() {
 
   # Keep variables referenced for shellcheck clarity.
   : "${ssh_active}" "${root_has_keys}" "${fail2ban_ok}" "${ufw_ok}" "${ufw_installed}" "${client_ip_allowed}"
+}
+
+run_ssh_security_quick_fix() {
+  local ssh_port client_ip ufw_state
+  ssh_port="$(detect_sshd_port)"
+  client_ip="$(detect_current_ssh_client_ip)"
+
+  msg "开始执行半自动安全修复（不包含仅密钥切换）..."
+  echo "目标：修复 fail2ban 运行状态、确保 SSH 防火墙放行。"
+  echo ""
+
+  if command -v ufw >/dev/null 2>&1; then
+    msg "同步 UFW SSH 规则..."
+    ufw allow "${ssh_port}/tcp" >/dev/null || true
+    if [[ -n "$client_ip" ]]; then
+      ufw allow from "$client_ip" to any port "$ssh_port" proto tcp >/dev/null || true
+      msg "已尝试放行当前来源 IP(${client_ip}) 到 SSH 端口 ${ssh_port}。"
+    fi
+    ufw_state="$(ufw status 2>/dev/null | head -n1 || true)"
+    if [[ "$ufw_state" == *"inactive"* ]]; then
+      if confirm_action "检测到 UFW 未启用，是否立即启用？" "Y"; then
+        ufw --force enable >/dev/null
+        msg "UFW 已启用。"
+      else
+        warn "你选择不启用 UFW。"
+      fi
+    else
+      msg "UFW 已启用，SSH 规则已同步。"
+    fi
+  else
+    warn "系统未安装 UFW，跳过防火墙修复。"
+  fi
+
+  if command -v fail2ban-client >/dev/null 2>&1 && systemctl is-active fail2ban >/dev/null 2>&1; then
+    msg "fail2ban 已运行。"
+  else
+    if confirm_action "fail2ban 未就绪，是否安装/启用？" "Y"; then
+      install_or_enable_fail2ban
+    else
+      warn "你选择跳过 fail2ban 安装/启用。"
+    fi
+  fi
+
+  echo ""
+  msg "半自动修复执行完成，建议立即查看菜单 15（SSH 安全状态总览）确认结果。"
 }
 
 unban_fail2ban_ip() {
@@ -660,13 +705,14 @@ show_menu() {
   echo "13) 解封 fail2ban 封禁 IP"
   echo "14) 生成 SSH 密钥（ed25519）"
   echo "15) SSH 安全状态总览（只读）"
-  echo "16) 启用 SSH 仅密钥登录（禁用密码）"
-  echo "17) 恢复 SSH 密码登录（应急）"
+  echo "16) 一键安全修复（半自动）"
+  echo "17) 启用 SSH 仅密钥登录（禁用密码）"
+  echo "18) 恢复 SSH 密码登录（应急）"
   echo ""
   echo "【系统级操作（谨慎）】"
-  echo "18) 更新同步（保留原配置，自动 git pull）"
-  echo "19) 卸载"
-  echo "20) 退出"
+  echo "19) 更新同步（保留原配置，自动 git pull）"
+  echo "20) 卸载"
+  echo "21) 退出"
   echo "========================================"
 }
 
@@ -674,7 +720,7 @@ main() {
   require_root
   while true; do
     show_menu
-    read -r -p "请选择操作 [1-20]: " choice
+    read -r -p "请选择操作 [1-21]: " choice
     case "$choice" in
       1)
         run_reconfigure
@@ -740,14 +786,18 @@ main() {
         pause
         ;;
       16)
-        enable_ssh_key_only_login
+        run_ssh_security_quick_fix
         pause
         ;;
       17)
-        disable_ssh_key_only_login
+        enable_ssh_key_only_login
         pause
         ;;
       18)
+        disable_ssh_key_only_login
+        pause
+        ;;
+      19)
         if confirm_action "确认执行更新同步？" "N"; then
           run_install
         else
@@ -755,16 +805,16 @@ main() {
         fi
         pause
         ;;
-      19)
+      20)
         uninstall_all
         pause
         ;;
-      20)
+      21)
         msg "已退出。"
         exit 0
         ;;
       *)
-        warn "无效选项，请输入 1-20。"
+        warn "无效选项，请输入 1-21。"
         pause
         ;;
     esac
