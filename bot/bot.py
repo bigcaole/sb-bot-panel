@@ -3308,8 +3308,10 @@ async def run_admin_security_block_ip_action(
         if expire_at > 0
         else "永久"
     )
+    already_blocked = bool(result.get("already_blocked"))
+    title_text = "封禁已存在（已刷新期限）" if already_blocked else "封禁成功"
     await query.edit_message_text(
-        "封禁成功\n\n"
+        f"{title_text}\n\n"
         f"IP：{source_ip}\n"
         f"作用端口：{int(result.get('controller_port', CONTROLLER_PORT_HINT) or CONTROLLER_PORT_HINT)}\n"
         f"封禁时长：{duration_text}\n"

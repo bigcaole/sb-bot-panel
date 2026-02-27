@@ -355,17 +355,46 @@ def build_ufw_delete_arg_sets(source_ip: str) -> List[List[str]]:
     ]
 
 
+def has_ufw_ip_block(source_ip: str) -> bool:
+    code, stdout, stderr = run_ufw_command(["ufw", "status", "numbered"])
+    if code == 127:
+        raise HTTPException(status_code=503, detail="ufw is not available on controller host")
+    if code != 0:
+        # 状态读取失败时回退到现有新增逻辑，避免误判中断业务。
+        return False
+    source_ip_lower = str(source_ip or "").strip().lower()
+    if not source_ip_lower:
+        return False
+    port_marker = "{0}/tcp".format(int(CONTROLLER_PORT))
+    for raw_line in str(stdout or "").splitlines():
+        line = str(raw_line or "").strip()
+        if not line:
+            continue
+        line_lower = line.lower()
+        if "deny" not in line_lower:
+            continue
+        if source_ip_lower not in line_lower:
+            continue
+        if port_marker in line_lower:
+            return True
+        if "anywhere" in line_lower:
+            return True
+    return False
+
+
 def apply_ufw_ip_block(source_ip: str) -> Dict[str, Union[bool, str]]:
+    if has_ufw_ip_block(source_ip):
+        return {"ok": True, "result": "existing", "already_blocked": True}
     last_error = ""
     for args in build_ufw_deny_arg_sets(source_ip):
         code, stdout, stderr = run_ufw_command(args)
         merged = "{0}\n{1}".format(stdout, stderr).strip()
         if code == 0:
-            return {"ok": True, "result": (stdout or stderr or "ok").strip()}
+            return {"ok": True, "result": (stdout or stderr or "ok").strip(), "already_blocked": False}
         if code == 127:
             raise HTTPException(status_code=503, detail="ufw is not available on controller host")
         if is_ufw_rule_exists_message(merged):
-            return {"ok": True, "result": (stdout or stderr or "existing").strip()}
+            return {"ok": True, "result": (stdout or stderr or "existing").strip(), "already_blocked": True}
         last_error = (stderr or stdout or "unknown error").strip()
         if not is_ufw_invalid_syntax_message(merged):
             break
@@ -1297,7 +1326,8 @@ def block_security_source_ip(
         )
         if is_source_ip_protected(source_ip, protected_ips, protected_networks):
             raise HTTPException(status_code=400, detail="该IP受保护，拒绝封禁")
-        apply_ufw_ip_block(source_ip)
+        block_result = apply_ufw_ip_block(source_ip)
+        already_blocked = bool(block_result.get("already_blocked", False))
         conn.execute(
             """
             INSERT INTO security_ip_blocks(source_ip, created_at, expire_at, reason, operator)
@@ -1325,6 +1355,7 @@ def block_security_source_ip(
                 "duration_seconds": duration_seconds,
                 "expire_at": int(expire_at),
                 "controller_port": int(CONTROLLER_PORT),
+                "already_blocked": bool(already_blocked),
             },
             actor=get_request_actor(request),
             source_ip=request_ip,
@@ -1336,6 +1367,7 @@ def block_security_source_ip(
         "duration_seconds": duration_seconds,
         "expire_at": int(expire_at),
         "controller_port": int(CONTROLLER_PORT),
+        "already_blocked": bool(already_blocked),
     }
 
 
