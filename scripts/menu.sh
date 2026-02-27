@@ -207,7 +207,16 @@ show_ssh_security_status() {
   local ufw_installed=1
   local ssh_active=0
   local client_ip_allowed=1
-  local -a suggestions
+  local need_fix_ssh_service=0
+  local need_root_keys=0
+  local need_enable_pubkey=0
+  local need_disable_password=0
+  local need_fix_permit_root=0
+  local need_start_fail2ban=0
+  local need_install_fail2ban=0
+  local need_open_ssh_port=0
+  local need_allow_current_ip=0
+  local need_install_ufw=0
   ssh_service="$(detect_ssh_service)"
   ssh_port="$(detect_sshd_port)"
   client_ip="$(detect_current_ssh_client_ip)"
@@ -216,7 +225,6 @@ show_ssh_security_status() {
   pubkey_auth="unknown"
   risk_score=0
   risk_level="低"
-  suggestions=()
 
   echo "----- SSH 安全状态总览 -----"
   echo "sshd 服务名: ${ssh_service}"
@@ -228,7 +236,7 @@ show_ssh_security_status() {
     msg "SSH 服务状态：运行中"
   else
     risk_score=$((risk_score + 3))
-    suggestions+=("检查 SSH 服务并恢复：systemctl status ${ssh_service} && systemctl restart ${ssh_service}")
+    need_fix_ssh_service=1
     warn "SSH 服务状态：未运行"
   fi
 
@@ -248,17 +256,17 @@ show_ssh_security_status() {
   else
     if [[ "$pubkey_auth" != "yes" ]]; then
       risk_score=$((risk_score + 2))
-      suggestions+=("启用公钥认证：菜单 16（启用仅密钥登录）或在 sshd 配置中设置 PubkeyAuthentication yes")
+      need_enable_pubkey=1
     fi
     if [[ "$pass_auth" != "no" ]]; then
       risk_score=$((risk_score + 2))
-      suggestions+=("禁用密码登录：菜单 16（启用仅密钥登录）后验证 PasswordAuthentication=no")
+      need_disable_password=1
     fi
     warn "当前策略不是严格仅密钥登录（建议 PasswordAuthentication=no 且 PubkeyAuthentication=yes）。"
   fi
   if [[ "$permit_root" == "yes" ]]; then
     risk_score=$((risk_score + 1))
-    suggestions+=("建议将 PermitRootLogin 调整为 prohibit-password（菜单 16 会自动处理）")
+    need_fix_permit_root=1
   fi
 
   echo ""
@@ -268,7 +276,7 @@ show_ssh_security_status() {
     msg "root 用户已检测到 authorized_keys。"
   else
     risk_score=$((risk_score + 3))
-    suggestions+=("先为 root 写入公钥再启用仅密钥登录：mkdir -p /root/.ssh && chmod 700 /root/.ssh && 编辑 /root/.ssh/authorized_keys")
+    need_root_keys=1
     warn "root 用户未检测到 authorized_keys。"
   fi
 
@@ -280,12 +288,12 @@ show_ssh_security_status() {
       fail2ban-client status sshd 2>/dev/null || warn "未检测到 sshd jail（可能未启用）。"
     else
       risk_score=$((risk_score + 1))
-      suggestions+=("启动 fail2ban：菜单 11（安装/启用 fail2ban）")
+      need_start_fail2ban=1
       warn "fail2ban 服务未运行。"
     fi
   else
     risk_score=$((risk_score + 1))
-    suggestions+=("安装 fail2ban：菜单 11（安装/启用 fail2ban）")
+    need_install_fail2ban=1
     warn "系统未安装 fail2ban。"
   fi
 
@@ -298,7 +306,7 @@ show_ssh_security_status() {
     if ! ufw status 2>/dev/null | grep -E "^ *${ssh_port}(/tcp)?[[:space:]]" >/dev/null; then
       ufw_ok=0
       risk_score=$((risk_score + 2))
-      suggestions+=("放行 SSH 端口：ufw allow ${ssh_port}/tcp")
+      need_open_ssh_port=1
       warn "未发现 SSH 端口(${ssh_port})放行规则。"
     else
       ufw status 2>/dev/null | grep -E "^ *${ssh_port}(/tcp)?[[:space:]]" || true
@@ -309,14 +317,14 @@ show_ssh_security_status() {
       else
         client_ip_allowed=0
         risk_score=$((risk_score + 2))
-        suggestions+=("放行当前运维来源 IP：ufw allow from ${client_ip} to any port ${ssh_port} proto tcp")
+        need_allow_current_ip=1
         warn "当前来源 IP(${client_ip}) 对 SSH 端口放行状态：不明确允许。"
       fi
     fi
   else
     ufw_installed=0
     risk_score=$((risk_score + 1))
-    suggestions+=("安装并启用 UFW 后仅放行必要端口（SSH/443/TUIC）")
+    need_install_ufw=1
     warn "系统未安装 UFW。"
   fi
 
@@ -338,14 +346,50 @@ show_ssh_security_status() {
     warn "存在高风险，暂不建议切换仅密钥登录。"
   fi
 
-  if (( ${#suggestions[@]} > 0 )); then
+  if (( need_root_keys + need_enable_pubkey + need_disable_password + need_fix_permit_root + need_fix_ssh_service + need_install_ufw + need_open_ssh_port + need_allow_current_ip + need_install_fail2ban + need_start_fail2ban > 0 )); then
     echo ""
     echo "----- 修复建议（按顺序）-----"
     local i=1
-    for item in "${suggestions[@]}"; do
-      echo "${i}) ${item}"
+    if (( need_root_keys == 1 )); then
+      echo "${i}) 先为 root 写入公钥再启用仅密钥登录：mkdir -p /root/.ssh && chmod 700 /root/.ssh && 编辑 /root/.ssh/authorized_keys"
       i=$((i + 1))
-    done
+    fi
+    if (( need_enable_pubkey == 1 )); then
+      echo "${i}) 启用公钥认证：菜单 16（启用仅密钥登录）或在 sshd 配置中设置 PubkeyAuthentication yes"
+      i=$((i + 1))
+    fi
+    if (( need_disable_password == 1 )); then
+      echo "${i}) 禁用密码登录：菜单 16（启用仅密钥登录）后验证 PasswordAuthentication=no"
+      i=$((i + 1))
+    fi
+    if (( need_fix_permit_root == 1 )); then
+      echo "${i}) 建议将 PermitRootLogin 调整为 prohibit-password（菜单 16 会自动处理）"
+      i=$((i + 1))
+    fi
+    if (( need_fix_ssh_service == 1 )); then
+      echo "${i}) 检查 SSH 服务并恢复：systemctl status ${ssh_service} && systemctl restart ${ssh_service}"
+      i=$((i + 1))
+    fi
+    if (( need_install_ufw == 1 )); then
+      echo "${i}) 安装并启用 UFW 后仅放行必要端口（SSH/443/TUIC）"
+      i=$((i + 1))
+    fi
+    if (( need_open_ssh_port == 1 )); then
+      echo "${i}) 放行 SSH 端口：ufw allow ${ssh_port}/tcp"
+      i=$((i + 1))
+    fi
+    if (( need_allow_current_ip == 1 )) && [[ -n "$client_ip" ]]; then
+      echo "${i}) 放行当前运维来源 IP：ufw allow from ${client_ip} to any port ${ssh_port} proto tcp"
+      i=$((i + 1))
+    fi
+    if (( need_install_fail2ban == 1 )); then
+      echo "${i}) 安装 fail2ban：菜单 11（安装/启用 fail2ban）"
+      i=$((i + 1))
+    fi
+    if (( need_start_fail2ban == 1 )); then
+      echo "${i}) 启动 fail2ban：菜单 11（安装/启用 fail2ban）"
+      i=$((i + 1))
+    fi
   fi
 
   # Keep variables referenced for shellcheck clarity.
