@@ -30,6 +30,7 @@ from controller.security import (
 from controller.settings import (
     BACKUP_RETENTION_COUNT,
     MIGRATE_RETENTION_COUNT,
+    NODE_TASK_MAX_PENDING_PER_NODE,
     NODE_MONITOR_OFFLINE_THRESHOLD_SECONDS,
     SUB_LINK_DEFAULT_TTL_SECONDS,
     SUB_LINK_REQUIRE_SIGNATURE,
@@ -64,6 +65,7 @@ def build_security_status_payload() -> Dict[str, Union[bool, int, List[str]]]:
         "api_rate_limit_enabled": API_RATE_LIMIT_ENABLED,
         "api_rate_limit_window_seconds": API_RATE_LIMIT_WINDOW_SECONDS,
         "api_rate_limit_max_requests": API_RATE_LIMIT_MAX_REQUESTS,
+        "node_task_max_pending_per_node": NODE_TASK_MAX_PENDING_PER_NODE,
         "warnings": warnings,
     }
 

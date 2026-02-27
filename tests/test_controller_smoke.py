@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from controller import app as app_module
 from controller import db as db_module
 from controller import routers_admin as admin_router_module
+from controller import routers_nodes as nodes_router_module
 from controller import routers_sub as sub_router_module
 from controller import security as security_module
 
@@ -29,6 +30,7 @@ class ControllerSmokeTestCase(unittest.TestCase):
             "routers_admin.SUB_LINK_SIGN_KEY": admin_router_module.SUB_LINK_SIGN_KEY,
             "routers_admin.SUB_LINK_REQUIRE_SIGNATURE": admin_router_module.SUB_LINK_REQUIRE_SIGNATURE,
             "routers_admin.SUB_LINK_DEFAULT_TTL_SECONDS": admin_router_module.SUB_LINK_DEFAULT_TTL_SECONDS,
+            "routers_nodes.NODE_TASK_MAX_PENDING_PER_NODE": nodes_router_module.NODE_TASK_MAX_PENDING_PER_NODE,
         }
 
         app_module.AUTH_TOKEN = "test-token"
@@ -41,6 +43,7 @@ class ControllerSmokeTestCase(unittest.TestCase):
         admin_router_module.SUB_LINK_SIGN_KEY = "sign-key"
         admin_router_module.SUB_LINK_REQUIRE_SIGNATURE = True
         admin_router_module.SUB_LINK_DEFAULT_TTL_SECONDS = 600
+        nodes_router_module.NODE_TASK_MAX_PENDING_PER_NODE = 2
 
         db_module.init_db()
         now_ts = int(time.time())
@@ -122,6 +125,9 @@ class ControllerSmokeTestCase(unittest.TestCase):
         ]
         admin_router_module.SUB_LINK_DEFAULT_TTL_SECONDS = self._old_values[
             "routers_admin.SUB_LINK_DEFAULT_TTL_SECONDS"
+        ]
+        nodes_router_module.NODE_TASK_MAX_PENDING_PER_NODE = self._old_values[
+            "routers_nodes.NODE_TASK_MAX_PENDING_PER_NODE"
         ]
         db_module.DB_PATH = self._old_db_path
         self._tmpdir.cleanup()
@@ -237,6 +243,28 @@ class ControllerSmokeTestCase(unittest.TestCase):
             force_task = force_resp.json()
             self.assertFalse(bool(force_task.get("deduplicated")))
             self.assertNotEqual(first_id, int(force_task["id"]))
+
+    def test_node_task_backlog_limit_smoke(self) -> None:
+        with TestClient(app_module.app) as client:
+            first_resp = client.post(
+                "/nodes/JP1/tasks/create",
+                headers=self._auth_header(),
+                json={"task_type": "status_agent", "force_new": True},
+            )
+            self.assertEqual(200, first_resp.status_code)
+            second_resp = client.post(
+                "/nodes/JP1/tasks/create",
+                headers=self._auth_header(),
+                json={"task_type": "status_singbox", "force_new": True},
+            )
+            self.assertEqual(200, second_resp.status_code)
+            third_resp = client.post(
+                "/nodes/JP1/tasks/create",
+                headers=self._auth_header(),
+                json={"task_type": "restart_singbox", "force_new": True},
+            )
+            self.assertEqual(429, third_resp.status_code)
+            self.assertEqual("too many pending tasks for node", str(third_resp.json().get("detail")))
 
 
 if __name__ == "__main__":

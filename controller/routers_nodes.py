@@ -20,7 +20,11 @@ from controller.nodes_service import (
 )
 from controller.schemas import CreateNodeRequest, CreateNodeTaskRequest, ReportNodeTaskRequest, UpdateNodeRequest
 from controller.security import verify_admin_authorization
-from controller.settings import NODE_TASK_RETENTION_SECONDS, NODE_TASK_RUNNING_TIMEOUT_SECONDS
+from controller.settings import (
+    NODE_TASK_MAX_PENDING_PER_NODE,
+    NODE_TASK_RETENTION_SECONDS,
+    NODE_TASK_RUNNING_TIMEOUT_SECONDS,
+)
 
 
 router = APIRouter(tags=["nodes"])
@@ -62,6 +66,7 @@ def create_node_task(
         request=request,
         running_timeout_seconds=NODE_TASK_RUNNING_TIMEOUT_SECONDS,
         retention_seconds=NODE_TASK_RETENTION_SECONDS,
+        max_pending_per_node=NODE_TASK_MAX_PENDING_PER_NODE,
     )
 
 

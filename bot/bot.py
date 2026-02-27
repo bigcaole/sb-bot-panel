@@ -1360,6 +1360,7 @@ def localize_controller_error(error_message: str) -> str:
         "unsupported payload keys": "任务参数包含不支持的字段",
         "config_set payload required": "配置任务参数不能为空",
         "payload too large (max 2048 bytes)": "任务参数过大（超过限制）",
+        "too many pending tasks for node": "该节点待执行任务过多，请稍后再试",
         "lines must be 20-300": "日志行数必须在 20-300 之间",
         "Node is disabled": "节点已禁用",
         "User already assigned to this node": "该用户已绑定该节点",

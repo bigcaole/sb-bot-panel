@@ -24,6 +24,7 @@ def create_node_task_service(
     request: Request,
     running_timeout_seconds: int,
     retention_seconds: int,
+    max_pending_per_node: int,
 ) -> Dict[str, Any]:
     task_type = str(payload.task_type or "").strip()
     if task_type not in ALLOWED_NODE_TASK_TYPES:
@@ -97,6 +98,22 @@ def create_node_task_service(
                 conn.commit()
                 task_data["deduplicated"] = True
                 return task_data
+
+        backlog_count_row = conn.execute(
+            """
+            SELECT COUNT(*) AS c
+            FROM node_tasks
+            WHERE node_code = ?
+              AND status IN ('pending', 'running')
+            """,
+            (node_code,),
+        ).fetchone()
+        backlog_count = int(backlog_count_row["c"] or 0) if backlog_count_row else 0
+        if backlog_count >= int(max_pending_per_node):
+            raise HTTPException(
+                status_code=429,
+                detail="too many pending tasks for node",
+            )
 
         cursor = conn.execute(
             """
