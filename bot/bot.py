@@ -1032,10 +1032,26 @@ def build_main_menu() -> InlineKeyboardMarkup:
 
 
 def build_submenu(submenu_key: str) -> InlineKeyboardMarkup:
-    rows = [
-        [InlineKeyboardButton(text, callback_data=data)]
-        for text, data in SUBMENUS[submenu_key]["buttons"]
-    ]
+    buttons = SUBMENUS[submenu_key]["buttons"]
+    # 按钮较多的子菜单改为双列，减少纵向滚动；返回按钮保持单独一行。
+    if len(buttons) >= 6:
+        rows = []
+        action_row = []
+        back_rows = []
+        for text, data in buttons:
+            button = InlineKeyboardButton(text, callback_data=data)
+            if str(data).startswith("menu:"):
+                back_rows.append([button])
+                continue
+            action_row.append(button)
+            if len(action_row) == 2:
+                rows.append(action_row)
+                action_row = []
+        if action_row:
+            rows.append(action_row)
+        rows.extend(back_rows)
+    else:
+        rows = [[InlineKeyboardButton(text, callback_data=data)] for text, data in buttons]
     return InlineKeyboardMarkup(rows)
 
 
