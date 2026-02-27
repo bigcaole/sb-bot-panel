@@ -31,6 +31,11 @@ class ControllerSmokeTestCase(unittest.TestCase):
             "routers_admin.SUB_LINK_REQUIRE_SIGNATURE": admin_router_module.SUB_LINK_REQUIRE_SIGNATURE,
             "routers_admin.SUB_LINK_DEFAULT_TTL_SECONDS": admin_router_module.SUB_LINK_DEFAULT_TTL_SECONDS,
             "routers_admin.run_ufw_command": getattr(admin_router_module, "run_ufw_command", None),
+            "routers_admin.SECURITY_AUTO_BLOCK_ENABLED": admin_router_module.SECURITY_AUTO_BLOCK_ENABLED,
+            "routers_admin.SECURITY_AUTO_BLOCK_WINDOW_SECONDS": admin_router_module.SECURITY_AUTO_BLOCK_WINDOW_SECONDS,
+            "routers_admin.SECURITY_AUTO_BLOCK_THRESHOLD": admin_router_module.SECURITY_AUTO_BLOCK_THRESHOLD,
+            "routers_admin.SECURITY_AUTO_BLOCK_DURATION_SECONDS": admin_router_module.SECURITY_AUTO_BLOCK_DURATION_SECONDS,
+            "routers_admin.SECURITY_AUTO_BLOCK_MAX_PER_INTERVAL": admin_router_module.SECURITY_AUTO_BLOCK_MAX_PER_INTERVAL,
             "routers_nodes.NODE_TASK_MAX_PENDING_PER_NODE": nodes_router_module.NODE_TASK_MAX_PENDING_PER_NODE,
         }
 
@@ -45,6 +50,11 @@ class ControllerSmokeTestCase(unittest.TestCase):
         admin_router_module.SUB_LINK_REQUIRE_SIGNATURE = True
         admin_router_module.SUB_LINK_DEFAULT_TTL_SECONDS = 600
         admin_router_module.run_ufw_command = lambda args, timeout_seconds=20: (0, "ok", "")
+        admin_router_module.SECURITY_AUTO_BLOCK_ENABLED = False
+        admin_router_module.SECURITY_AUTO_BLOCK_WINDOW_SECONDS = 3600
+        admin_router_module.SECURITY_AUTO_BLOCK_THRESHOLD = 30
+        admin_router_module.SECURITY_AUTO_BLOCK_DURATION_SECONDS = 3600
+        admin_router_module.SECURITY_AUTO_BLOCK_MAX_PER_INTERVAL = 5
         nodes_router_module.NODE_TASK_MAX_PENDING_PER_NODE = 2
 
         db_module.init_db()
@@ -129,6 +139,21 @@ class ControllerSmokeTestCase(unittest.TestCase):
             "routers_admin.SUB_LINK_DEFAULT_TTL_SECONDS"
         ]
         admin_router_module.run_ufw_command = self._old_values["routers_admin.run_ufw_command"]
+        admin_router_module.SECURITY_AUTO_BLOCK_ENABLED = self._old_values[
+            "routers_admin.SECURITY_AUTO_BLOCK_ENABLED"
+        ]
+        admin_router_module.SECURITY_AUTO_BLOCK_WINDOW_SECONDS = self._old_values[
+            "routers_admin.SECURITY_AUTO_BLOCK_WINDOW_SECONDS"
+        ]
+        admin_router_module.SECURITY_AUTO_BLOCK_THRESHOLD = self._old_values[
+            "routers_admin.SECURITY_AUTO_BLOCK_THRESHOLD"
+        ]
+        admin_router_module.SECURITY_AUTO_BLOCK_DURATION_SECONDS = self._old_values[
+            "routers_admin.SECURITY_AUTO_BLOCK_DURATION_SECONDS"
+        ]
+        admin_router_module.SECURITY_AUTO_BLOCK_MAX_PER_INTERVAL = self._old_values[
+            "routers_admin.SECURITY_AUTO_BLOCK_MAX_PER_INTERVAL"
+        ]
         nodes_router_module.NODE_TASK_MAX_PENDING_PER_NODE = self._old_values[
             "routers_nodes.NODE_TASK_MAX_PENDING_PER_NODE"
         ]
@@ -305,6 +330,42 @@ class ControllerSmokeTestCase(unittest.TestCase):
             )
             self.assertEqual(200, unblock_resp.status_code)
             self.assertTrue(bool(unblock_resp.json().get("ok")))
+
+    def test_security_auto_block_smoke(self) -> None:
+        now_ts = int(time.time())
+        with db_module.get_connection() as conn:
+            for _ in range(12):
+                conn.execute(
+                    """
+                    INSERT INTO audit_logs(actor, action, resource_type, resource_id, detail, source_ip, created_at)
+                    VALUES(?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    ("", "auth.unauthorized", "http", "/nodes", "{}", "8.8.8.8", now_ts),
+                )
+            conn.commit()
+
+        admin_router_module.SECURITY_AUTO_BLOCK_ENABLED = True
+        admin_router_module.SECURITY_AUTO_BLOCK_WINDOW_SECONDS = 3600
+        admin_router_module.SECURITY_AUTO_BLOCK_THRESHOLD = 10
+        admin_router_module.SECURITY_AUTO_BLOCK_DURATION_SECONDS = 3600
+        admin_router_module.SECURITY_AUTO_BLOCK_MAX_PER_INTERVAL = 2
+
+        with TestClient(app_module.app) as client:
+            auto_resp = client.post(
+                "/admin/security/auto_block/run",
+                headers=self._auth_header(),
+            )
+            self.assertEqual(200, auto_resp.status_code)
+            payload = auto_resp.json()
+            self.assertTrue(bool(payload.get("ok")))
+            self.assertTrue(bool(payload.get("enabled")))
+            self.assertEqual(1, int(payload.get("blocked_count", 0) or 0))
+            self.assertIn("8.8.8.8", payload.get("blocked_items", []))
+
+            list_resp = client.get("/admin/security/blocked_ips", headers=self._auth_header())
+            self.assertEqual(200, list_resp.status_code)
+            items = list_resp.json().get("items", [])
+            self.assertTrue(any(str(item.get("source_ip")) == "8.8.8.8" for item in items))
 
     def test_node_task_deduplicate_smoke(self) -> None:
         with TestClient(app_module.app) as client:
