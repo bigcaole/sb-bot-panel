@@ -32,6 +32,9 @@ from controller.security import (
     verify_admin_authorization,
 )
 from controller.settings import (
+    AUDIT_LOG_CLEANUP_BATCH_SIZE,
+    AUDIT_LOG_CLEANUP_INTERVAL_SECONDS,
+    AUDIT_LOG_RETENTION_DAYS,
     BACKUP_RETENTION_COUNT,
     CONTROLLER_PORT_WHITELIST_ITEMS,
     CONTROLLER_PORT,
@@ -147,6 +150,8 @@ def build_security_status_payload() -> Dict[str, Union[bool, int, List[str]]]:
         warnings.append("安全事件统计包含本机来源（可能放大测试噪声）")
     if UNAUTHORIZED_AUDIT_SAMPLE_SECONDS <= 0:
         warnings.append("未授权审计采样已关闭（高扫描场景下 audit_logs 增长会更快）")
+    if AUDIT_LOG_RETENTION_DAYS < 7:
+        warnings.append("审计日志保留天数过短（小于 7 天）")
 
     return {
         "auth_enabled": bool(auth_tokens),
@@ -163,6 +168,9 @@ def build_security_status_payload() -> Dict[str, Union[bool, int, List[str]]]:
         "api_rate_limit_max_requests": API_RATE_LIMIT_MAX_REQUESTS,
         "unauthorized_audit_sample_seconds": UNAUTHORIZED_AUDIT_SAMPLE_SECONDS,
         "unauthorized_audit_sampling_enabled": bool(UNAUTHORIZED_AUDIT_SAMPLE_SECONDS > 0),
+        "audit_log_retention_days": AUDIT_LOG_RETENTION_DAYS,
+        "audit_log_cleanup_interval_seconds": AUDIT_LOG_CLEANUP_INTERVAL_SECONDS,
+        "audit_log_cleanup_batch_size": AUDIT_LOG_CLEANUP_BATCH_SIZE,
         "security_block_cleanup_interval_seconds": SECURITY_BLOCK_CLEANUP_INTERVAL_SECONDS,
         "blocked_ip_count": active_block_count,
         "security_events_exclude_local": bool(SECURITY_EVENTS_EXCLUDE_LOCAL),

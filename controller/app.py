@@ -3,14 +3,24 @@ import time
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from controller.audit import get_request_actor, get_source_ip_for_audit, write_audit_log
+from controller.audit import (
+    cleanup_old_audit_logs,
+    get_request_actor,
+    get_source_ip_for_audit,
+    write_audit_log,
+)
 from controller.db import get_connection, init_db
 from controller.routers_admin import cleanup_expired_ip_blocks_once, router as admin_router
 from controller.routers_misc import router as misc_router
 from controller.routers_nodes import router as nodes_router
 from controller.routers_sub import router as sub_router
 from controller.routers_users import router as users_router
-from controller.settings import SECURITY_BLOCK_CLEANUP_INTERVAL_SECONDS
+from controller.settings import (
+    AUDIT_LOG_CLEANUP_BATCH_SIZE,
+    AUDIT_LOG_CLEANUP_INTERVAL_SECONDS,
+    AUDIT_LOG_RETENTION_DAYS,
+    SECURITY_BLOCK_CLEANUP_INTERVAL_SECONDS,
+)
 from controller.security import (
     API_RATE_LIMIT_ENABLED,
     AUTH_TOKEN,
@@ -26,11 +36,13 @@ from controller.security import (
 
 app = FastAPI()
 _SECURITY_BLOCK_CLEANUP_LAST_AT = 0
+_AUDIT_LOG_CLEANUP_LAST_AT = 0
 
 
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
     global _SECURITY_BLOCK_CLEANUP_LAST_AT
+    global _AUDIT_LOG_CLEANUP_LAST_AT
     now_ts = int(time.time())
     if now_ts - int(_SECURITY_BLOCK_CLEANUP_LAST_AT) >= SECURITY_BLOCK_CLEANUP_INTERVAL_SECONDS:
         try:
@@ -38,6 +50,19 @@ async def auth_middleware(request: Request, call_next):
         except Exception:
             pass
         _SECURITY_BLOCK_CLEANUP_LAST_AT = now_ts
+    if now_ts - int(_AUDIT_LOG_CLEANUP_LAST_AT) >= AUDIT_LOG_CLEANUP_INTERVAL_SECONDS:
+        try:
+            with get_connection() as conn:
+                cleanup_old_audit_logs(
+                    conn,
+                    now_ts=now_ts,
+                    retention_days=AUDIT_LOG_RETENTION_DAYS,
+                    batch_size=AUDIT_LOG_CLEANUP_BATCH_SIZE,
+                )
+                conn.commit()
+        except Exception:
+            pass
+        _AUDIT_LOG_CLEANUP_LAST_AT = now_ts
 
     if not AUTH_TOKEN:
         return await call_next(request)

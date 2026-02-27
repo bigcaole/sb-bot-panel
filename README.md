@@ -378,6 +378,9 @@ scp root@旧IP:/var/backups/sb-migrate/sb-migrate-xxxx.tar.gz root@新IP:/root/
 - `SECURITY_EVENTS_EXCLUDE_LOCAL=1`（可选；安全统计默认过滤本机测试来源）
 - `UNAUTHORIZED_AUDIT_SAMPLE_SECONDS=30`（可选；未授权审计采样窗口，防止被扫描时审计日志爆涨）
 - `SECURITY_BLOCK_CLEANUP_INTERVAL_SECONDS=60`（可选；到期封禁自动清理周期）
+- `AUDIT_LOG_RETENTION_DAYS=30`（可选；审计日志保留天数）
+- `AUDIT_LOG_CLEANUP_INTERVAL_SECONDS=3600`（可选；审计日志自动清理周期）
+- `AUDIT_LOG_CLEANUP_BATCH_SIZE=2000`（可选；单次清理批量）
 - `BOT_TOKEN=xxxxxxxx`（必填）
 - `ADMIN_CHAT_IDS=123,456`（可空）
 - `VIEW_ADMIN_CHAT_IDS=`（可选，只读管理员）

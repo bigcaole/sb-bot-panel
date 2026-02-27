@@ -163,6 +163,9 @@ class ControllerSmokeTestCase(unittest.TestCase):
             self.assertIn("controller_port_whitelist_count", admin_sec.json())
             self.assertIn("unauthorized_audit_sample_seconds", admin_sec.json())
             self.assertIn("security_block_cleanup_interval_seconds", admin_sec.json())
+            self.assertIn("audit_log_retention_days", admin_sec.json())
+            self.assertIn("audit_log_cleanup_interval_seconds", admin_sec.json())
+            self.assertIn("audit_log_cleanup_batch_size", admin_sec.json())
 
             overview_resp = client.get("/admin/overview", headers=self._auth_header())
             self.assertEqual(200, overview_resp.status_code)

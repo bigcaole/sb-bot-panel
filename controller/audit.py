@@ -67,3 +67,39 @@ def write_audit_log(
             ts,
         ),
     )
+
+
+def cleanup_old_audit_logs(
+    conn: sqlite3.Connection,
+    now_ts: int,
+    retention_days: int,
+    batch_size: int = 2000,
+) -> int:
+    try:
+        retention_value = int(retention_days)
+    except (TypeError, ValueError):
+        retention_value = 30
+    if retention_value < 1:
+        retention_value = 1
+    try:
+        batch_value = int(batch_size)
+    except (TypeError, ValueError):
+        batch_value = 2000
+    if batch_value < 1:
+        batch_value = 1
+
+    cutoff_ts = int(now_ts) - retention_value * 86400
+    cursor = conn.execute(
+        """
+        DELETE FROM audit_logs
+        WHERE id IN (
+            SELECT id
+            FROM audit_logs
+            WHERE created_at < ?
+            ORDER BY id ASC
+            LIMIT ?
+        )
+        """,
+        (int(cutoff_ts), int(batch_value)),
+    )
+    return int(cursor.rowcount or 0)
