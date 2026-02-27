@@ -563,11 +563,17 @@ show_ops_audit_events() {
   local auth_token_raw=""
   local auth_token=""
   local controller_port
+  local window_seconds="604800"
+  local window_raw=""
   local response
 
   controller_port="$(get_controller_port)"
   if [[ -f "$env_file" ]]; then
     auth_token_raw="$(grep -E '^AUTH_TOKEN=' "$env_file" | tail -n1 | cut -d= -f2- || true)"
+    window_raw="$(grep -E '^BOT_OPS_AUDIT_WINDOW_SECONDS=' "$env_file" | tail -n1 | cut -d= -f2- || true)"
+  fi
+  if [[ "$window_raw" =~ ^[0-9]+$ ]] && (( window_raw >= 3600 )) && (( window_raw <= 2592000 )); then
+    window_seconds="$window_raw"
   fi
   auth_token="$(pick_working_auth_token "$controller_port" "$auth_token_raw")" || {
     warn "AUTH_TOKEN 多值模式下未探测到可用 token，回退使用第一个 token。"
@@ -578,12 +584,12 @@ show_ops_audit_events() {
 
   if [[ -n "$auth_token" ]]; then
     response="$(curl -fsSL \
-      "http://127.0.0.1:${controller_port}/admin/audit?limit=100" \
+      "http://127.0.0.1:${controller_port}/admin/audit?limit=100&action_prefix=ops.&window_seconds=${window_seconds}" \
       -H "Authorization: Bearer ${auth_token}" \
       -H "X-Actor: ${ADMIN_SCRIPT_ACTOR}" 2>/dev/null || true)"
   else
     response="$(curl -fsSL \
-      "http://127.0.0.1:${controller_port}/admin/audit?limit=100" \
+      "http://127.0.0.1:${controller_port}/admin/audit?limit=100&action_prefix=ops.&window_seconds=${window_seconds}" \
       -H "X-Actor: ${ADMIN_SCRIPT_ACTOR}" 2>/dev/null || true)"
   fi
 
@@ -593,9 +599,9 @@ show_ops_audit_events() {
   fi
 
   if command -v jq >/dev/null 2>&1; then
-    echo "----- 运维审计速览（ops.*，最新 20 条）-----"
+    echo "----- 运维审计速览（ops.*，最近 ${window_seconds} 秒，最新 20 条）-----"
     echo "$response" | jq '
-      map(select((.action // "") | startswith("ops.")))[:20]
+      .[:20]
       | if length == 0 then
           "暂无 ops.* 审计记录"
         else
