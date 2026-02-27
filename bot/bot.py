@@ -1332,6 +1332,26 @@ def build_back_keyboard(callback_data: str) -> InlineKeyboardMarkup:
     )
 
 
+def build_security_events_keyboard(include_local: bool) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "过滤本机视角",
+                    callback_data="action:maintain_security_events",
+                ),
+                InlineKeyboardButton(
+                    "包含本机视角",
+                    callback_data="action:maintain_security_events_local",
+                ),
+            ],
+            [
+                InlineKeyboardButton("返回", callback_data="menu:maintain"),
+            ],
+        ]
+    )
+
+
 def build_backup_audit_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
@@ -2895,6 +2915,114 @@ async def run_admin_node_access_status_action(query, back_menu_callback: str) ->
     await query.edit_message_text(
         text,
         reply_markup=build_back_keyboard(back_menu_callback),
+    )
+
+
+async def run_admin_security_events_action(query, include_local: bool) -> None:
+    events_path = "/admin/security/events?window_seconds=3600&top=5"
+    if include_local:
+        events_path += "&include_local=1"
+    events_result, events_error, _ = await controller_request("GET", events_path)
+    status_result, status_error, _ = await controller_request("GET", "/admin/security/status")
+    access_result, access_error, _ = await controller_request("GET", "/admin/node_access/status")
+    if events_error:
+        await query.edit_message_text(
+            "读取安全事件失败：{0}".format(localize_controller_error(events_error)),
+            reply_markup=build_back_keyboard("menu:maintain"),
+        )
+        return
+
+    unauthorized_count = 0
+    include_local_effective = include_local
+    top_lines = []
+    if isinstance(events_result, dict):
+        try:
+            unauthorized_count = int(events_result.get("unauthorized", 0) or 0)
+        except (TypeError, ValueError):
+            unauthorized_count = 0
+        include_local_effective = bool(events_result.get("include_local"))
+        top_rows = events_result.get("top_unauthorized_ips", [])
+        if isinstance(top_rows, list):
+            for index, item in enumerate(top_rows[:5], start=1):
+                if not isinstance(item, dict):
+                    continue
+                source_ip = str(item.get("source_ip", "")).strip() or "-"
+                try:
+                    hit_count = int(item.get("count", 0) or 0)
+                except (TypeError, ValueError):
+                    hit_count = 0
+                top_lines.append(f"{index}. {source_ip} -> {hit_count} 次")
+
+    token_count_text = "-"
+    auth_enabled_text = "-"
+    sample_text = "-"
+    if status_error:
+        token_count_text = "读取失败"
+        auth_enabled_text = "读取失败"
+        sample_text = "读取失败"
+    elif isinstance(status_result, dict):
+        auth_enabled = bool(status_result.get("auth_enabled"))
+        auth_enabled_text = "已启用" if auth_enabled else "未启用"
+        token_count_text = str(int(status_result.get("auth_token_count", 0) or 0))
+        sample_seconds = int(status_result.get("unauthorized_audit_sample_seconds", 0) or 0)
+        sample_enabled = bool(status_result.get("unauthorized_audit_sampling_enabled"))
+        if sample_enabled and sample_seconds > 0:
+            sample_text = f"已启用（{sample_seconds} 秒窗口）"
+        elif sample_seconds <= 0:
+            sample_text = "未启用（0 秒）"
+        else:
+            sample_text = "未启用"
+
+    unlocked_enabled_nodes = 0
+    whitelist_missing_count = 0
+    if access_error:
+        access_text = "访问收敛状态读取失败"
+    elif isinstance(access_result, dict):
+        unlocked_enabled_nodes = int(access_result.get("unlocked_enabled_nodes", 0) or 0)
+        whitelist_missing_count = int(access_result.get("whitelist_missing_count", 0) or 0)
+        access_text = "启用未锁定 {0}，白名单缺口 {1}".format(
+            unlocked_enabled_nodes,
+            whitelist_missing_count,
+        )
+    else:
+        access_text = "访问收敛状态读取异常"
+
+    advice = []
+    if unauthorized_count <= 0:
+        advice.append("当前 1h 无未授权来源，维持现有策略。")
+    else:
+        if unlocked_enabled_nodes > 0 or whitelist_missing_count > 0:
+            advice.append("优先收敛节点来源IP：为启用节点设置 agent_ip 并更新 8080 白名单。")
+        if unauthorized_count >= 50:
+            advice.append("1h 未授权较高，建议在云防火墙/UFW 增加来源限制。")
+        if auth_enabled_text == "未启用":
+            advice.append("立即启用 AUTH_TOKEN 鉴权。")
+    if not advice:
+        advice.append("继续观察 1h 趋势。")
+
+    lines = [
+        "安全事件（近 1 小时）",
+        f"未授权请求数：{unauthorized_count}",
+        "统计模式：{0}".format("包含本机来源" if include_local_effective else "过滤本机测试来源"),
+        f"鉴权状态：{auth_enabled_text}",
+        f"AUTH_TOKEN 数量：{token_count_text}",
+        f"未授权审计采样：{sample_text}",
+        f"访问收敛：{access_text}",
+        "",
+        "来源 TOP5：",
+    ]
+    if top_lines:
+        lines.extend(top_lines)
+    else:
+        lines.append("- （当前窗口无未授权来源）")
+    lines.append("")
+    lines.append("建议：")
+    for item in advice[:3]:
+        lines.append(f"- {item}")
+
+    await query.edit_message_text(
+        "\n".join(lines),
+        reply_markup=build_security_events_keyboard(include_local_effective),
     )
 
 
@@ -5414,66 +5542,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
 
     if callback_data == "action:maintain_security_events":
-        events_result, events_error, _ = await controller_request(
-            "GET", "/admin/security/events?window_seconds=3600&top=5"
-        )
-        status_result, status_error, _ = await controller_request(
-            "GET", "/admin/security/status"
-        )
-        if events_error:
-            await query.edit_message_text(
-                "读取安全事件失败：{0}".format(localize_controller_error(events_error)),
-                reply_markup=build_back_keyboard("menu:maintain"),
-            )
-            return
+        await run_admin_security_events_action(query, include_local=False)
+        return
 
-        unauthorized_count = 0
-        include_local = False
-        top_parts = []
-        if isinstance(events_result, dict):
-            try:
-                unauthorized_count = int(events_result.get("unauthorized", 0) or 0)
-            except (TypeError, ValueError):
-                unauthorized_count = 0
-            include_local = bool(events_result.get("include_local"))
-            top_rows = events_result.get("top_unauthorized_ips", [])
-            if isinstance(top_rows, list):
-                for item in top_rows[:5]:
-                    if not isinstance(item, dict):
-                        continue
-                    source_ip = str(item.get("source_ip", "")).strip() or "-"
-                    try:
-                        hit_count = int(item.get("count", 0) or 0)
-                    except (TypeError, ValueError):
-                        hit_count = 0
-                    top_parts.append("{0}({1})".format(source_ip, hit_count))
-
-        token_count_text = "-"
-        auth_enabled_text = "-"
-        if status_error:
-            token_count_text = "读取失败"
-            auth_enabled_text = "读取失败"
-        elif isinstance(status_result, dict):
-            auth_enabled_text = "已启用" if bool(status_result.get("auth_enabled")) else "未启用"
-            token_count_text = str(int(status_result.get("auth_token_count", 0) or 0))
-
-        top_text = "，".join(top_parts) if top_parts else "（当前窗口无未授权来源）"
-        await query.edit_message_text(
-            "安全事件（近 1 小时）：\n"
-            "未授权请求数：{0}\n"
-            "统计模式：{1}\n"
-            "来源 TOP5：{2}\n"
-            "鉴权状态：{3}\n"
-            "AUTH_TOKEN 数量：{4}\n\n"
-            "说明：24h 指标受历史数据影响，建议优先看 1h 趋势。".format(
-                unauthorized_count,
-                "包含本机来源" if include_local else "默认过滤本机测试来源",
-                top_text,
-                auth_enabled_text,
-                token_count_text,
-            ),
-            reply_markup=build_back_keyboard("menu:maintain"),
-        )
+    if callback_data == "action:maintain_security_events_local":
+        await run_admin_security_events_action(query, include_local=True)
         return
 
     if callback_data == "action:maintain_https_status":
