@@ -66,6 +66,100 @@ has_authorized_keys_for_user() {
   [[ -s "$auth_file" ]]
 }
 
+detect_sshd_port() {
+  local port
+  port=""
+  if command -v sshd >/dev/null 2>&1; then
+    port="$(sshd -T 2>/dev/null | awk '/^port /{print $2; exit}' || true)"
+  fi
+  if [[ "$port" =~ ^[0-9]+$ ]]; then
+    echo "$port"
+  else
+    echo "22"
+  fi
+}
+
+detect_current_ssh_client_ip() {
+  local ip
+  ip=""
+  if [[ -n "${SSH_CONNECTION:-}" ]]; then
+    ip="$(echo "$SSH_CONNECTION" | awk '{print $1}')"
+  elif [[ -n "${SSH_CLIENT:-}" ]]; then
+    ip="$(echo "$SSH_CLIENT" | awk '{print $1}')"
+  else
+    ip="$(who -m 2>/dev/null | sed -n 's/.*(\([0-9.]*\)).*/\1/p' | head -n1 || true)"
+  fi
+  echo "$ip"
+}
+
+is_fail2ban_banned_ip() {
+  local ip="$1"
+  if ! command -v fail2ban-client >/dev/null 2>&1; then
+    return 1
+  fi
+  if ! systemctl is-active fail2ban >/dev/null 2>&1; then
+    return 1
+  fi
+  local banned_line
+  banned_line="$(fail2ban-client status sshd 2>/dev/null | awk -F: '/Banned IP list/{print $2; exit}' || true)"
+  [[ " ${banned_line} " == *" ${ip} "* ]]
+}
+
+ufw_allows_ssh_for_ip() {
+  local ip="$1"
+  local ssh_port="$2"
+  if ! command -v ufw >/dev/null 2>&1; then
+    return 0
+  fi
+  local status_line
+  status_line="$(ufw status 2>/dev/null | head -n1 || true)"
+  if [[ "$status_line" == *"inactive"* ]]; then
+    return 0
+  fi
+  ufw status 2>/dev/null | awk -v p="$ssh_port" -v ip="$ip" '
+    BEGIN { ok=0 }
+    $0 ~ ("^ *" p "(/tcp)?([[:space:]]|$)") && $0 ~ /ALLOW/ {
+      if ($0 ~ /Anywhere/ || $0 ~ ("(^|[[:space:]])" ip "($|[[:space:]])") || $0 ~ (ip "/32")) {
+        ok=1
+      }
+    }
+    END { exit(ok ? 0 : 1) }
+  '
+}
+
+precheck_ssh_lockout_risk() {
+  local client_ip ssh_port
+  client_ip="$(detect_current_ssh_client_ip)"
+  ssh_port="$(detect_sshd_port)"
+
+  if [[ -n "$client_ip" ]]; then
+    msg "当前 SSH 会话来源 IP: ${client_ip}，sshd 端口: ${ssh_port}"
+    if is_fail2ban_banned_ip "$client_ip"; then
+      err "当前来源 IP(${client_ip}) 已在 fail2ban 封禁列表，请先解封后再启用仅密钥登录。"
+      return 1
+    fi
+    if ! ufw_allows_ssh_for_ip "$client_ip" "$ssh_port"; then
+      warn "UFW 未明确放行当前来源 IP(${client_ip}) 到 SSH 端口 ${ssh_port}。"
+      if ! confirm_action "仍继续启用仅密钥登录？（可能导致失联）" "N"; then
+        warn "已取消启用。"
+        return 1
+      fi
+    fi
+  else
+    warn "未检测到当前 SSH 会话来源 IP（可能是本机控制台）。"
+    if ! confirm_action "仍继续启用仅密钥登录？" "N"; then
+      warn "已取消启用。"
+      return 1
+    fi
+  fi
+
+  if ! confirm_action "是否已在另一个终端验证公钥可登录？" "N"; then
+    warn "未确认公钥可登录，已取消启用。"
+    return 1
+  fi
+  return 0
+}
+
 install_or_enable_fail2ban() {
   msg "安装并启用 fail2ban（SSH 防爆破）..."
   export DEBIAN_FRONTEND=noninteractive
@@ -162,6 +256,9 @@ enable_ssh_key_only_login() {
 
   if ! has_authorized_keys_for_user "$user_name"; then
     warn "用户 ${user_name} 没有可用 authorized_keys，拒绝启用（避免锁死 SSH）。"
+    return
+  fi
+  if ! precheck_ssh_lockout_risk; then
     return
   fi
 
