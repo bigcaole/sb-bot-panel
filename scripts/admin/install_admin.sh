@@ -120,6 +120,20 @@ get_public_ipv4() {
     || true
 }
 
+detect_current_ssh_client_ip() {
+  local ip
+  ip="${SSH_CLIENT:-}"
+  ip="${ip%% *}"
+  if [[ -z "$ip" ]]; then
+    ip="${SSH_CONNECTION:-}"
+    ip="${ip%% *}"
+  fi
+  if [[ -z "$ip" ]]; then
+    ip="$(who -u am i 2>/dev/null | awk '{print $NF}' | tr -d '()' || true)"
+  fi
+  echo "$ip"
+}
+
 extract_url_host() {
   local raw="$1"
   raw="${raw#*://}"
@@ -887,6 +901,15 @@ prompt_env_config_quick() {
     AUTH_TOKEN=""
   else
     AUTH_TOKEN="${input_auth:-$AUTH_TOKEN}"
+  fi
+
+  if [[ -z "${SECURITY_BLOCK_PROTECTED_IPS:-}" ]]; then
+    local current_client_ip
+    current_client_ip="$(detect_current_ssh_client_ip)"
+    if [[ -n "$current_client_ip" ]]; then
+      SECURITY_BLOCK_PROTECTED_IPS="$current_client_ip"
+      msg "快速配置安全默认：已自动设置封禁保护白名单为当前来源 IP（${current_client_ip}）。"
+    fi
   fi
 
   if [[ -z "$MIGRATE_DIR" ]]; then
