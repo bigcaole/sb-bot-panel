@@ -86,7 +86,6 @@ sudo bash scripts/install.sh --sync-only
 
 ```bash
 sb-node
-sb-bot-panel
 ```
 
 ## 域名证书前置条件（TUIC）
@@ -261,7 +260,6 @@ sudo bash scripts/admin/menu_admin.sh
 
 ```bash
 sb-admin
-sb-bot-panel
 ```
 
 如果系统里没有现成的 `s-ui` 命令冲突，脚本也会自动创建 `s-ui` 作为同一菜单入口。

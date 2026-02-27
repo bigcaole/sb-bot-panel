@@ -337,13 +337,6 @@ exec bash "${PROJECT_DIR}/scripts/admin/menu_admin.sh" "\$@"
 EOF
   chmod 0755 /usr/local/bin/sb-admin
 
-  cat >/usr/local/bin/sb-bot-panel <<EOF
-#!/usr/bin/env bash
-# sb-bot-panel-main-shortcut
-exec bash "${PROJECT_DIR}/scripts/admin/menu_admin.sh" "\$@"
-EOF
-  chmod 0755 /usr/local/bin/sb-bot-panel
-
   local s_ui_path
   s_ui_path="$(command -v s-ui || true)"
   if [[ -z "$s_ui_path" ]]; then
@@ -361,7 +354,7 @@ exec bash "${PROJECT_DIR}/scripts/admin/menu_admin.sh" "\$@"
 EOF
     chmod 0755 /usr/local/bin/s-ui
   else
-    warn "检测到已有 s-ui 命令(${s_ui_path})，为避免冲突，跳过覆盖。可使用 sb-admin 或 sb-bot-panel 打开菜单。"
+    warn "检测到已有 s-ui 命令(${s_ui_path})，为避免冲突，跳过覆盖。可使用 sb-admin 打开菜单。"
   fi
 }
 
@@ -1119,11 +1112,6 @@ run_self_checks() {
   else
     check_warn "菜单快捷命令不可用：sb-admin"
   fi
-  if command -v sb-bot-panel >/dev/null 2>&1; then
-    check_ok "菜单快捷命令可用：sb-bot-panel"
-  else
-    check_warn "菜单快捷命令不可用：sb-bot-panel"
-  fi
 
   check_env_key "CONTROLLER_PORT"
   check_env_key "CONTROLLER_URL"
@@ -1313,7 +1301,6 @@ show_summary() {
   echo "  systemctl status sb-controller"
   echo "  systemctl status sb-bot"
   echo "  sb-admin"
-  echo "  sb-bot-panel"
   if [[ "$ENABLE_HTTPS" == "1" ]]; then
     echo "  systemctl status caddy"
     echo "  journalctl -u caddy -n 200 --no-pager"
