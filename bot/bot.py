@@ -215,10 +215,31 @@ SUBMENUS = {
     "nodes": {
         "title": "节点管理",
         "buttons": [
-            ("🗂 查看节点列表", "action:nodes_list"),
-            ("➕ 新增节点", "action:nodes_create"),
-            ("🛠 节点远程运维", "action:node_ops"),
+            ("🗂 列表与详情", "menu:nodes_listing"),
+            ("🧱 参数与创建", "menu:nodes_edit"),
+            ("🛠 远程运维", "menu:nodes_ops"),
             ("⬅️ 返回主菜单", "menu:main"),
+        ],
+    },
+    "nodes_listing": {
+        "title": "节点管理 / 列表与详情",
+        "buttons": [
+            ("🗂 查看节点列表", "action:nodes_list"),
+            ("⬅️ 返回节点管理", "menu:nodes"),
+        ],
+    },
+    "nodes_edit": {
+        "title": "节点管理 / 参数与创建",
+        "buttons": [
+            ("➕ 新增节点", "action:nodes_create"),
+            ("⬅️ 返回节点管理", "menu:nodes"),
+        ],
+    },
+    "nodes_ops": {
+        "title": "节点管理 / 远程运维",
+        "buttons": [
+            ("🛠 节点远程运维", "action:node_ops"),
+            ("⬅️ 返回节点管理", "menu:nodes"),
         ],
     },
     "maintain": {
