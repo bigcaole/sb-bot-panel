@@ -65,8 +65,9 @@ first_auth_token() {
   local raw="${1:-}"
   raw="${raw//$'\n'/}"
   raw="${raw//$'\r'/}"
+  raw="$(echo "$raw" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
   if [[ "$raw" == *","* ]]; then
-    echo "${raw%%,*}"
+    echo "$(echo "${raw%%,*}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
   else
     echo "$raw"
   fi
@@ -270,6 +271,70 @@ run_security_maintenance_cleanup() {
     echo "$response" | jq
   else
     echo "$response"
+  fi
+}
+
+run_sync_node_defaults() {
+  local env_file="${PROJECT_DIR}/.env"
+  local auth_token_raw=""
+  local auth_token=""
+  local controller_port
+  local include_disabled="0"
+  local force_new="0"
+  local answer
+  local response
+  local body
+  local http_code
+
+  controller_port="$(get_controller_port)"
+  if [[ -f "$env_file" ]]; then
+    auth_token_raw="$(grep -E '^AUTH_TOKEN=' "$env_file" | tail -n1 | cut -d= -f2- || true)"
+  fi
+  auth_token="$(first_auth_token "$auth_token_raw")"
+
+  read -r -p "是否包含已禁用节点？[y/N]: " answer
+  answer="${answer:-N}"
+  if [[ "$answer" =~ ^[Yy]$ ]]; then
+    include_disabled="1"
+  fi
+  read -r -p "是否强制新建任务（忽略去重）？[y/N]: " answer
+  answer="${answer:-N}"
+  if [[ "$answer" =~ ^[Yy]$ ]]; then
+    force_new="1"
+  fi
+
+  if [[ -n "$auth_token" ]]; then
+    response="$(
+      curl -sS --max-time 15 -X POST \
+        "http://127.0.0.1:${controller_port}/admin/nodes/sync_agent_defaults?include_disabled=${include_disabled}&force_new=${force_new}" \
+        -H "Authorization: Bearer ${auth_token}" \
+        -H "Content-Type: application/json" \
+        -w $'\n%{http_code}' 2>/dev/null || true
+    )"
+  else
+    response="$(
+      curl -sS --max-time 15 -X POST \
+        "http://127.0.0.1:${controller_port}/admin/nodes/sync_agent_defaults?include_disabled=${include_disabled}&force_new=${force_new}" \
+        -H "Content-Type: application/json" \
+        -w $'\n%{http_code}' 2>/dev/null || true
+    )"
+  fi
+
+  http_code="${response##*$'\n'}"
+  body="${response%$'\n'*}"
+  if [[ "$http_code" != "200" ]]; then
+    err "节点默认参数同步失败（HTTP ${http_code:-unknown}）。"
+    if [[ -n "$body" ]]; then
+      echo "$body"
+    fi
+    return 1
+  fi
+
+  msg "节点默认参数同步已执行。"
+  if command -v jq >/dev/null 2>&1; then
+    echo "$body" | jq
+  else
+    echo "$body"
   fi
 }
 
@@ -485,16 +550,17 @@ show_menu() {
 11. 迁移：导入迁移包
 12. 一键验收自检（语法/单测/API）
 13. 数据库一致性校验（迁移前建议）
-14. 安全加固向导（token轮换 + 8080收敛）
-15. 收敛 AUTH_TOKEN（新旧双token -> 单token）
-16. 手动安全清理（过期封禁 + 审计日志）
-17. SSH 安全状态总览（只读）
-18. SSH 一键安全修复（半自动）
+14. 同步节点默认参数（auth/url/poll）
+15. 安全加固向导（token轮换 + 8080收敛）
+16. 收敛 AUTH_TOKEN（新旧双token -> 单token）
+17. 手动安全清理（过期封禁 + 审计日志）
+18. SSH 安全状态总览（只读）
+19. SSH 一键安全修复（半自动）
 
 【系统级操作（谨慎）】
-19. 安装/更新（git pull + 依赖 + venv + 重启）
-20. 卸载
-21. 退出
+20. 安装/更新（git pull + 依赖 + venv + 重启）
+21. 卸载
+22. 退出
 ========================================
 EOF
 }
@@ -633,7 +699,7 @@ main() {
 
   while true; do
     show_menu
-    read -r -p "请输入选项 [1-21]: " action
+    read -r -p "请输入选项 [1-22]: " action
     case "$action" in
       1)
         configure_only
@@ -719,6 +785,10 @@ main() {
         pause
         ;;
       14)
+        run_sync_node_defaults
+        pause
+        ;;
+      15)
         if [[ -f "$HARDEN_SCRIPT" ]]; then
           bash "$HARDEN_SCRIPT"
         else
@@ -726,7 +796,7 @@ main() {
         fi
         pause
         ;;
-      15)
+      16)
         if [[ -f "$TOKEN_COLLAPSE_SCRIPT" ]]; then
           bash "$TOKEN_COLLAPSE_SCRIPT"
         else
@@ -734,19 +804,19 @@ main() {
         fi
         pause
         ;;
-      16)
+      17)
         run_security_maintenance_cleanup
         pause
         ;;
-      17)
+      18)
         show_admin_ssh_security_status
         pause
         ;;
-      18)
+      19)
         run_admin_ssh_security_quick_fix
         pause
         ;;
-      19)
+      20)
         if confirm_action "确认执行安装/更新？" "N"; then
           install_or_update
         else
@@ -754,16 +824,16 @@ main() {
         fi
         pause
         ;;
-      20)
+      21)
         do_uninstall
         pause
         ;;
-      21)
+      22)
         msg "已退出。"
         exit 0
         ;;
       *)
-        warn "无效选项，请输入 1-21。"
+        warn "无效选项，请输入 1-22。"
         pause
         ;;
     esac
