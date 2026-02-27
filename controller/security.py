@@ -43,9 +43,15 @@ if API_RATE_LIMIT_WINDOW_SECONDS < 1:
 API_RATE_LIMIT_MAX_REQUESTS = int(_get_int_env("API_RATE_LIMIT_MAX_REQUESTS", 120))
 if API_RATE_LIMIT_MAX_REQUESTS < 1:
     API_RATE_LIMIT_MAX_REQUESTS = 1
+UNAUTHORIZED_AUDIT_SAMPLE_SECONDS = int(_get_int_env("UNAUTHORIZED_AUDIT_SAMPLE_SECONDS", 30))
+if UNAUTHORIZED_AUDIT_SAMPLE_SECONDS < 0:
+    UNAUTHORIZED_AUDIT_SAMPLE_SECONDS = 0
 _RATE_LIMIT_LOCK = Lock()
 _RATE_LIMIT_STATE: Dict[str, Tuple[int, int]] = {}
 _RATE_LIMIT_LAST_CLEANUP_AT = 0
+_UNAUTH_AUDIT_LOCK = Lock()
+_UNAUTH_AUDIT_STATE: Dict[str, Tuple[int, int]] = {}
+_UNAUTH_AUDIT_LAST_CLEANUP_AT = 0
 RATE_LIMIT_STATIC_SEGMENTS: Set[str] = {
     "create",
     "set_speed",
@@ -190,6 +196,41 @@ def check_and_consume_rate_limit(identity: str, now_ts: int) -> Tuple[bool, int]
             retry_after = 1
         return True, retry_after
     return False, 0
+
+
+def build_unauthorized_audit_key(source_ip: str, path: str, method: str) -> str:
+    return "{0}:{1}:{2}".format(
+        str(source_ip or "").strip() or "-",
+        str(path or "").strip() or "/",
+        str(method or "").strip().upper() or "GET",
+    )
+
+
+def should_write_unauthorized_audit(key: str, now_ts: int) -> Tuple[bool, int]:
+    global _UNAUTH_AUDIT_LAST_CLEANUP_AT
+    sample_seconds = int(UNAUTHORIZED_AUDIT_SAMPLE_SECONDS)
+    if sample_seconds <= 0:
+        return True, 0
+
+    with _UNAUTH_AUDIT_LOCK:
+        last_ts, dropped = _UNAUTH_AUDIT_STATE.get(key, (0, 0))
+        if last_ts <= 0 or now_ts - int(last_ts) >= sample_seconds:
+            dropped_count = int(dropped or 0)
+            _UNAUTH_AUDIT_STATE[key] = (int(now_ts), 0)
+            if now_ts - _UNAUTH_AUDIT_LAST_CLEANUP_AT >= max(60, sample_seconds * 2):
+                expire_before = int(now_ts) - sample_seconds * 10
+                expired_keys = []
+                for state_key, value in _UNAUTH_AUDIT_STATE.items():
+                    item_ts = int(value[0] or 0)
+                    if item_ts > 0 and item_ts < expire_before:
+                        expired_keys.append(state_key)
+                for expired_key in expired_keys:
+                    _UNAUTH_AUDIT_STATE.pop(expired_key, None)
+                _UNAUTH_AUDIT_LAST_CLEANUP_AT = int(now_ts)
+            return True, dropped_count
+
+        _UNAUTH_AUDIT_STATE[key] = (int(last_ts), int(dropped or 0) + 1)
+        return False, int(dropped or 0) + 1
 
 
 def validate_agent_ip(agent_ip: Optional[str]) -> Optional[str]:

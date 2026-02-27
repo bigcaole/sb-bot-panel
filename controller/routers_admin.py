@@ -26,6 +26,7 @@ from controller.security import (
     API_RATE_LIMIT_WINDOW_SECONDS,
     TRUSTED_PROXY_IPS,
     TRUST_X_FORWARDED_FOR,
+    UNAUTHORIZED_AUDIT_SAMPLE_SECONDS,
     get_auth_tokens,
     verify_admin_authorization,
 )
@@ -128,6 +129,8 @@ def build_security_status_payload() -> Dict[str, Union[bool, int, List[str]]]:
         warnings.append("轻量限流未启用")
     if not SECURITY_EVENTS_EXCLUDE_LOCAL:
         warnings.append("安全事件统计包含本机来源（可能放大测试噪声）")
+    if UNAUTHORIZED_AUDIT_SAMPLE_SECONDS <= 0:
+        warnings.append("未授权审计采样已关闭（高扫描场景下 audit_logs 增长会更快）")
 
     return {
         "auth_enabled": bool(auth_tokens),
@@ -142,6 +145,8 @@ def build_security_status_payload() -> Dict[str, Union[bool, int, List[str]]]:
         "api_rate_limit_enabled": API_RATE_LIMIT_ENABLED,
         "api_rate_limit_window_seconds": API_RATE_LIMIT_WINDOW_SECONDS,
         "api_rate_limit_max_requests": API_RATE_LIMIT_MAX_REQUESTS,
+        "unauthorized_audit_sample_seconds": UNAUTHORIZED_AUDIT_SAMPLE_SECONDS,
+        "unauthorized_audit_sampling_enabled": bool(UNAUTHORIZED_AUDIT_SAMPLE_SECONDS > 0),
         "security_events_exclude_local": bool(SECURITY_EVENTS_EXCLUDE_LOCAL),
         "node_task_max_pending_per_node": NODE_TASK_MAX_PENDING_PER_NODE,
         "warnings": warnings,

@@ -13,10 +13,12 @@ from controller.routers_users import router as users_router
 from controller.security import (
     API_RATE_LIMIT_ENABLED,
     AUTH_TOKEN,
+    build_unauthorized_audit_key,
     check_and_consume_rate_limit,
     get_rate_limit_identity,
     is_auth_exempt_path,
     is_rate_limit_target_path,
+    should_write_unauthorized_audit,
     verify_admin_authorization,
 )
 
@@ -35,17 +37,29 @@ async def auth_middleware(request: Request, call_next):
     auth_error = verify_admin_authorization(authorization)
     if auth_error is not None:
         try:
+            source_ip = get_source_ip_for_audit(request)
+            now_ts = int(time.time())
+            audit_key = build_unauthorized_audit_key(
+                source_ip=source_ip,
+                path=str(request.url.path or "/"),
+                method=str(request.method or "GET"),
+            )
+            should_log, dropped_count = should_write_unauthorized_audit(audit_key, now_ts)
             with get_connection() as conn:
-                write_audit_log(
-                    conn,
-                    action="auth.unauthorized",
-                    resource_type="http",
-                    resource_id=str(request.url.path or "/"),
-                    detail={"method": request.method},
-                    actor=get_request_actor(request),
-                    source_ip=get_source_ip_for_audit(request),
-                )
-                conn.commit()
+                if should_log:
+                    detail = {"method": request.method}
+                    if dropped_count > 0:
+                        detail["sampled_dropped"] = int(dropped_count)
+                    write_audit_log(
+                        conn,
+                        action="auth.unauthorized",
+                        resource_type="http",
+                        resource_id=str(request.url.path or "/"),
+                        detail=detail,
+                        actor=get_request_actor(request),
+                        source_ip=source_ip,
+                    )
+                    conn.commit()
         except Exception:
             pass
         return JSONResponse(status_code=401, content={"ok": False, "error": "unauthorized"})

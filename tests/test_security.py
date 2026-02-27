@@ -8,15 +8,21 @@ class SecurityTestCase(unittest.TestCase):
         self._old_auth_token = security.AUTH_TOKEN
         self._old_window = security.API_RATE_LIMIT_WINDOW_SECONDS
         self._old_max = security.API_RATE_LIMIT_MAX_REQUESTS
+        self._old_unauth_sample = security.UNAUTHORIZED_AUDIT_SAMPLE_SECONDS
         security._RATE_LIMIT_STATE.clear()
         security._RATE_LIMIT_LAST_CLEANUP_AT = 0
+        security._UNAUTH_AUDIT_STATE.clear()
+        security._UNAUTH_AUDIT_LAST_CLEANUP_AT = 0
 
     def tearDown(self) -> None:
         security.AUTH_TOKEN = self._old_auth_token
         security.API_RATE_LIMIT_WINDOW_SECONDS = self._old_window
         security.API_RATE_LIMIT_MAX_REQUESTS = self._old_max
+        security.UNAUTHORIZED_AUDIT_SAMPLE_SECONDS = self._old_unauth_sample
         security._RATE_LIMIT_STATE.clear()
         security._RATE_LIMIT_LAST_CLEANUP_AT = 0
+        security._UNAUTH_AUDIT_STATE.clear()
+        security._UNAUTH_AUDIT_LAST_CLEANUP_AT = 0
 
     def test_is_auth_exempt_path(self) -> None:
         self.assertTrue(security.is_auth_exempt_path("/health"))
@@ -70,6 +76,28 @@ class SecurityTestCase(unittest.TestCase):
             "/admin/security/status",
             security.build_rate_limit_path_key("/admin/security/status"),
         )
+
+    def test_should_write_unauthorized_audit_sampling_window(self) -> None:
+        security.UNAUTHORIZED_AUDIT_SAMPLE_SECONDS = 30
+        key = security.build_unauthorized_audit_key("1.2.3.4", "/nodes", "GET")
+
+        should_write, dropped = security.should_write_unauthorized_audit(key, 100)
+        self.assertEqual((should_write, dropped), (True, 0))
+
+        should_write, dropped = security.should_write_unauthorized_audit(key, 101)
+        self.assertEqual((should_write, dropped), (False, 1))
+
+        should_write, dropped = security.should_write_unauthorized_audit(key, 102)
+        self.assertEqual((should_write, dropped), (False, 2))
+
+        should_write, dropped = security.should_write_unauthorized_audit(key, 131)
+        self.assertEqual((should_write, dropped), (True, 2))
+
+    def test_should_write_unauthorized_audit_sampling_disabled(self) -> None:
+        security.UNAUTHORIZED_AUDIT_SAMPLE_SECONDS = 0
+        key = security.build_unauthorized_audit_key("1.2.3.4", "/nodes", "GET")
+        self.assertEqual(security.should_write_unauthorized_audit(key, 100), (True, 0))
+        self.assertEqual(security.should_write_unauthorized_audit(key, 101), (True, 0))
 
 
 if __name__ == "__main__":
