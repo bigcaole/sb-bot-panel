@@ -438,6 +438,7 @@ scp root@旧IP:/var/backups/sb-migrate/sb-migrate-xxxx.tar.gz root@新IP:/root/
   - `API_RATE_LIMIT_ENABLED=1` 后，会对高风险管理路径按 IP+路径限流，超限返回 429
 - 安全状态检查：
   - `GET /admin/security/status` 可查看当前鉴权、订阅签名、XFF 信任、限流等配置状态与告警提示
+  - `GET /admin/security/events?window_seconds=3600&top=5` 可按窗口查看未授权来源统计（适合观察加固后的实时效果）
 - 数据库迁移检查：
   - `POST /admin/db/export` 生成逻辑导出快照（json.gz）
   - `POST /admin/db/verify_export` 校验快照并可选对比当前数据库

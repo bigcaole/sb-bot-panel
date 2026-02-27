@@ -172,12 +172,24 @@ class ControllerSmokeTestCase(unittest.TestCase):
             self.assertIn("near_cap_nodes", overview_payload["tasks"])
             self.assertIn("security", overview_payload)
             self.assertIn("security_events", overview_payload)
+            self.assertIn("unauthorized_1h", overview_payload["security_events"])
             self.assertIn("unauthorized_24h", overview_payload["security_events"])
             self.assertIn("top_unauthorized_ips", overview_payload["security_events"])
 
             db_integrity = client.get("/admin/db/integrity", headers=self._auth_header())
             self.assertEqual(200, db_integrity.status_code)
             self.assertTrue(bool(db_integrity.json().get("ok")))
+
+            sec_events = client.get(
+                "/admin/security/events?window_seconds=3600&top=3",
+                headers=self._auth_header(),
+            )
+            self.assertEqual(200, sec_events.status_code)
+            sec_payload = sec_events.json()
+            self.assertEqual(3600, int(sec_payload.get("window_seconds", 0)))
+            self.assertIn("since", sec_payload)
+            self.assertIn("unauthorized", sec_payload)
+            self.assertIn("top_unauthorized_ips", sec_payload)
 
     def test_subscription_sign_and_access_smoke(self) -> None:
         with TestClient(app_module.app) as client:

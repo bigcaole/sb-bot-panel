@@ -1498,6 +1498,7 @@ def format_admin_overview_text(overview: dict) -> str:
     warnings = security.get("warnings", [])
     if not isinstance(warnings, list):
         warnings = []
+    unauthorized_1h = int(security_events.get("unauthorized_1h", 0) or 0)
     unauthorized_24h = int(security_events.get("unauthorized_24h", 0) or 0)
     top_unauthorized_ips = security_events.get("top_unauthorized_ips", [])
     if not isinstance(top_unauthorized_ips, list):
@@ -1545,7 +1546,7 @@ def format_admin_overview_text(overview: dict) -> str:
             near_cap_threshold,
         ),
         "安全告警：{0} 条".format(len(warnings)),
-        "未授权访问(24h)：{0}".format(unauthorized_24h),
+        "未授权访问(1h/24h)：{0}/{1}".format(unauthorized_1h, unauthorized_24h),
     ]
 
     if offline_codes:
@@ -1556,6 +1557,7 @@ def format_admin_overview_text(overview: dict) -> str:
         lines.append("队列接近上限（最多 5 个）：{0}".format(", ".join(near_cap_parts)))
     if top_unauthorized_parts:
         lines.append("未授权来源TOP（最多 3 个）：{0}".format(", ".join(top_unauthorized_parts)))
+    lines.append("说明：24h 为滚动统计，加固后会随时间自然下降。")
     if warnings:
         lines.append("告警摘要：")
         for warning in warnings[:3]:

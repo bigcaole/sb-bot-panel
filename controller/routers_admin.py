@@ -45,6 +45,62 @@ router = APIRouter(tags=["admin"])
 AUTH_TOKEN = SECURITY_AUTH_TOKEN
 
 
+def build_unauthorized_events_snapshot(
+    now_ts: int, window_seconds: int, top_limit: int
+) -> Dict[str, Union[int, List[Dict[str, Union[int, str]]]]]:
+    if window_seconds < 60:
+        window_seconds = 60
+    if window_seconds > 7 * 86400:
+        window_seconds = 7 * 86400
+    if top_limit < 1:
+        top_limit = 1
+    if top_limit > 20:
+        top_limit = 20
+
+    since_ts = int(now_ts - window_seconds)
+    with get_connection() as conn:
+        unauthorized_count = int(
+            conn.execute(
+                """
+                SELECT COUNT(*) AS c
+                FROM audit_logs
+                WHERE action = 'auth.unauthorized' AND created_at >= ?
+                """,
+                (since_ts,),
+            ).fetchone()["c"]
+            or 0
+        )
+        unauthorized_top_rows = conn.execute(
+            """
+            SELECT source_ip, COUNT(*) AS c
+            FROM audit_logs
+            WHERE action = 'auth.unauthorized'
+              AND created_at >= ?
+              AND source_ip IS NOT NULL
+              AND source_ip != ''
+            GROUP BY source_ip
+            ORDER BY c DESC, source_ip ASC
+            LIMIT ?
+            """,
+            (since_ts, top_limit),
+        ).fetchall()
+
+    top_items: List[Dict[str, Union[int, str]]] = []
+    for row in unauthorized_top_rows:
+        top_items.append(
+            {
+                "source_ip": str(row["source_ip"] or ""),
+                "count": int(row["c"] or 0),
+            }
+        )
+    return {
+        "window_seconds": int(window_seconds),
+        "since": int(since_ts),
+        "unauthorized": int(unauthorized_count),
+        "top_unauthorized_ips": top_items,
+    }
+
+
 def build_security_status_payload() -> Dict[str, Union[bool, int, List[str]]]:
     auth_tokens = get_auth_tokens()
     warnings: List[str] = []
@@ -78,7 +134,6 @@ def build_security_status_payload() -> Dict[str, Union[bool, int, List[str]]]:
 
 
 def build_admin_overview_payload(now_ts: int) -> Dict[str, Union[int, Dict, List]]:
-    unauthorized_since = now_ts - 86400
     with get_connection() as conn:
         users_total = int(conn.execute("SELECT COUNT(*) AS c FROM users").fetchone()["c"] or 0)
         users_active = int(
@@ -118,31 +173,6 @@ def build_admin_overview_payload(now_ts: int) -> Dict[str, Union[int, Dict, List
             ORDER BY c DESC, node_code ASC
             LIMIT 10
             """
-        ).fetchall()
-        unauthorized_count_24h = int(
-            conn.execute(
-                """
-                SELECT COUNT(*) AS c
-                FROM audit_logs
-                WHERE action = 'auth.unauthorized' AND created_at >= ?
-                """,
-                (unauthorized_since,),
-            ).fetchone()["c"]
-            or 0
-        )
-        unauthorized_top_rows = conn.execute(
-            """
-            SELECT source_ip, COUNT(*) AS c
-            FROM audit_logs
-            WHERE action = 'auth.unauthorized'
-              AND created_at >= ?
-              AND source_ip IS NOT NULL
-              AND source_ip != ''
-            GROUP BY source_ip
-            ORDER BY c DESC, source_ip ASC
-            LIMIT 5
-            """,
-            (unauthorized_since,),
         ).fetchall()
 
     monitor_enabled_count = len(monitor_rows)
@@ -185,11 +215,16 @@ def build_admin_overview_payload(now_ts: int) -> Dict[str, Union[int, Dict, List
         pending_by_node.append(
             {"node_code": str(row["node_code"] or ""), "pending": int(row["c"] or 0)}
         )
-    unauthorized_top_ips: List[Dict[str, Union[str, int]]] = []
-    for row in unauthorized_top_rows:
-        unauthorized_top_ips.append(
-            {"source_ip": str(row["source_ip"] or ""), "count": int(row["c"] or 0)}
-        )
+    unauthorized_24h_snapshot = build_unauthorized_events_snapshot(
+        now_ts=now_ts,
+        window_seconds=86400,
+        top_limit=5,
+    )
+    unauthorized_1h_snapshot = build_unauthorized_events_snapshot(
+        now_ts=now_ts,
+        window_seconds=3600,
+        top_limit=3,
+    )
     queue_cap_per_node = int(NODE_TASK_MAX_PENDING_PER_NODE)
     near_cap_threshold = max(1, int((queue_cap_per_node * 8 + 9) / 10))
     near_cap_nodes: List[Dict[str, Union[str, int]]] = []
@@ -232,8 +267,9 @@ def build_admin_overview_payload(now_ts: int) -> Dict[str, Union[int, Dict, List
         },
         "security": build_security_status_payload(),
         "security_events": {
-            "unauthorized_24h": unauthorized_count_24h,
-            "top_unauthorized_ips": unauthorized_top_ips,
+            "unauthorized_1h": int(unauthorized_1h_snapshot["unauthorized"]),
+            "unauthorized_24h": int(unauthorized_24h_snapshot["unauthorized"]),
+            "top_unauthorized_ips": unauthorized_24h_snapshot["top_unauthorized_ips"],
         },
     }
 
@@ -633,6 +669,30 @@ def get_admin_overview(
     if auth_error is not None:
         return auth_error
     return build_admin_overview_payload(now_ts=int(time.time()))
+
+
+@router.get(
+    "/admin/security/events",
+    summary="Security event statistics",
+    description=(
+        "AUTH_TOKEN 为空时不校验；非空时需要请求头 Authorization: Bearer <AUTH_TOKEN>。"
+        "支持按时间窗口统计未授权访问。"
+    ),
+    response_model=None,
+)
+def get_admin_security_events(
+    window_seconds: int = 3600,
+    top: int = 5,
+    authorization: Optional[str] = Header(default=None, alias="Authorization"),
+) -> Union[Dict[str, Union[int, List[Dict[str, Union[int, str]]]]], JSONResponse]:
+    auth_error = verify_admin_authorization(authorization)
+    if auth_error is not None:
+        return auth_error
+    return build_unauthorized_events_snapshot(
+        now_ts=int(time.time()),
+        window_seconds=int(window_seconds or 0),
+        top_limit=int(top or 0),
+    )
 
 
 @router.get(
