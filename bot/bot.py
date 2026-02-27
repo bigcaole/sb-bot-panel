@@ -178,68 +178,68 @@ SUBMENUS = {
     "user": {
         "title": "用户管理",
         "buttons": [
-            ("创建用户", "action:user_create"),
-            ("禁用/启用", "action:user_toggle"),
-            ("删除用户", "action:user_delete"),
-            ("修改限速", "action:user_speed"),
-            ("节点分配", "action:user_nodes"),
-            ("返回", "menu:main"),
+            ("👤 创建用户", "action:user_create"),
+            ("🔁 禁用/启用", "action:user_toggle"),
+            ("🗑 删除用户", "action:user_delete"),
+            ("🚦 修改限速", "action:user_speed"),
+            ("🧩 节点分配", "action:user_nodes"),
+            ("⬅️ 返回主菜单", "menu:main"),
         ],
     },
     "speed": {
         "title": "限速管理",
         "buttons": [
-            ("设置限速", "action:user_speed"),
-            ("切换限速模式", "action:speed_switch"),
-            ("返回", "menu:main"),
+            ("🚦 设置限速", "action:user_speed"),
+            ("🔀 切换限速模式", "action:speed_switch"),
+            ("⬅️ 返回主菜单", "menu:main"),
         ],
     },
     "query": {
         "title": "查询",
         "buttons": [
-            ("用户信息", "action:query_user_info"),
-            ("即将到期", "action:query_expiring"),
-            ("流量排行", "action:query_traffic"),
-            ("返回", "menu:main"),
+            ("🔎 用户信息", "action:query_user_info"),
+            ("⏳ 即将到期", "action:query_expiring"),
+            ("📊 流量排行", "action:query_traffic"),
+            ("⬅️ 返回主菜单", "menu:main"),
         ],
     },
     "backup": {
         "title": "备份与维护",
         "buttons": [
-            ("立即备份", "action:backup_now"),
-            ("操作日志", "action:backup_audit"),
-            ("紧急停止", "action:backup_stop"),
-            ("返回", "menu:main"),
+            ("💾 立即备份", "action:backup_now"),
+            ("🧾 操作日志", "action:backup_audit"),
+            ("🛑 紧急停止", "action:backup_stop"),
+            ("⬅️ 返回主菜单", "menu:main"),
         ],
     },
     "nodes": {
         "title": "节点管理",
         "buttons": [
-            ("查看节点列表", "action:nodes_list"),
-            ("新增节点", "action:nodes_create"),
-            ("节点远程运维", "action:node_ops"),
-            ("返回", "menu:main"),
+            ("🗂 查看节点列表", "action:nodes_list"),
+            ("➕ 新增节点", "action:nodes_create"),
+            ("🛠 节点远程运维", "action:node_ops"),
+            ("⬅️ 返回主菜单", "menu:main"),
         ],
     },
     "maintain": {
         "title": "管理服务器",
         "buttons": [
-            ("安装/更新（本管理服务器）", "action:maintain_update"),
-            ("配置向导", "action:maintain_config"),
-            ("启动controller", "action:maintain_controller_start"),
-            ("停止controller", "action:maintain_controller_stop"),
-            ("状态查看", "action:maintain_status"),
-            ("安全事件(1h)", "action:maintain_security_events"),
-            ("查看日志", "action:maintain_logs"),
-            ("HTTPS证书状态", "action:maintain_https_status"),
-            ("HTTPS证书刷新", "action:maintain_https_reload"),
-            ("立即备份", "action:maintain_backup"),
-            ("一键验收自检", "action:maintain_smoke"),
-            ("生成迁移包", "action:maintain_migrate_export"),
-            ("迁移导入", "action:maintain_migrate_import"),
-            ("访问安全", "action:maintain_acl_status"),
-            ("收敛AUTH_TOKEN", "action:maintain_token_collapse"),
-            ("返回", "menu:main"),
+            ("⬆️ 安装/更新（本管理服务器）", "action:maintain_update"),
+            ("⚙️ 配置向导", "action:maintain_config"),
+            ("▶️ 启动controller", "action:maintain_controller_start"),
+            ("⏹ 停止controller", "action:maintain_controller_stop"),
+            ("📈 状态查看", "action:maintain_status"),
+            ("🛡 安全事件(1h)", "action:maintain_security_events"),
+            ("📜 查看日志", "action:maintain_logs"),
+            ("🔐 HTTPS证书状态", "action:maintain_https_status"),
+            ("♻️ HTTPS证书刷新", "action:maintain_https_reload"),
+            ("💾 立即备份", "action:maintain_backup"),
+            ("✅ 一键验收自检", "action:maintain_smoke"),
+            ("📦 生成迁移包", "action:maintain_migrate_export"),
+            ("📥 迁移导入", "action:maintain_migrate_import"),
+            ("🧱 访问安全", "action:maintain_acl_status"),
+            ("🔑 收敛AUTH_TOKEN", "action:maintain_token_collapse"),
+            ("⬅️ 返回主菜单", "menu:main"),
         ],
     },
 }
@@ -887,18 +887,31 @@ def set_main_menu_message(
 
 
 async def purge_main_menu_messages(
-    context: ContextTypes.DEFAULT_TYPE, chat_id: int
+    context: ContextTypes.DEFAULT_TYPE, chat_id: int, keep_message_id: Optional[int] = None
 ) -> None:
     message_map = get_main_menu_message_map(context)
     existing = message_map.get(chat_id, [])
     if not isinstance(existing, list):
         existing = []
+    kept = []
     for old_message_id in existing:
+        if keep_message_id is not None and old_message_id == keep_message_id:
+            kept.append(old_message_id)
+            continue
+        try:
+            await context.bot.edit_message_reply_markup(
+                chat_id=chat_id,
+                message_id=old_message_id,
+                reply_markup=None,
+            )
+            continue
+        except (BadRequest, Forbidden):
+            pass
         try:
             await context.bot.delete_message(chat_id=chat_id, message_id=old_message_id)
         except (BadRequest, Forbidden):
             pass
-    message_map[chat_id] = []
+    message_map[chat_id] = kept
 
 
 def remember_known_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1009,11 +1022,11 @@ async def run_node_monitor_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 def build_main_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
-            [InlineKeyboardButton("用户与订阅", callback_data="menu:user")],
-            [InlineKeyboardButton("节点与线路", callback_data="menu:nodes")],
-            [InlineKeyboardButton("查询与告警", callback_data="menu:query")],
-            [InlineKeyboardButton("限速策略", callback_data="menu:speed")],
-            [InlineKeyboardButton("管理服务器", callback_data="menu:maintain")],
+            [InlineKeyboardButton("👤 用户与订阅管理", callback_data="menu:user")],
+            [InlineKeyboardButton("🛰 节点与线路管理", callback_data="menu:nodes")],
+            [InlineKeyboardButton("🔎 查询与告警中心", callback_data="menu:query")],
+            [InlineKeyboardButton("🚦 限速策略管理", callback_data="menu:speed")],
+            [InlineKeyboardButton("🛠 管理服务器运维", callback_data="menu:maintain")],
         ]
     )
 
@@ -1388,11 +1401,11 @@ def build_security_events_keyboard(include_local: bool, top_ips: list) -> Inline
     rows = [
         [
             InlineKeyboardButton(
-                "过滤本机视角",
+                "🧪 过滤本机视角",
                 callback_data="action:maintain_security_events",
             ),
             InlineKeyboardButton(
-                "包含本机视角",
+                "🌐 包含本机视角",
                 callback_data="action:maintain_security_events_local",
             ),
         ],
@@ -1403,15 +1416,15 @@ def build_security_events_keyboard(include_local: bool, top_ips: list) -> Inline
         rows.append(
             [
                 InlineKeyboardButton(
-                    f"封禁 {button_ip}",
+                    f"⛔ 封禁 {button_ip}",
                     callback_data=f"sb:bi:{mode_flag}:{token}",
                 ),
             ]
         )
-    rows.append([InlineKeyboardButton("手动安全清理", callback_data=f"sb:mc:{mode_flag}")])
-    rows.append([InlineKeyboardButton("执行自动封禁检查", callback_data=f"sb:ab:{mode_flag}")])
-    rows.append([InlineKeyboardButton("查看封禁列表", callback_data=f"sb:bl:{mode_flag}:1")])
-    rows.append([InlineKeyboardButton("返回", callback_data="menu:maintain")])
+    rows.append([InlineKeyboardButton("🧹 手动安全清理", callback_data=f"sb:mc:{mode_flag}")])
+    rows.append([InlineKeyboardButton("🛡 执行自动封禁检查", callback_data=f"sb:ab:{mode_flag}")])
+    rows.append([InlineKeyboardButton("📄 查看封禁列表", callback_data=f"sb:bl:{mode_flag}:1")])
+    rows.append([InlineKeyboardButton("⬅️ 返回维护菜单", callback_data="menu:maintain")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -1429,7 +1442,9 @@ def build_security_duration_keyboard(include_local: bool, source_ip: str) -> Inl
                 InlineKeyboardButton("永久", callback_data=f"sb:bd:0:{mode_flag}:{token}"),
             ],
             [
-                InlineKeyboardButton("取消", callback_data=security_events_mode_callback(include_local)),
+                InlineKeyboardButton(
+                    "❌ 取消", callback_data=security_events_mode_callback(include_local)
+                ),
             ],
         ]
     )
@@ -3518,7 +3533,7 @@ async def run_admin_security_auto_block_action(query, include_local: bool) -> No
     if blocked_items:
         lines.append("新增封禁IP：{0}".format(", ".join(str(x) for x in blocked_items[:8])))
     if skipped_items:
-        skip_reason_counter: Dict[str, int] = {}
+        skip_reason_counter = {}
         for raw_item in skipped_items:
             raw_text = str(raw_item)
             reason_key = "other"
@@ -3534,7 +3549,7 @@ async def run_admin_security_auto_block_action(query, include_local: bool) -> No
             "other": "其他原因",
         }
         reason_order = ["protected", "already_blocked", "non_global", "invalid", "other"]
-        reason_parts: List[str] = []
+        reason_parts = []
         for reason_key in reason_order:
             count = skip_reason_counter.get(reason_key, 0)
             if count > 0:
@@ -4005,9 +4020,21 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     reply_markup=build_main_menu(),
                 )
                 set_main_menu_message(context, chat_id, old_message_id)
+                await purge_main_menu_messages(
+                    context, chat_id, keep_message_id=old_message_id
+                )
                 schedule_menu_auto_clear(context, chat_id, old_message_id)
                 return
-            except (BadRequest, Forbidden):
+            except BadRequest as exc:
+                if "message is not modified" in str(exc).lower():
+                    set_main_menu_message(context, chat_id, old_message_id)
+                    await purge_main_menu_messages(
+                        context, chat_id, keep_message_id=old_message_id
+                    )
+                    schedule_menu_auto_clear(context, chat_id, old_message_id)
+                    return
+                continue
+            except Forbidden:
                 continue
 
         await purge_main_menu_messages(context, chat_id)
