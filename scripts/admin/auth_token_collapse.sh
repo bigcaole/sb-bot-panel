@@ -65,6 +65,38 @@ parse_primary_token() {
   echo ""
 }
 
+post_ops_audit_event() {
+  local controller_port="$1"
+  local token="$2"
+  local action="$3"
+  local detail_json="$4"
+  local payload
+
+  if command -v jq >/dev/null 2>&1; then
+    payload="$(jq -nc \
+      --arg action "$action" \
+      --argjson detail "$detail_json" \
+      '{action:$action, resource_type:"security", resource_id:"controller", detail:$detail}')"
+  else
+    payload="{\"action\":\"${action}\",\"resource_type\":\"security\",\"resource_id\":\"controller\"}"
+  fi
+
+  if [[ -n "$token" ]]; then
+    curl -fsSL --max-time 8 -X POST \
+      "http://127.0.0.1:${controller_port}/admin/audit/event" \
+      -H "Authorization: Bearer ${token}" \
+      -H "X-Actor: ${SCRIPT_ACTOR}" \
+      -H "Content-Type: application/json" \
+      -d "$payload" >/dev/null 2>&1 || true
+  else
+    curl -fsSL --max-time 8 -X POST \
+      "http://127.0.0.1:${controller_port}/admin/audit/event" \
+      -H "X-Actor: ${SCRIPT_ACTOR}" \
+      -H "Content-Type: application/json" \
+      -d "$payload" >/dev/null 2>&1 || true
+  fi
+}
+
 sync_node_tokens_after_collapse() {
   local controller_port="$1"
   local token="$2"
@@ -146,6 +178,7 @@ main() {
     msg "AUTH_TOKEN 已是单值，无需收敛。"
     if wait_for_controller_ready "$controller_port" 15; then
       sync_node_tokens_after_collapse "$controller_port" "$primary_token"
+      post_ops_audit_event "$controller_port" "$primary_token" "ops.auth_token_collapse.noop" '{"mode":"single_token_noop"}'
     else
       warn "controller 未就绪，已跳过节点 token 对齐同步。"
     fi
@@ -175,6 +208,7 @@ main() {
   if wait_for_controller_ready "$controller_port" 30; then
     msg "收敛完成：controller 已就绪（127.0.0.1:${controller_port}）。"
     sync_node_tokens_after_collapse "$controller_port" "$primary_token"
+    post_ops_audit_event "$controller_port" "$primary_token" "ops.auth_token_collapse.apply" '{"mode":"collapsed"}'
   else
     err "controller 启动超时，请检查日志：journalctl -u sb-controller -n 120 --no-pager"
     exit 1

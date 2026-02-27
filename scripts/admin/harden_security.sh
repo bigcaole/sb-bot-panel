@@ -207,6 +207,42 @@ pick_working_auth_token() {
   return 1
 }
 
+post_ops_audit_event() {
+  local controller_port="$1"
+  local token="$2"
+  local action="$3"
+  local resource_type="$4"
+  local resource_id="$5"
+  local detail_json="$6"
+  local payload
+
+  if command -v jq >/dev/null 2>&1; then
+    payload="$(jq -nc \
+      --arg action "$action" \
+      --arg resource_type "$resource_type" \
+      --arg resource_id "$resource_id" \
+      --argjson detail "$detail_json" \
+      '{action:$action, resource_type:$resource_type, resource_id:$resource_id, detail:$detail}')"
+  else
+    payload="{\"action\":\"${action}\",\"resource_type\":\"${resource_type}\",\"resource_id\":\"${resource_id}\"}"
+  fi
+
+  if [[ -n "$token" ]]; then
+    curl -fsSL --max-time 8 -X POST \
+      "http://127.0.0.1:${controller_port}/admin/audit/event" \
+      -H "Authorization: Bearer ${token}" \
+      -H "X-Actor: ${SCRIPT_ACTOR}" \
+      -H "Content-Type: application/json" \
+      -d "$payload" >/dev/null 2>&1 || true
+  else
+    curl -fsSL --max-time 8 -X POST \
+      "http://127.0.0.1:${controller_port}/admin/audit/event" \
+      -H "X-Actor: ${SCRIPT_ACTOR}" \
+      -H "Content-Type: application/json" \
+      -d "$payload" >/dev/null 2>&1 || true
+  fi
+}
+
 sync_node_tokens_after_rotation() {
   local controller_port="$1"
   local auth_token_raw="$2"
@@ -429,6 +465,23 @@ main() {
     echo "建议后续收敛为："
     echo "  AUTH_TOKEN=${new_token}"
   fi
+
+  local ops_token
+  local detail_json
+  ops_token="$(pick_working_auth_token "$controller_port" "$final_auth_token")" || true
+  if [[ -z "$ops_token" ]]; then
+    ops_token="$(first_auth_token "$final_auth_token")"
+  fi
+  if command -v jq >/dev/null 2>&1; then
+    detail_json="$(jq -nc \
+      --arg mode "$mode" \
+      --arg whitelist "$whitelist_final" \
+      --arg token_rotated "$([[ -n "$new_token" ]] && echo true || echo false)" \
+      '{mode:$mode, whitelist:$whitelist, token_rotated:($token_rotated=="true")}')"
+  else
+    detail_json="{}"
+  fi
+  post_ops_audit_event "$controller_port" "$ops_token" "ops.harden_security.apply" "security" "controller" "$detail_json"
 }
 
 main "$@"

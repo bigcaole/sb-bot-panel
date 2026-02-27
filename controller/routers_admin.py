@@ -2041,8 +2041,8 @@ def write_admin_audit_event(
         return auth_error
 
     action_value = str(payload.action or "").strip()
-    if not action_value.startswith("bot."):
-        raise HTTPException(status_code=400, detail="action must start with bot.")
+    if not (action_value.startswith("bot.") or action_value.startswith("ops.")):
+        raise HTTPException(status_code=400, detail="action must start with bot. or ops.")
 
     resource_type = str(payload.resource_type or "bot").strip() or "bot"
     resource_id = str(payload.resource_id or "").strip()

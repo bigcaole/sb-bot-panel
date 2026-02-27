@@ -247,6 +247,33 @@ class ControllerSmokeTestCase(unittest.TestCase):
             self.assertTrue(bool(audit_event_payload.get("ok")))
             self.assertEqual("bot.sub_policy.apply", str(audit_event_payload.get("action")))
 
+            ops_audit_event_resp = client.post(
+                "/admin/audit/event",
+                headers=self._auth_header(),
+                json={
+                    "action": "ops.harden.apply",
+                    "resource_type": "security",
+                    "resource_id": "controller",
+                    "detail": {"mode": "whitelist"},
+                },
+            )
+            self.assertEqual(200, ops_audit_event_resp.status_code)
+            ops_audit_event_payload = ops_audit_event_resp.json()
+            self.assertTrue(bool(ops_audit_event_payload.get("ok")))
+            self.assertEqual("ops.harden.apply", str(ops_audit_event_payload.get("action")))
+
+            bad_audit_event_resp = client.post(
+                "/admin/audit/event",
+                headers=self._auth_header(),
+                json={
+                    "action": "script.harden.apply",
+                    "resource_type": "security",
+                    "resource_id": "controller",
+                    "detail": {"mode": "whitelist"},
+                },
+            )
+            self.assertEqual(400, bad_audit_event_resp.status_code)
+
             sync_tokens_resp = client.post(
                 "/admin/auth/sync_node_tokens",
                 headers=self._auth_header(),

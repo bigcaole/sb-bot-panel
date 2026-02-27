@@ -77,6 +77,21 @@ api_get() {
   fi
 }
 
+write_ops_audit_event() {
+  local action="$1"
+  local detail_json="$2"
+  local payload
+  if command -v jq >/dev/null 2>&1; then
+    payload="$(jq -nc \
+      --arg action "$action" \
+      --argjson detail "$detail_json" \
+      '{action:$action, resource_type:"db", resource_id:"consistency", detail:$detail}')"
+  else
+    payload="{\"action\":\"${action}\",\"resource_type\":\"db\",\"resource_id\":\"consistency\"}"
+  fi
+  api_post "/admin/audit/event" "$payload" >/dev/null 2>&1 || true
+}
+
 main() {
   require_tool curl
   require_tool jq
@@ -121,6 +136,11 @@ main() {
     exit 3
   fi
   msg "SQLite 完整性检查通过。"
+
+  write_ops_audit_event "ops.db_consistency.check" "$(jq -nc \
+    --arg path "$export_path" \
+    --arg compare_live "true" \
+    '{path:$path, compare_live:($compare_live=="true"), result:"ok"}')"
 
   echo ""
   msg "数据库迁移前置校验完成。"
