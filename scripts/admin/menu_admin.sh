@@ -74,6 +74,51 @@ first_auth_token() {
   fi
 }
 
+pick_working_auth_token() {
+  local controller_port="$1"
+  local raw="$2"
+  local trimmed=""
+  local code=""
+  local -a candidates=()
+  local -a raw_items=()
+  local item
+
+  raw="${raw//$'\n'/}"
+  raw="${raw//$'\r'/}"
+  if [[ -z "$raw" ]]; then
+    echo ""
+    return 0
+  fi
+
+  IFS=',' read -r -a raw_items <<<"$raw"
+  for item in "${raw_items[@]}"; do
+    trimmed="$(echo "$item" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    [[ -z "$trimmed" ]] && continue
+    candidates+=("$trimmed")
+  done
+  if (( ${#candidates[@]} == 0 )); then
+    echo ""
+    return 0
+  fi
+  if (( ${#candidates[@]} == 1 )); then
+    echo "${candidates[0]}"
+    return 0
+  fi
+
+  for item in "${candidates[@]}"; do
+    code="$(curl -sS -o /dev/null -w "%{http_code}" --max-time 3 \
+      -H "Authorization: Bearer ${item}" \
+      "http://127.0.0.1:${controller_port}/admin/security/status" || true)"
+    if [[ "$code" == "200" ]]; then
+      echo "$item"
+      return 0
+    fi
+  done
+
+  echo "${candidates[0]}"
+  return 1
+}
+
 detect_ssh_service() {
   if systemctl list-unit-files | grep -q '^sshd\.service'; then
     echo "sshd"
@@ -249,7 +294,12 @@ run_security_maintenance_cleanup() {
   if [[ -f "$env_file" ]]; then
     auth_token_raw="$(grep -E '^AUTH_TOKEN=' "$env_file" | tail -n1 | cut -d= -f2- || true)"
   fi
-  auth_token="$(first_auth_token "$auth_token_raw")"
+  auth_token="$(pick_working_auth_token "$controller_port" "$auth_token_raw")" || {
+    warn "AUTH_TOKEN 多值模式下未探测到可用 token，回退使用第一个 token。"
+  }
+  if [[ -z "$auth_token" ]]; then
+    auth_token="$(first_auth_token "$auth_token_raw")"
+  fi
   auth_token="${auth_token#"${auth_token%%[![:space:]]*}"}"
   auth_token="${auth_token%"${auth_token##*[![:space:]]}"}"
 
@@ -291,7 +341,12 @@ run_sync_node_defaults() {
   if [[ -f "$env_file" ]]; then
     auth_token_raw="$(grep -E '^AUTH_TOKEN=' "$env_file" | tail -n1 | cut -d= -f2- || true)"
   fi
-  auth_token="$(first_auth_token "$auth_token_raw")"
+  auth_token="$(pick_working_auth_token "$controller_port" "$auth_token_raw")" || {
+    warn "AUTH_TOKEN 多值模式下未探测到可用 token，回退使用第一个 token。"
+  }
+  if [[ -z "$auth_token" ]]; then
+    auth_token="$(first_auth_token "$auth_token_raw")"
+  fi
 
   read -r -p "是否包含已禁用节点？[y/N]: " answer
   answer="${answer:-N}"
