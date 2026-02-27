@@ -330,6 +330,7 @@ PRIVILEGED_CALLBACK_PREFIXES = {
     "maintain:logsdate:": ROLE_OPERATOR,
     "sb:bl:": ROLE_OPERATOR,
     "sb:bi:": ROLE_SUPER,
+    "sb:bd:": ROLE_SUPER,
     "sb:ba:": ROLE_SUPER,
     "sb:bu:": ROLE_SUPER,
 }
@@ -1388,30 +1389,34 @@ def build_security_events_keyboard(include_local: bool, top_ips: list) -> Inline
         rows.append(
             [
                 InlineKeyboardButton(
-                    f"封1h {button_ip}",
-                    callback_data=f"sb:bi:3600:{mode_flag}:{token}",
-                ),
-                InlineKeyboardButton(
-                    f"封24h {button_ip}",
-                    callback_data=f"sb:bi:86400:{mode_flag}:{token}",
-                ),
-            ]
-        )
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    f"封7d {button_ip}",
-                    callback_data=f"sb:bi:604800:{mode_flag}:{token}",
-                ),
-                InlineKeyboardButton(
-                    f"永久 {button_ip}",
-                    callback_data=f"sb:bi:0:{mode_flag}:{token}",
+                    f"封禁 {button_ip}",
+                    callback_data=f"sb:bi:{mode_flag}:{token}",
                 ),
             ]
         )
     rows.append([InlineKeyboardButton("查看封禁列表", callback_data=f"sb:bl:{mode_flag}:1")])
     rows.append([InlineKeyboardButton("返回", callback_data="menu:maintain")])
     return InlineKeyboardMarkup(rows)
+
+
+def build_security_duration_keyboard(include_local: bool, source_ip: str) -> InlineKeyboardMarkup:
+    mode_flag = "1" if include_local else "0"
+    token = encode_ip_token(source_ip)
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("1小时", callback_data=f"sb:bd:3600:{mode_flag}:{token}"),
+                InlineKeyboardButton("24小时", callback_data=f"sb:bd:86400:{mode_flag}:{token}"),
+            ],
+            [
+                InlineKeyboardButton("7天", callback_data=f"sb:bd:604800:{mode_flag}:{token}"),
+                InlineKeyboardButton("永久", callback_data=f"sb:bd:0:{mode_flag}:{token}"),
+            ],
+            [
+                InlineKeyboardButton("取消", callback_data=security_events_mode_callback(include_local)),
+            ],
+        ]
+    )
 
 
 def build_security_blocklist_keyboard(
@@ -1470,7 +1475,7 @@ def build_security_block_confirm_keyboard(include_local: bool, duration_seconds:
                 ),
                 InlineKeyboardButton(
                     "取消",
-                    callback_data=security_events_mode_callback(include_local),
+                    callback_data=f"sb:bi:{mode_flag}:{token}",
                 ),
             ]
         ]
@@ -5852,13 +5857,36 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
 
     if callback_data.startswith("sb:bi:"):
-        parts = callback_data.split(":", maxsplit=4)
-        if len(parts) != 5:
+        parts = callback_data.split(":")
+        # 新格式：sb:bi:{mode}:{ip_token}
+        # 兼容旧格式：sb:bi:{duration}:{mode}:{ip_token}
+        if len(parts) not in (4, 5):
             await query.edit_message_text(
                 "封禁请求参数无效。",
                 reply_markup=build_back_keyboard("menu:maintain"),
             )
             return
+
+        if len(parts) == 4:
+            include_local = parts[2] == "1"
+            source_ip = decode_ip_token(parts[3])
+            if not source_ip:
+                await query.edit_message_text(
+                    "封禁请求参数无效。",
+                    reply_markup=build_back_keyboard("menu:maintain"),
+                )
+                return
+            await query.edit_message_text(
+                "请选择封禁时长：\n\n"
+                f"目标IP：{source_ip}\n"
+                f"作用范围：controller 端口 {CONTROLLER_PORT_HINT}/tcp",
+                reply_markup=build_security_duration_keyboard(
+                    include_local=include_local,
+                    source_ip=source_ip,
+                ),
+            )
+            return
+
         try:
             duration_seconds = int(parts[2])
         except ValueError:
@@ -5873,6 +5901,50 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             return
         if duration_seconds == 0:
             duration_text = "永久"
+        elif duration_seconds % 86400 == 0:
+            duration_text = f"{duration_seconds // 86400} 天"
+        elif duration_seconds % 3600 == 0:
+            duration_text = f"{duration_seconds // 3600} 小时"
+        else:
+            duration_text = f"{duration_seconds} 秒"
+        await query.edit_message_text(
+            "请确认封禁来源 IP：\n\n"
+            f"IP：{source_ip}\n"
+            f"时长：{duration_text}\n"
+            f"作用范围：controller 端口 {CONTROLLER_PORT_HINT}/tcp\n\n"
+            "提示：仅建议封禁明确的扫描来源。",
+            reply_markup=build_security_block_confirm_keyboard(
+                include_local=include_local,
+                duration_seconds=duration_seconds,
+                source_ip=source_ip,
+            ),
+        )
+        return
+
+    if callback_data.startswith("sb:bd:"):
+        parts = callback_data.split(":", maxsplit=4)
+        if len(parts) != 5:
+            await query.edit_message_text(
+                "封禁时长参数无效。",
+                reply_markup=build_back_keyboard("menu:maintain"),
+            )
+            return
+        try:
+            duration_seconds = int(parts[2])
+        except ValueError:
+            duration_seconds = -1
+        include_local = parts[3] == "1"
+        source_ip = decode_ip_token(parts[4])
+        if duration_seconds < 0 or not source_ip:
+            await query.edit_message_text(
+                "封禁时长参数无效。",
+                reply_markup=build_back_keyboard("menu:maintain"),
+            )
+            return
+        if duration_seconds == 0:
+            duration_text = "永久"
+        elif duration_seconds % 86400 == 0:
+            duration_text = f"{duration_seconds // 86400} 天"
         elif duration_seconds % 3600 == 0:
             duration_text = f"{duration_seconds // 3600} 小时"
         else:
