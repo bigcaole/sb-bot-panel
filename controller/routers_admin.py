@@ -5,7 +5,7 @@ import tarfile
 import tempfile
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Set, Tuple, Union
 
 from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -53,6 +53,7 @@ from controller.settings import (
     SECURITY_AUTO_BLOCK_THRESHOLD,
     SECURITY_AUTO_BLOCK_WINDOW_SECONDS,
     SECURITY_BLOCK_CLEANUP_INTERVAL_SECONDS,
+    SECURITY_BLOCK_PROTECTED_IPS_ITEMS,
     SECURITY_EVENTS_EXCLUDE_LOCAL,
     SUB_LINK_DEFAULT_TTL_SECONDS,
     SUB_LINK_REQUIRE_SIGNATURE,
@@ -165,6 +166,10 @@ def build_security_status_payload() -> Dict[str, Union[bool, int, List[str]]]:
         warnings.append("审计日志保留天数过短（小于 7 天）")
     if SECURITY_AUTO_BLOCK_ENABLED:
         warnings.append("自动封禁已启用（请确认阈值与白名单策略，避免误封）")
+    if SECURITY_AUTO_BLOCK_ENABLED and (not CONTROLLER_PORT_WHITELIST_ITEMS) and (
+        not SECURITY_BLOCK_PROTECTED_IPS_ITEMS
+    ):
+        warnings.append("自动封禁已启用，但未配置 SECURITY_BLOCK_PROTECTED_IPS（建议至少加入运维来源）")
 
     return {
         "auth_enabled": bool(auth_tokens),
@@ -185,6 +190,8 @@ def build_security_status_payload() -> Dict[str, Union[bool, int, List[str]]]:
         "audit_log_cleanup_interval_seconds": AUDIT_LOG_CLEANUP_INTERVAL_SECONDS,
         "audit_log_cleanup_batch_size": AUDIT_LOG_CLEANUP_BATCH_SIZE,
         "security_block_cleanup_interval_seconds": SECURITY_BLOCK_CLEANUP_INTERVAL_SECONDS,
+        "security_block_protected_ips": SECURITY_BLOCK_PROTECTED_IPS_ITEMS,
+        "security_block_protected_ips_count": len(SECURITY_BLOCK_PROTECTED_IPS_ITEMS),
         "security_auto_block_enabled": bool(SECURITY_AUTO_BLOCK_ENABLED),
         "security_auto_block_interval_seconds": int(SECURITY_AUTO_BLOCK_INTERVAL_SECONDS),
         "security_auto_block_window_seconds": int(SECURITY_AUTO_BLOCK_WINDOW_SECONDS),
@@ -206,6 +213,76 @@ def normalize_source_ip(value: str) -> str:
         return str(ipaddress.ip_address(raw_value))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="source_ip must be valid IPv4/IPv6") from exc
+
+
+def build_protected_source_rules(
+    conn, request_source_ip: str
+) -> Tuple[Set[str], List[Union[ipaddress.IPv4Network, ipaddress.IPv6Network]]]:
+    protected_ips: Set[str] = {
+        "127.0.0.1",
+        "::1",
+        "::ffff:127.0.0.1",
+    }
+    protected_networks: List[Union[ipaddress.IPv4Network, ipaddress.IPv6Network]] = []
+
+    def _add_protected_value(raw_value: str) -> None:
+        value = str(raw_value or "").strip()
+        if not value:
+            return
+        try:
+            protected_ips.add(str(ipaddress.ip_address(value)))
+            return
+        except ValueError:
+            pass
+        try:
+            network = ipaddress.ip_network(value, strict=False)
+            if int(network.num_addresses) == 1:
+                protected_ips.add(str(network.network_address))
+            else:
+                protected_networks.append(network)
+        except ValueError:
+            return
+
+    _add_protected_value(request_source_ip)
+
+    rows = conn.execute(
+        """
+        SELECT agent_ip
+        FROM nodes
+        WHERE enabled = 1
+          AND agent_ip IS NOT NULL
+          AND TRIM(agent_ip) != ''
+        """
+    ).fetchall()
+    for row in rows:
+        _add_protected_value(str(row["agent_ip"] or ""))
+
+    for item in CONTROLLER_PORT_WHITELIST_ITEMS:
+        _add_protected_value(str(item or ""))
+    for item in SECURITY_BLOCK_PROTECTED_IPS_ITEMS:
+        _add_protected_value(str(item or ""))
+
+    return protected_ips, protected_networks
+
+
+def is_source_ip_protected(
+    source_ip: str,
+    protected_ips: Set[str],
+    protected_networks: List[Union[ipaddress.IPv4Network, ipaddress.IPv6Network]],
+) -> bool:
+    normalized = str(source_ip or "").strip()
+    if not normalized:
+        return False
+    try:
+        ip_obj = ipaddress.ip_address(normalized)
+    except ValueError:
+        return normalized in protected_ips
+    if str(ip_obj) in protected_ips:
+        return True
+    for network in protected_networks:
+        if ip_obj in network:
+            return True
+    return False
 
 
 def run_ufw_command(args: List[str], timeout_seconds: int = 20) -> Tuple[int, str, str]:
@@ -333,48 +410,8 @@ def remove_ufw_ip_block(source_ip: str) -> Dict[str, Union[int, str]]:
 
 
 def get_protected_source_ips(conn, request_source_ip: str) -> List[str]:
-    protected = {
-        "127.0.0.1",
-        "::1",
-        "::ffff:127.0.0.1",
-    }
-    request_ip = str(request_source_ip or "").strip()
-    if request_ip:
-        try:
-            protected.add(str(ipaddress.ip_address(request_ip)))
-        except ValueError:
-            protected.add(request_ip)
-
-    rows = conn.execute(
-        """
-        SELECT agent_ip
-        FROM nodes
-        WHERE enabled = 1
-          AND agent_ip IS NOT NULL
-          AND TRIM(agent_ip) != ''
-        """
-    ).fetchall()
-    for row in rows:
-        value = str(row["agent_ip"] or "").strip()
-        if not value:
-            continue
-        try:
-            protected.add(str(ipaddress.ip_address(value)))
-        except ValueError:
-            continue
-
-    for item in CONTROLLER_PORT_WHITELIST_ITEMS:
-        raw = str(item or "").strip()
-        if not raw:
-            continue
-        try:
-            network = ipaddress.ip_network(raw, strict=False)
-            if int(network.num_addresses) == 1:
-                protected.add(str(network.network_address))
-        except ValueError:
-            continue
-
-    return sorted(protected)
+    protected_ips, _ = build_protected_source_rules(conn, request_source_ip=request_source_ip)
+    return sorted(protected_ips)
 
 
 def cleanup_expired_ip_blocks(conn, now_ts: int) -> Dict[str, Union[int, List[str]]]:
@@ -508,7 +545,7 @@ def run_security_auto_block_once(conn, now_ts: int) -> Dict[str, Union[int, List
         if value:
             active_ip_set.add(value)
 
-    protected_ip_set = set(get_protected_source_ips(conn, request_source_ip=""))
+    protected_ip_set, protected_networks = build_protected_source_rules(conn, request_source_ip="")
     blocked_items: List[str] = []
     failed_items: List[str] = []
     skipped_items: List[str] = []
@@ -536,7 +573,7 @@ def run_security_auto_block_once(conn, now_ts: int) -> Dict[str, Union[int, List
         if not ip_obj.is_global:
             skipped_items.append("{0}:non_global".format(source_ip))
             continue
-        if source_ip in protected_ip_set:
+        if is_source_ip_protected(source_ip, protected_ip_set, protected_networks):
             skipped_items.append("{0}:protected".format(source_ip))
             continue
         if source_ip in active_ip_set:
@@ -1255,8 +1292,10 @@ def block_security_source_ip(
 
     with get_connection() as conn:
         cleanup_expired_ip_blocks(conn, now_ts=now_ts)
-        protected_ips = set(get_protected_source_ips(conn, request_source_ip=request_ip))
-        if source_ip in protected_ips:
+        protected_ips, protected_networks = build_protected_source_rules(
+            conn, request_source_ip=request_ip
+        )
+        if is_source_ip_protected(source_ip, protected_ips, protected_networks):
             raise HTTPException(status_code=400, detail="该IP受保护，拒绝封禁")
         apply_ufw_ip_block(source_ip)
         conn.execute(

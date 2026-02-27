@@ -393,6 +393,7 @@ scp root@旧IP:/var/backups/sb-migrate/sb-migrate-xxxx.tar.gz root@新IP:/root/
 - `HTTPS_ACME_EMAIL=admin@example.com`（可选，证书账号邮箱）
 - `CONTROLLER_PORT=8080`
 - `CONTROLLER_PORT_WHITELIST=`（可选；逗号分隔 IP/CIDR，用于限制 8080 访问来源）
+- `SECURITY_BLOCK_PROTECTED_IPS=`（可选；逗号分隔 IP/CIDR，manual/auto 封禁会跳过这些来源）
 - `AUTH_TOKEN=随机长串`（可空；空值表示关闭接口鉴权；支持 `new_token,old_token` 过渡轮换）
 - `SUB_LINK_SIGN_KEY=`（可选；设置后可生成带签名订阅链接）
 - `SUB_LINK_REQUIRE_SIGNATURE=0`（可选；1=强制订阅必须带签名）

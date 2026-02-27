@@ -60,6 +60,7 @@ API_RATE_LIMIT_ENABLED="0"
 API_RATE_LIMIT_WINDOW_SECONDS="60"
 API_RATE_LIMIT_MAX_REQUESTS="120"
 SECURITY_EVENTS_EXCLUDE_LOCAL="1"
+SECURITY_BLOCK_PROTECTED_IPS=""
 SECURITY_AUTO_BLOCK_ENABLED="0"
 SECURITY_AUTO_BLOCK_INTERVAL_SECONDS="60"
 SECURITY_AUTO_BLOCK_WINDOW_SECONDS="3600"
@@ -381,7 +382,7 @@ has_env_key() {
 }
 
 load_existing_env_defaults() {
-  local old_port old_port_whitelist old_url old_public_url old_panel_base old_enable_https old_https_domain old_https_email old_auth old_bot old_admin old_view_admin old_ops_admin old_super_admin old_migrate old_backup_retention old_migrate_retention old_menu_ttl old_monitor_interval old_offline_threshold old_mutation_cooldown old_trust_xff old_trusted_proxy_ips old_task_timeout old_task_retention old_task_max_pending old_sub_link_sign_key old_sub_link_require old_sub_link_ttl old_rate_limit_enabled old_rate_limit_window old_rate_limit_max old_security_events_exclude_local old_security_auto_block_enabled old_security_auto_block_interval old_security_auto_block_window old_security_auto_block_threshold old_security_auto_block_duration old_security_auto_block_max old_controller_http_timeout old_bot_actor_label
+  local old_port old_port_whitelist old_url old_public_url old_panel_base old_enable_https old_https_domain old_https_email old_auth old_bot old_admin old_view_admin old_ops_admin old_super_admin old_migrate old_backup_retention old_migrate_retention old_menu_ttl old_monitor_interval old_offline_threshold old_mutation_cooldown old_trust_xff old_trusted_proxy_ips old_task_timeout old_task_retention old_task_max_pending old_sub_link_sign_key old_sub_link_require old_sub_link_ttl old_rate_limit_enabled old_rate_limit_window old_rate_limit_max old_security_events_exclude_local old_security_block_protected_ips old_security_auto_block_enabled old_security_auto_block_interval old_security_auto_block_window old_security_auto_block_threshold old_security_auto_block_duration old_security_auto_block_max old_controller_http_timeout old_bot_actor_label
   old_port="$(get_env_value "CONTROLLER_PORT")"
   old_port_whitelist="$(get_env_value "CONTROLLER_PORT_WHITELIST")"
   old_url="$(get_env_value "CONTROLLER_URL")"
@@ -415,6 +416,7 @@ load_existing_env_defaults() {
   old_rate_limit_window="$(get_env_value "API_RATE_LIMIT_WINDOW_SECONDS")"
   old_rate_limit_max="$(get_env_value "API_RATE_LIMIT_MAX_REQUESTS")"
   old_security_events_exclude_local="$(get_env_value "SECURITY_EVENTS_EXCLUDE_LOCAL")"
+  old_security_block_protected_ips="$(get_env_value "SECURITY_BLOCK_PROTECTED_IPS")"
   old_security_auto_block_enabled="$(get_env_value "SECURITY_AUTO_BLOCK_ENABLED")"
   old_security_auto_block_interval="$(get_env_value "SECURITY_AUTO_BLOCK_INTERVAL_SECONDS")"
   old_security_auto_block_window="$(get_env_value "SECURITY_AUTO_BLOCK_WINDOW_SECONDS")"
@@ -461,6 +463,7 @@ load_existing_env_defaults() {
   API_RATE_LIMIT_WINDOW_SECONDS="${old_rate_limit_window:-60}"
   API_RATE_LIMIT_MAX_REQUESTS="${old_rate_limit_max:-120}"
   SECURITY_EVENTS_EXCLUDE_LOCAL="${old_security_events_exclude_local:-1}"
+  SECURITY_BLOCK_PROTECTED_IPS="${old_security_block_protected_ips:-}"
   SECURITY_AUTO_BLOCK_ENABLED="${old_security_auto_block_enabled:-0}"
   SECURITY_AUTO_BLOCK_INTERVAL_SECONDS="${old_security_auto_block_interval:-60}"
   SECURITY_AUTO_BLOCK_WINDOW_SECONDS="${old_security_auto_block_window:-3600}"
@@ -506,6 +509,7 @@ normalize_loaded_values() {
   if ! [[ "$SECURITY_EVENTS_EXCLUDE_LOCAL" =~ ^[01]$ ]]; then
     SECURITY_EVENTS_EXCLUDE_LOCAL="1"
   fi
+  SECURITY_BLOCK_PROTECTED_IPS="$(normalize_whitelist_csv "$SECURITY_BLOCK_PROTECTED_IPS")"
   if ! [[ "$SECURITY_AUTO_BLOCK_ENABLED" =~ ^[01]$ ]]; then
     SECURITY_AUTO_BLOCK_ENABLED="0"
   fi
@@ -592,6 +596,7 @@ prompt_env_config() {
   echo "  - BOT_MUTATION_COOLDOWN：bot 写操作按钮防抖秒数（防止重复点击）"
   echo "  - TRUST_X_FORWARDED_FOR/TRUSTED_PROXY_IPS：仅在受控反代场景下才启用 XFF"
   echo "  - SECURITY_EVENTS_EXCLUDE_LOCAL：安全统计默认过滤本机测试来源（建议 1）"
+  echo "  - SECURITY_BLOCK_PROTECTED_IPS：封禁保护白名单（IP/CIDR；manual/auto block 均跳过）"
   echo "  - SECURITY_AUTO_BLOCK_*：自动封禁策略（默认关闭，建议先观察后开启）"
   echo "  - NODE_TASK_*：节点任务超时与历史清理参数"
   echo ""
@@ -605,6 +610,9 @@ prompt_env_config() {
   read -r -p "CONTROLLER_PORT_WHITELIST（可选，逗号分隔 IP/CIDR；留空=公网放行） [${CONTROLLER_PORT_WHITELIST}]: " input_port_whitelist
   CONTROLLER_PORT_WHITELIST="${input_port_whitelist:-$CONTROLLER_PORT_WHITELIST}"
   CONTROLLER_PORT_WHITELIST="$(normalize_whitelist_csv "$CONTROLLER_PORT_WHITELIST")"
+  read -r -p "SECURITY_BLOCK_PROTECTED_IPS（可选，逗号分隔 IP/CIDR；封禁保护白名单） [${SECURITY_BLOCK_PROTECTED_IPS}]: " input_block_protected
+  SECURITY_BLOCK_PROTECTED_IPS="${input_block_protected:-$SECURITY_BLOCK_PROTECTED_IPS}"
+  SECURITY_BLOCK_PROTECTED_IPS="$(normalize_whitelist_csv "$SECURITY_BLOCK_PROTECTED_IPS")"
 
   local public_ip default_public_url
   public_ip="$(get_public_ipv4)"
@@ -786,6 +794,7 @@ CONTROLLER_PORT=${CONTROLLER_PORT}
 
 # controller 端口白名单（可选，逗号分隔）
 CONTROLLER_PORT_WHITELIST=${CONTROLLER_PORT_WHITELIST}
+SECURITY_BLOCK_PROTECTED_IPS=${SECURITY_BLOCK_PROTECTED_IPS}
 
 # 轻量鉴权 token（可用逗号分隔做轮换过渡）
 AUTH_TOKEN=${AUTH_TOKEN}
@@ -1142,6 +1151,7 @@ run_self_checks() {
   check_env_key "API_RATE_LIMIT_WINDOW_SECONDS"
   check_env_key "API_RATE_LIMIT_MAX_REQUESTS"
   check_env_key "SECURITY_EVENTS_EXCLUDE_LOCAL"
+  check_env_key "SECURITY_BLOCK_PROTECTED_IPS"
   check_env_key "SECURITY_AUTO_BLOCK_ENABLED"
   check_env_key "SECURITY_AUTO_BLOCK_INTERVAL_SECONDS"
   check_env_key "SECURITY_AUTO_BLOCK_WINDOW_SECONDS"
@@ -1294,6 +1304,7 @@ show_summary() {
   echo "API_RATE_LIMIT_WINDOW_SECONDS: ${API_RATE_LIMIT_WINDOW_SECONDS}"
   echo "API_RATE_LIMIT_MAX_REQUESTS: ${API_RATE_LIMIT_MAX_REQUESTS}"
   echo "SECURITY_EVENTS_EXCLUDE_LOCAL: ${SECURITY_EVENTS_EXCLUDE_LOCAL}"
+  echo "SECURITY_BLOCK_PROTECTED_IPS: ${SECURITY_BLOCK_PROTECTED_IPS}"
   echo "SECURITY_AUTO_BLOCK_ENABLED: ${SECURITY_AUTO_BLOCK_ENABLED}"
   echo "SECURITY_AUTO_BLOCK_INTERVAL_SECONDS: ${SECURITY_AUTO_BLOCK_INTERVAL_SECONDS}"
   echo "SECURITY_AUTO_BLOCK_WINDOW_SECONDS: ${SECURITY_AUTO_BLOCK_WINDOW_SECONDS}"

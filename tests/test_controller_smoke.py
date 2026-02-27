@@ -36,6 +36,7 @@ class ControllerSmokeTestCase(unittest.TestCase):
             "routers_admin.SECURITY_AUTO_BLOCK_THRESHOLD": admin_router_module.SECURITY_AUTO_BLOCK_THRESHOLD,
             "routers_admin.SECURITY_AUTO_BLOCK_DURATION_SECONDS": admin_router_module.SECURITY_AUTO_BLOCK_DURATION_SECONDS,
             "routers_admin.SECURITY_AUTO_BLOCK_MAX_PER_INTERVAL": admin_router_module.SECURITY_AUTO_BLOCK_MAX_PER_INTERVAL,
+            "routers_admin.SECURITY_BLOCK_PROTECTED_IPS_ITEMS": admin_router_module.SECURITY_BLOCK_PROTECTED_IPS_ITEMS,
             "routers_nodes.NODE_TASK_MAX_PENDING_PER_NODE": nodes_router_module.NODE_TASK_MAX_PENDING_PER_NODE,
         }
 
@@ -55,6 +56,7 @@ class ControllerSmokeTestCase(unittest.TestCase):
         admin_router_module.SECURITY_AUTO_BLOCK_THRESHOLD = 30
         admin_router_module.SECURITY_AUTO_BLOCK_DURATION_SECONDS = 3600
         admin_router_module.SECURITY_AUTO_BLOCK_MAX_PER_INTERVAL = 5
+        admin_router_module.SECURITY_BLOCK_PROTECTED_IPS_ITEMS = []
         nodes_router_module.NODE_TASK_MAX_PENDING_PER_NODE = 2
 
         db_module.init_db()
@@ -154,6 +156,9 @@ class ControllerSmokeTestCase(unittest.TestCase):
         admin_router_module.SECURITY_AUTO_BLOCK_MAX_PER_INTERVAL = self._old_values[
             "routers_admin.SECURITY_AUTO_BLOCK_MAX_PER_INTERVAL"
         ]
+        admin_router_module.SECURITY_BLOCK_PROTECTED_IPS_ITEMS = self._old_values[
+            "routers_admin.SECURITY_BLOCK_PROTECTED_IPS_ITEMS"
+        ]
         nodes_router_module.NODE_TASK_MAX_PENDING_PER_NODE = self._old_values[
             "routers_nodes.NODE_TASK_MAX_PENDING_PER_NODE"
         ]
@@ -197,6 +202,8 @@ class ControllerSmokeTestCase(unittest.TestCase):
             self.assertIn("security_auto_block_threshold", admin_sec.json())
             self.assertIn("security_auto_block_duration_seconds", admin_sec.json())
             self.assertIn("security_auto_block_max_per_interval", admin_sec.json())
+            self.assertIn("security_block_protected_ips", admin_sec.json())
+            self.assertIn("security_block_protected_ips_count", admin_sec.json())
 
             overview_resp = client.get("/admin/overview", headers=self._auth_header())
             self.assertEqual(200, overview_resp.status_code)
@@ -315,6 +322,20 @@ class ControllerSmokeTestCase(unittest.TestCase):
             block_data = block_resp.json()
             self.assertTrue(bool(block_data.get("ok")))
             self.assertEqual("198.51.100.10", str(block_data.get("source_ip")))
+
+            admin_router_module.SECURITY_BLOCK_PROTECTED_IPS_ITEMS = ["198.51.100.99", "203.0.113.0/24"]
+            protected_block_resp = client.post(
+                "/admin/security/block_ip",
+                headers=self._auth_header(),
+                json={"source_ip": "198.51.100.99", "duration_seconds": 3600, "reason": "protected"},
+            )
+            self.assertEqual(400, protected_block_resp.status_code)
+            protected_cidr_resp = client.post(
+                "/admin/security/block_ip",
+                headers=self._auth_header(),
+                json={"source_ip": "203.0.113.5", "duration_seconds": 3600, "reason": "protected"},
+            )
+            self.assertEqual(400, protected_cidr_resp.status_code)
 
             list_resp = client.get("/admin/security/blocked_ips", headers=self._auth_header())
             self.assertEqual(200, list_resp.status_code)

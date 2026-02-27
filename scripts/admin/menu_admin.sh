@@ -447,6 +447,7 @@ show_config_guide() {
   echo "配置项用途说明："
   echo "  - CONTROLLER_PORT（controller 对外监听端口；节点 agent 需要访问）"
   echo "  - CONTROLLER_PORT_WHITELIST（可选；限制可访问 controller 端口的来源 IP/CIDR）"
+  echo "  - SECURITY_BLOCK_PROTECTED_IPS（可选；封禁保护白名单 IP/CIDR）"
   echo "  - CONTROLLER_PUBLIC_URL（可选，给节点/外部访问的完整 URL）"
   echo "  - ENABLE_HTTPS（是否启用 Caddy 自动申请/续期证书）"
   echo "  - HTTPS_DOMAIN（管理端证书域名，如 panel.example.com）"
