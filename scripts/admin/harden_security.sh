@@ -97,6 +97,59 @@ normalize_whitelist_csv() {
   echo "$result"
 }
 
+detect_current_ssh_client_ip() {
+  local ip
+  ip="${SSH_CLIENT:-}"
+  ip="${ip%% *}"
+  if [[ -z "$ip" ]]; then
+    ip="${SSH_CONNECTION:-}"
+    ip="${ip%% *}"
+  fi
+  if [[ -z "$ip" ]]; then
+    ip="$(who -u am i 2>/dev/null | awk '{print $NF}' | tr -d '()' || true)"
+  fi
+  echo "$ip"
+}
+
+csv_contains_item() {
+  local csv="$1"
+  local target="$2"
+  local normalized_target
+  normalized_target="$(echo "$target" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+  [[ -z "$normalized_target" ]] && return 1
+  IFS=',' read -r -a items <<<"$csv"
+  local item
+  for item in "${items[@]}"; do
+    item="$(echo "$item" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    if [[ "$item" == "$normalized_target" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+append_csv_item() {
+  local csv="$1"
+  local item="$2"
+  local normalized_csv
+  local normalized_item
+  normalized_csv="$(normalize_whitelist_csv "$csv")"
+  normalized_item="$(echo "$item" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+  if [[ -z "$normalized_item" ]]; then
+    echo "$normalized_csv"
+    return
+  fi
+  if csv_contains_item "$normalized_csv" "$normalized_item"; then
+    echo "$normalized_csv"
+    return
+  fi
+  if [[ -z "$normalized_csv" ]]; then
+    echo "$normalized_item"
+  else
+    echo "${normalized_csv},${normalized_item}"
+  fi
+}
+
 first_auth_token() {
   local raw="${1:-}"
   raw="${raw//$'\n'/}"
@@ -266,16 +319,22 @@ main() {
   local enable_https
   local auth_token_raw
   local whitelist_current
+  local protect_csv_current
+  local current_client_ip
   controller_port="$(get_env_value CONTROLLER_PORT)"
   controller_port="${controller_port:-8080}"
   enable_https="$(get_env_value ENABLE_HTTPS)"
   enable_https="${enable_https:-0}"
   auth_token_raw="$(get_env_value AUTH_TOKEN)"
   whitelist_current="$(get_env_value CONTROLLER_PORT_WHITELIST)"
+  protect_csv_current="$(get_env_value SECURITY_BLOCK_PROTECTED_IPS)"
+  current_client_ip="$(detect_current_ssh_client_ip)"
 
   msg "开始执行管理面安全加固向导。"
   echo "当前端口: ${controller_port}"
   echo "当前白名单: ${whitelist_current:-（空）}"
+  echo "封禁保护白名单: ${protect_csv_current:-（空）}"
+  echo "当前 SSH 来源 IP: ${current_client_ip:-未知}"
   echo ""
 
   local rotate_token="Y"
@@ -310,6 +369,15 @@ main() {
       read -r -p "请输入允许访问 ${controller_port} 的 IP/CIDR（逗号分隔） [${whitelist_current}]: " whitelist_input
       whitelist_input="${whitelist_input:-$whitelist_current}"
       whitelist_final="$(normalize_whitelist_csv "$whitelist_input")"
+      if [[ -n "$current_client_ip" ]] && ! csv_contains_item "$whitelist_final" "$current_client_ip"; then
+        warn "当前 SSH 来源 IP(${current_client_ip}) 不在 controller 白名单中。"
+        read -r -p "是否自动追加当前来源 IP 到白名单？[Y/n]: " answer
+        answer="${answer:-Y}"
+        if [[ "$answer" =~ ^[Yy]$ ]]; then
+          whitelist_final="$(append_csv_item "$whitelist_final" "$current_client_ip")"
+          msg "已追加当前来源 IP 到白名单。"
+        fi
+      fi
       set_env_value "CONTROLLER_PORT_WHITELIST" "$whitelist_final"
       ;;
     2)
@@ -331,6 +399,14 @@ main() {
   esac
 
   apply_ufw_rules "$controller_port" "$mode" "$whitelist_final" "$enable_https"
+
+  if [[ -n "$current_client_ip" ]]; then
+    if ! csv_contains_item "$protect_csv_current" "$current_client_ip"; then
+      protect_csv_current="$(append_csv_item "$protect_csv_current" "$current_client_ip")"
+      set_env_value "SECURITY_BLOCK_PROTECTED_IPS" "$protect_csv_current"
+      msg "已将当前 SSH 来源 IP(${current_client_ip})加入封禁保护白名单。"
+    fi
+  fi
 
   systemctl restart sb-controller
   systemctl restart sb-bot
