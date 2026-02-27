@@ -20,6 +20,25 @@ def ensure_user_exists(user_code: str) -> None:
         raise HTTPException(status_code=404, detail="User not found")
 
 
+def ensure_user_subscription_available(user_code: str) -> None:
+    now_ts = int(time.time())
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT user_code, status, expire_at FROM users WHERE user_code = ?",
+            (user_code,),
+        ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    status_value = str(row["status"] or "").strip().lower()
+    if status_value != "active":
+        raise HTTPException(status_code=403, detail="user is disabled")
+
+    expire_at = int(row["expire_at"] or 0)
+    if expire_at > 0 and expire_at <= now_ts:
+        raise HTTPException(status_code=403, detail="user expired")
+
+
 def build_sub_signature(user_code: str, expire_at: int, sign_key: str) -> str:
     if not sign_key:
         return ""
@@ -38,7 +57,7 @@ def verify_sub_access(
     exp: str = "",
     sig: str = "",
 ) -> None:
-    ensure_user_exists(user_code)
+    ensure_user_subscription_available(user_code)
     if not sign_key:
         return
 

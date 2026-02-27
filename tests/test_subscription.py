@@ -85,6 +85,27 @@ class SubscriptionTestCase(unittest.TestCase):
         self.assertIn("/sub/links/u1001", result["links_url"])
         self.assertNotIn("?exp=", result["links_url"])
 
+    def test_verify_sub_access_rejects_disabled_user(self) -> None:
+        with db.get_connection() as conn:
+            conn.execute("UPDATE users SET status = 'disabled' WHERE user_code = ?", ("u1001",))
+            conn.commit()
+
+        with self.assertRaises(HTTPException) as ctx:
+            verify_sub_access("u1001", sign_key="", require_signature=False, exp="", sig="")
+        self.assertEqual(403, ctx.exception.status_code)
+
+    def test_verify_sub_access_rejects_expired_user(self) -> None:
+        with db.get_connection() as conn:
+            conn.execute(
+                "UPDATE users SET status = 'active', expire_at = ? WHERE user_code = ?",
+                (int(time.time()) - 1, "u1001"),
+            )
+            conn.commit()
+
+        with self.assertRaises(HTTPException) as ctx:
+            verify_sub_access("u1001", sign_key="", require_signature=False, exp="", sig="")
+        self.assertEqual(403, ctx.exception.status_code)
+
 
 if __name__ == "__main__":
     unittest.main()
