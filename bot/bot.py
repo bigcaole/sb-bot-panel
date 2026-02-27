@@ -3112,16 +3112,23 @@ async def run_admin_security_events_action(query, include_local: bool) -> None:
     sample_text = "-"
     auto_block_text = "-"
     protected_ip_text = "-"
+    blocked_ip_count_text = "-"
+    token_rotation_text = "-"
     if status_error:
         token_count_text = "读取失败"
         auth_enabled_text = "读取失败"
         sample_text = "读取失败"
         auto_block_text = "读取失败"
         protected_ip_text = "读取失败"
+        blocked_ip_count_text = "读取失败"
+        token_rotation_text = "读取失败"
     elif isinstance(status_result, dict):
         auth_enabled = bool(status_result.get("auth_enabled"))
         auth_enabled_text = "已启用" if auth_enabled else "未启用"
-        token_count_text = str(int(status_result.get("auth_token_count", 0) or 0))
+        token_count_value = int(status_result.get("auth_token_count", 0) or 0)
+        token_count_text = str(token_count_value)
+        token_rotation_text = "是" if token_count_value > 1 else "否"
+        blocked_ip_count_text = str(int(status_result.get("blocked_ip_count", 0) or 0))
         sample_seconds = int(status_result.get("unauthorized_audit_sample_seconds", 0) or 0)
         sample_enabled = bool(status_result.get("unauthorized_audit_sampling_enabled"))
         if sample_enabled and sample_seconds > 0:
@@ -3184,9 +3191,11 @@ async def run_admin_security_events_action(query, include_local: bool) -> None:
         "统计模式：{0}".format("包含本机来源" if include_local_effective else "过滤本机测试来源"),
         f"鉴权状态：{auth_enabled_text}",
         f"AUTH_TOKEN 数量：{token_count_text}",
+        f"多token过渡：{token_rotation_text}",
         f"未授权审计采样：{sample_text}",
         f"自动封禁策略：{auto_block_text}",
         f"封禁保护白名单：{protected_ip_text}",
+        f"当前封禁IP：{blocked_ip_count_text}",
         f"访问收敛：{access_text}",
         "",
         "来源 TOP5：",
