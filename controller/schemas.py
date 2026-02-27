@@ -44,6 +44,7 @@ class CreateNodeTaskRequest(BaseModel):
     task_type: str = Field(min_length=1)
     payload: Optional[Dict[str, Any]] = None
     max_attempts: Optional[int] = Field(default=None, ge=1, le=3)
+    force_new: bool = False
 
 
 class ReportNodeTaskRequest(BaseModel):

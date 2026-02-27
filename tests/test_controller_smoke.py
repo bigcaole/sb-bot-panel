@@ -206,6 +206,38 @@ class ControllerSmokeTestCase(unittest.TestCase):
             self.assertTrue(bool(verify_payload.get("snapshot_valid")))
             self.assertTrue(bool(verify_payload.get("live_match")))
 
+    def test_node_task_deduplicate_smoke(self) -> None:
+        with TestClient(app_module.app) as client:
+            first_resp = client.post(
+                "/nodes/JP1/tasks/create",
+                headers=self._auth_header(),
+                json={"task_type": "status_agent"},
+            )
+            self.assertEqual(200, first_resp.status_code)
+            first_task = first_resp.json()
+            self.assertFalse(bool(first_task.get("deduplicated")))
+            first_id = int(first_task["id"])
+
+            second_resp = client.post(
+                "/nodes/JP1/tasks/create",
+                headers=self._auth_header(),
+                json={"task_type": "status_agent"},
+            )
+            self.assertEqual(200, second_resp.status_code)
+            second_task = second_resp.json()
+            self.assertTrue(bool(second_task.get("deduplicated")))
+            self.assertEqual(first_id, int(second_task["id"]))
+
+            force_resp = client.post(
+                "/nodes/JP1/tasks/create",
+                headers=self._auth_header(),
+                json={"task_type": "status_agent", "force_new": True},
+            )
+            self.assertEqual(200, force_resp.status_code)
+            force_task = force_resp.json()
+            self.assertFalse(bool(force_task.get("deduplicated")))
+            self.assertNotEqual(first_id, int(force_task["id"]))
+
 
 if __name__ == "__main__":
     unittest.main()

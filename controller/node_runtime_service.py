@@ -32,6 +32,7 @@ def create_node_task_service(
     payload_obj = validate_node_task_payload(task_type, raw_payload_obj)
     payload_json = json.dumps(payload_obj, ensure_ascii=False)
     validate_node_task_payload_size(payload_json)
+    force_new = bool(payload.force_new)
     max_attempts = int(payload.max_attempts or 1)
     if max_attempts < 1:
         max_attempts = 1
@@ -52,6 +53,50 @@ def create_node_task_service(
         ).fetchone()
         if node_row is None:
             raise HTTPException(status_code=404, detail="Node not found")
+
+        if not force_new:
+            existing_row = conn.execute(
+                """
+                SELECT
+                    id,
+                    node_code,
+                    task_type,
+                    payload_json,
+                    status,
+                    attempts,
+                    max_attempts,
+                    created_at,
+                    updated_at,
+                    result_text
+                FROM node_tasks
+                WHERE node_code = ?
+                  AND task_type = ?
+                  AND payload_json = ?
+                  AND status IN ('pending', 'running')
+                ORDER BY id ASC
+                LIMIT 1
+                """,
+                (node_code, task_type, payload_json),
+            ).fetchone()
+            if existing_row is not None:
+                task_data = build_task_row_dict(existing_row)
+                write_audit_log(
+                    conn,
+                    action="node.task.deduplicated",
+                    resource_type="node_task",
+                    resource_id=str(task_data.get("id", "")),
+                    detail={
+                        "node_code": node_code,
+                        "task_type": task_type,
+                        "force_new": False,
+                    },
+                    actor=get_request_actor(request),
+                    source_ip=get_source_ip_for_audit(request),
+                    created_at=now_ts,
+                )
+                conn.commit()
+                task_data["deduplicated"] = True
+                return task_data
 
         cursor = conn.execute(
             """
@@ -109,7 +154,9 @@ def create_node_task_service(
         ).fetchone()
     if created_row is None:
         raise HTTPException(status_code=500, detail="create task failed")
-    return build_task_row_dict(created_row)
+    created_data = build_task_row_dict(created_row)
+    created_data["deduplicated"] = False
+    return created_data
 
 
 def list_node_tasks_service(
