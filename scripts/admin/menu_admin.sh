@@ -130,6 +130,14 @@ ufw_allows_ssh_for_ip() {
   '
 }
 
+ufw_has_allow_for_port() {
+  local ssh_port="$1"
+  if ! command -v ufw >/dev/null 2>&1; then
+    return 1
+  fi
+  ufw status 2>/dev/null | grep -E "^ *${ssh_port}(/tcp)?[[:space:]]+ALLOW" >/dev/null 2>&1
+}
+
 get_fail2ban_ban_count_24h() {
   if ! command -v journalctl >/dev/null 2>&1; then
     echo "-1"
@@ -167,6 +175,37 @@ cleanup_ufw_duplicate_ssh_rules() {
       delete_nums+=("$num")
     else
       seen_rules["$normalized"]=1
+    fi
+  done < <(ufw status numbered 2>/dev/null || true)
+
+  if (( ${#delete_nums[@]} > 0 )); then
+    local sorted_num
+    while IFS= read -r sorted_num; do
+      [[ -z "$sorted_num" ]] && continue
+      ufw --force delete "$sorted_num" >/dev/null 2>&1 || true
+      removed_count=$((removed_count + 1))
+    done < <(printf '%s\n' "${delete_nums[@]}" | sort -rn)
+  fi
+  echo "$removed_count"
+}
+
+remove_ufw_allow_rules_for_port() {
+  local ssh_port="$1"
+  local removed_count=0
+  if ! command -v ufw >/dev/null 2>&1; then
+    echo "0"
+    return
+  fi
+  local -a delete_nums=()
+  local line num rule
+  while IFS= read -r line; do
+    num="$(echo "$line" | sed -n 's/^\[ *\([0-9][0-9]*\)\].*/\1/p')"
+    rule="$(echo "$line" | sed -n 's/^\[ *[0-9][0-9]*\] *//p')"
+    if [[ -z "$num" || -z "$rule" ]]; then
+      continue
+    fi
+    if echo "$rule" | grep -E "^${ssh_port}(/tcp)?[[:space:]]+ALLOW" >/dev/null 2>&1; then
+      delete_nums+=("$num")
     fi
   done < <(ufw status numbered 2>/dev/null || true)
 
@@ -320,6 +359,10 @@ show_admin_ssh_security_status() {
       risk_score=$((risk_score + 2))
       warn "当前来源 IP(${client_ip}) 对 SSH 端口放行状态：不明确允许。"
     fi
+    if [[ "$ssh_port" != "22" ]] && ufw_has_allow_for_port "22"; then
+      risk_score=$((risk_score + 1))
+      warn "检测到 22/tcp 仍放行，当前 SSH 端口为 ${ssh_port}，建议清理遗留 22 规则。"
+    fi
   else
     risk_score=$((risk_score + 1))
     warn "系统未安装 UFW。"
@@ -345,7 +388,7 @@ show_admin_ssh_security_status() {
 }
 
 run_admin_ssh_security_quick_fix() {
-  local ssh_port client_ip ufw_state removed_ufw_rules
+  local ssh_port client_ip ufw_state removed_ufw_rules removed_legacy_22
   ssh_port="$(detect_sshd_port)"
   client_ip="$(detect_current_ssh_client_ip)"
   msg "开始执行管理服务器 SSH 半自动安全修复..."
@@ -359,6 +402,16 @@ run_admin_ssh_security_quick_fix() {
     removed_ufw_rules="$(cleanup_ufw_duplicate_ssh_rules "$ssh_port")"
     if [[ "$removed_ufw_rules" =~ ^[0-9]+$ ]] && (( removed_ufw_rules > 0 )); then
       msg "已清理重复 SSH 防火墙规则：${removed_ufw_rules} 条。"
+    fi
+    if [[ "$ssh_port" != "22" ]] && ufw_has_allow_for_port "22"; then
+      if confirm_action "检测到遗留 22/tcp 放行规则，是否清理？" "N"; then
+        removed_legacy_22="$(remove_ufw_allow_rules_for_port "22")"
+        if [[ "$removed_legacy_22" =~ ^[0-9]+$ ]] && (( removed_legacy_22 > 0 )); then
+          msg "已清理遗留 22 端口放行规则：${removed_legacy_22} 条。"
+        else
+          warn "未清理到 22 端口规则（可能不存在或删除失败）。"
+        fi
+      fi
     fi
     ufw_state="$(ufw status 2>/dev/null | head -n1 || true)"
     if [[ "$ufw_state" == *"inactive"* ]]; then
