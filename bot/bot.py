@@ -3487,12 +3487,16 @@ async def run_admin_security_auto_block_action(query, include_local: bool) -> No
     window_seconds = int(result.get("window_seconds", 0) or 0)
     threshold = int(result.get("threshold", 0) or 0)
     duration_seconds = int(result.get("duration_seconds", 0) or 0)
+    max_per_interval = int(result.get("max_per_interval", 0) or 0)
     blocked_items = result.get("blocked_items", [])
     failed_items = result.get("failed_items", [])
+    skipped_items = result.get("skipped_items", [])
     if not isinstance(blocked_items, list):
         blocked_items = []
     if not isinstance(failed_items, list):
         failed_items = []
+    if not isinstance(skipped_items, list):
+        skipped_items = []
 
     if duration_seconds == 0:
         duration_text = "永久"
@@ -3508,10 +3512,41 @@ async def run_admin_security_auto_block_action(query, include_local: bool) -> No
         "",
         f"策略开关：{'已启用' if enabled else '未启用'}",
         f"策略参数：窗口 {window_seconds}s / 阈值 {threshold} / 封禁 {duration_text}",
+        f"每轮最多封禁：{max_per_interval}",
         f"本次新增封禁：{blocked_count}",
     ]
     if blocked_items:
         lines.append("新增封禁IP：{0}".format(", ".join(str(x) for x in blocked_items[:8])))
+    if skipped_items:
+        skip_reason_counter: Dict[str, int] = {}
+        for raw_item in skipped_items:
+            raw_text = str(raw_item)
+            reason_key = "other"
+            if ":" in raw_text:
+                reason_key = raw_text.rsplit(":", 1)[-1].strip().lower() or "other"
+            skip_reason_counter[reason_key] = skip_reason_counter.get(reason_key, 0) + 1
+
+        reason_labels = {
+            "protected": "受保护IP",
+            "already_blocked": "已在封禁列表",
+            "non_global": "非公网IP",
+            "invalid": "IP格式无效",
+            "other": "其他原因",
+        }
+        reason_order = ["protected", "already_blocked", "non_global", "invalid", "other"]
+        reason_parts: List[str] = []
+        for reason_key in reason_order:
+            count = skip_reason_counter.get(reason_key, 0)
+            if count > 0:
+                reason_parts.append(
+                    "{0} {1}".format(reason_labels.get(reason_key, reason_key), count)
+                )
+        for reason_key, count in skip_reason_counter.items():
+            if reason_key not in reason_order and count > 0:
+                reason_parts.append("{0} {1}".format(reason_labels.get(reason_key, reason_key), count))
+        if reason_parts:
+            lines.append("跳过统计：{0}".format("，".join(reason_parts)))
+        lines.append("跳过样例：{0}".format(", ".join(str(x) for x in skipped_items[:8])))
     if failed_items:
         lines.append("封禁失败IP：{0}".format(", ".join(str(x) for x in failed_items[:5])))
     if not enabled:
