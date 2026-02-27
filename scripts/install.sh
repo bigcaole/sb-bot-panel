@@ -81,6 +81,13 @@ exec bash "${ROOT_DIR}/scripts/menu.sh" "\$@"
 EOF
   chmod 0755 /usr/local/bin/sb-node
 
+  cat >/usr/local/bin/sb-bot-panel <<EOF
+#!/usr/bin/env bash
+# sb-node-main-shortcut
+exec bash "${ROOT_DIR}/scripts/menu.sh" "\$@"
+EOF
+  chmod 0755 /usr/local/bin/sb-bot-panel
+
   local s_ui_path
   s_ui_path="$(command -v s-ui || true)"
   if [[ -z "$s_ui_path" ]]; then
@@ -733,6 +740,7 @@ show_summary() {
   echo "  1) 在控制端（bot/controller）确认 node_code=${NODE_CODE} 已创建并启用"
   echo "  2) 在面板绑定用户到该节点"
   echo "  3) 使用脚本菜单管理：bash ${ROOT_DIR}/scripts/menu.sh"
+  echo "  4) 快捷命令：sb-bot-panel"
   echo "----------------------------------------"
 }
 
