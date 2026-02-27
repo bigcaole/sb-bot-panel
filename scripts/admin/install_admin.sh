@@ -1245,6 +1245,50 @@ extract_primary_auth_token() {
   echo "$primary"
 }
 
+pick_working_auth_token() {
+  local raw="$1"
+  local trimmed=""
+  local code=""
+  local -a candidates=()
+  local -a raw_items=()
+  local item
+
+  raw="${raw//$'\n'/}"
+  raw="${raw//$'\r'/}"
+  if [[ -z "$raw" ]]; then
+    echo ""
+    return 0
+  fi
+
+  IFS=',' read -r -a raw_items <<<"$raw"
+  for item in "${raw_items[@]}"; do
+    trimmed="$(echo "$item" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    [[ -z "$trimmed" ]] && continue
+    candidates+=("$trimmed")
+  done
+  if (( ${#candidates[@]} == 0 )); then
+    echo ""
+    return 0
+  fi
+  if (( ${#candidates[@]} == 1 )); then
+    echo "${candidates[0]}"
+    return 0
+  fi
+
+  for item in "${candidates[@]}"; do
+    code="$(curl -sS -o /dev/null -w "%{http_code}" --max-time 3 \
+      -H "Authorization: Bearer ${item}" \
+      "http://127.0.0.1:${CONTROLLER_PORT}/admin/security/status" || true)"
+    if [[ "$code" == "200" ]]; then
+      echo "$item"
+      return 0
+    fi
+  done
+
+  echo "${candidates[0]}"
+  return 1
+}
+
 sync_node_agent_defaults_after_config() {
   local primary_token
   local response
@@ -1261,7 +1305,12 @@ sync_node_agent_defaults_after_config() {
     return
   fi
 
-  primary_token="$(extract_primary_auth_token)"
+  primary_token="$(pick_working_auth_token "${AUTH_TOKEN:-}")" || {
+    warn "AUTH_TOKEN 多值模式下未探测到可用 token，回退使用第一个 token。"
+  }
+  if [[ -z "$primary_token" ]]; then
+    primary_token="$(extract_primary_auth_token)"
+  fi
   if [[ -n "$primary_token" ]]; then
     response="$(
       curl -sS --max-time 15 -X POST "http://127.0.0.1:${CONTROLLER_PORT}/admin/nodes/sync_agent_defaults" \
