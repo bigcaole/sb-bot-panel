@@ -15,6 +15,8 @@ CERT_SERVICE="sb-cert-check.service"
 CONFIG_PATH="/etc/sb-agent/config.json"
 CERTMAGIC_DIR="/var/lib/sing-box/certmagic"
 BACKUP_DIR="/var/backups/sb-agent"
+SSH_HARDEN_FILE="/etc/ssh/sshd_config.d/99-sb-agent-hardening.conf"
+FAIL2BAN_JAIL_FILE="/etc/fail2ban/jail.d/sb-agent-sshd.local"
 
 msg() { echo -e "\033[1;32m[信息]\033[0m $*"; }
 warn() { echo -e "\033[1;33m[警告]\033[0m $*"; }
@@ -30,6 +32,165 @@ require_root() {
     err "请使用 root 权限运行菜单，例如：sudo bash scripts/menu.sh"
     exit 1
   fi
+}
+
+detect_ssh_service() {
+  if systemctl list-unit-files 2>/dev/null | grep -q '^sshd.service'; then
+    echo "sshd"
+    return
+  fi
+  echo "ssh"
+}
+
+has_authorized_keys_for_user() {
+  local user_name="${1:-root}"
+  local user_home auth_file
+  user_home="$(getent passwd "$user_name" | awk -F: '{print $6}' || true)"
+  if [[ -z "$user_home" ]]; then
+    return 1
+  fi
+  auth_file="${user_home}/.ssh/authorized_keys"
+  [[ -s "$auth_file" ]]
+}
+
+install_or_enable_fail2ban() {
+  msg "安装并启用 fail2ban（SSH 防爆破）..."
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update -y
+  apt-get install -y fail2ban
+
+  mkdir -p /etc/fail2ban/jail.d
+  cat >"$FAIL2BAN_JAIL_FILE" <<'EOF'
+[sshd]
+enabled = true
+mode = normal
+port = ssh
+filter = sshd
+logpath = %(sshd_log)s
+backend = systemd
+maxretry = 5
+findtime = 10m
+bantime = 1h
+EOF
+
+  systemctl enable --now fail2ban >/dev/null
+  msg "fail2ban 已启用。"
+}
+
+show_fail2ban_status() {
+  systemctl status fail2ban --no-pager || true
+  echo ""
+  if command -v fail2ban-client >/dev/null 2>&1; then
+    msg "fail2ban 总状态："
+    fail2ban-client status || true
+    echo ""
+    msg "sshd jail 状态："
+    fail2ban-client status sshd || true
+  else
+    warn "未检测到 fail2ban-client。"
+  fi
+}
+
+unban_fail2ban_ip() {
+  if ! command -v fail2ban-client >/dev/null 2>&1; then
+    err "未检测到 fail2ban-client，请先安装 fail2ban。"
+    return
+  fi
+  local ip
+  read -r -p "请输入要解封的 IP: " ip
+  ip="$(echo "$ip" | tr -d '[:space:]')"
+  if [[ -z "$ip" ]]; then
+    warn "IP 不能为空。"
+    return
+  fi
+  fail2ban-client set sshd unbanip "$ip"
+  msg "已尝试从 sshd jail 解封: $ip"
+}
+
+generate_ssh_keypair() {
+  local user_name user_home key_path passphrase comment overwrite
+  read -r -p "请输入要生成密钥的用户名 [root]: " user_name
+  user_name="${user_name:-root}"
+  user_home="$(getent passwd "$user_name" | awk -F: '{print $6}' || true)"
+  if [[ -z "$user_home" ]]; then
+    err "用户不存在: $user_name"
+    return
+  fi
+  key_path="${user_home}/.ssh/id_ed25519"
+  read -r -p "请输入私钥保存路径 [${key_path}]: " key_path
+  key_path="${key_path:-${user_home}/.ssh/id_ed25519}"
+
+  if [[ -f "$key_path" ]]; then
+    read -r -p "密钥已存在，是否覆盖？[y/N]: " overwrite
+    overwrite="${overwrite:-N}"
+    if [[ ! "$overwrite" =~ ^[Yy]$ ]]; then
+      warn "已取消生成密钥。"
+      return
+    fi
+  fi
+
+  read -r -p "请输入密钥口令（留空=无口令）: " passphrase
+  comment="${user_name}@$(hostname)-sb-agent"
+  mkdir -p "$(dirname "$key_path")"
+  chmod 700 "$(dirname "$key_path")"
+  ssh-keygen -t ed25519 -a 100 -f "$key_path" -N "$passphrase" -C "$comment"
+  chown -R "$user_name":"$user_name" "$(dirname "$key_path")"
+  chmod 600 "$key_path"
+  chmod 644 "${key_path}.pub"
+
+  msg "公钥如下（请加入服务器 ~/.ssh/authorized_keys）："
+  cat "${key_path}.pub"
+}
+
+enable_ssh_key_only_login() {
+  local user_name ssh_service
+  read -r -p "请输入用于校验 authorized_keys 的用户名 [root]: " user_name
+  user_name="${user_name:-root}"
+
+  if ! has_authorized_keys_for_user "$user_name"; then
+    warn "用户 ${user_name} 没有可用 authorized_keys，拒绝启用（避免锁死 SSH）。"
+    return
+  fi
+
+  mkdir -p /etc/ssh/sshd_config.d
+  cat >"$SSH_HARDEN_FILE" <<'EOF'
+# Managed by sb-agent menu
+PubkeyAuthentication yes
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+ChallengeResponseAuthentication no
+UsePAM yes
+PermitRootLogin prohibit-password
+EOF
+
+  if command -v sshd >/dev/null 2>&1 && ! sshd -t; then
+    rm -f "$SSH_HARDEN_FILE"
+    err "sshd 配置校验失败，已回滚。"
+    return
+  fi
+
+  ssh_service="$(detect_ssh_service)"
+  systemctl restart "$ssh_service" >/dev/null 2>&1 || true
+  msg "SSH 已切换为仅密钥登录（密码登录已禁用）。"
+}
+
+disable_ssh_key_only_login() {
+  local ssh_service
+  read -r -p "确认恢复 SSH 密码登录（应急用途）？[y/N]: " answer
+  answer="${answer:-N}"
+  if [[ ! "$answer" =~ ^[Yy]$ ]]; then
+    warn "已取消恢复密码登录。"
+    return
+  fi
+
+  rm -f "$SSH_HARDEN_FILE"
+  if command -v sshd >/dev/null 2>&1 && ! sshd -t; then
+    err "sshd 配置校验失败，请手动检查 /etc/ssh/sshd_config*"
+    return
+  fi
+  ssh_service="$(detect_ssh_service)"
+  systemctl restart "$ssh_service" >/dev/null 2>&1 || true
+  msg "已移除仅密钥策略，SSH 密码登录恢复。"
 }
 
 run_install() {
@@ -185,6 +346,12 @@ show_menu() {
   echo "10) 证书状态检查"
   echo "11) 触发证书重新申请/刷新（先备份）"
   echo "12) 卸载"
+  echo "13) 安装/启用 fail2ban（SSH 防爆破）"
+  echo "14) 查看 fail2ban 状态与封禁列表"
+  echo "15) 解封 fail2ban 封禁 IP"
+  echo "16) 生成 SSH 密钥（ed25519）"
+  echo "17) 启用 SSH 仅密钥登录（禁用密码）"
+  echo "18) 恢复 SSH 密码登录（应急）"
   echo " 0) 退出"
   echo "========================================"
 }
@@ -193,7 +360,7 @@ main() {
   require_root
   while true; do
     show_menu
-    read -r -p "请选择操作 [0-12]: " choice
+    read -r -p "请选择操作 [0-18]: " choice
     case "$choice" in
       1)
         run_install
@@ -246,12 +413,36 @@ main() {
         uninstall_all
         pause
         ;;
+      13)
+        install_or_enable_fail2ban
+        pause
+        ;;
+      14)
+        show_fail2ban_status
+        pause
+        ;;
+      15)
+        unban_fail2ban_ip
+        pause
+        ;;
+      16)
+        generate_ssh_keypair
+        pause
+        ;;
+      17)
+        enable_ssh_key_only_login
+        pause
+        ;;
+      18)
+        disable_ssh_key_only_login
+        pause
+        ;;
       0)
         msg "已退出。"
         exit 0
         ;;
       *)
-        warn "无效选项，请输入 0-12。"
+        warn "无效选项，请输入 0-18。"
         pause
         ;;
     esac

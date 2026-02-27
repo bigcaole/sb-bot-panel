@@ -29,6 +29,8 @@ SINGBOX_LOG_DIR="/var/log/sing-box"
 SINGBOX_CONFIG="/etc/sing-box/config.json"
 CERTMAGIC_DIR="/var/lib/sing-box/certmagic"
 BACKUP_DIR="/var/backups/sb-agent"
+SSH_HARDEN_FILE="/etc/ssh/sshd_config.d/99-sb-agent-hardening.conf"
+FAIL2BAN_JAIL_FILE="/etc/fail2ban/jail.d/sb-agent-sshd.local"
 
 SB_AGENT_SERVICE="/etc/systemd/system/sb-agent.service"
 SB_CERT_CHECK_SERVICE="/etc/systemd/system/sb-cert-check.service"
@@ -158,8 +160,103 @@ install_base_packages() {
     python3-pip \
     ca-certificates \
     openssl \
+    fail2ban \
     dnsutils \
     bind9-host
+}
+
+detect_ssh_service() {
+  if systemctl list-unit-files 2>/dev/null | grep -q '^sshd.service'; then
+    echo "sshd"
+    return
+  fi
+  echo "ssh"
+}
+
+has_authorized_keys_for_user() {
+  local user_name="${1:-root}"
+  local user_home auth_file
+  user_home="$(getent passwd "$user_name" | awk -F: '{print $6}' || true)"
+  if [[ -z "$user_home" ]]; then
+    return 1
+  fi
+  auth_file="${user_home}/.ssh/authorized_keys"
+  [[ -s "$auth_file" ]]
+}
+
+configure_ssh_key_only_login() {
+  local user_name="${1:-root}"
+  local ssh_service
+  ssh_service="$(detect_ssh_service)"
+
+  if ! has_authorized_keys_for_user "$user_name"; then
+    warn "用户 ${user_name} 尚无可用 authorized_keys，跳过启用仅密钥登录，避免锁死 SSH。"
+    return 1
+  fi
+
+  mkdir -p /etc/ssh/sshd_config.d
+  cat >"$SSH_HARDEN_FILE" <<'EOF'
+# Managed by sb-agent install/menu
+PubkeyAuthentication yes
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+ChallengeResponseAuthentication no
+UsePAM yes
+PermitRootLogin prohibit-password
+EOF
+
+  if command -v sshd >/dev/null 2>&1 && ! sshd -t; then
+    rm -f "$SSH_HARDEN_FILE"
+    err "sshd 配置校验失败，已回滚 SSH 加固配置。"
+    return 1
+  fi
+
+  systemctl restart "$ssh_service" >/dev/null 2>&1 || true
+  msg "SSH 已切换为仅密钥登录（已禁用密码登录，用户=${user_name}）。"
+  return 0
+}
+
+install_and_enable_fail2ban() {
+  msg "安装并启用 fail2ban（SSH 防爆破）..."
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update -y >/dev/null 2>&1
+  apt-get install -y fail2ban >/dev/null 2>&1
+
+  mkdir -p /etc/fail2ban/jail.d
+  cat >"$FAIL2BAN_JAIL_FILE" <<'EOF'
+[sshd]
+enabled = true
+mode = normal
+port = ssh
+filter = sshd
+logpath = %(sshd_log)s
+backend = systemd
+maxretry = 5
+findtime = 10m
+bantime = 1h
+EOF
+
+  systemctl enable --now fail2ban >/dev/null
+  msg "fail2ban 已启用（jail=sshd, maxretry=5, bantime=1h）。"
+}
+
+configure_security_interactive() {
+  if ask_yes_no "是否安装并启用 fail2ban（推荐，用于 SSH 防爆破）？" "Y"; then
+    install_and_enable_fail2ban
+  else
+    warn "已跳过 fail2ban 安装。"
+  fi
+
+  if ask_yes_no "是否现在启用 SSH 仅密钥登录（将禁用密码登录）？" "N"; then
+    local ssh_user
+    read -r -p "请输入用于校验公钥的用户名 [root]: " ssh_user
+    ssh_user="${ssh_user:-root}"
+    if ! configure_ssh_key_only_login "$ssh_user"; then
+      warn "SSH 仅密钥登录未生效。请先为 ${ssh_user} 配置公钥后再执行。"
+    fi
+  else
+    warn "已跳过 SSH 仅密钥登录设置。"
+  fi
 }
 
 python_version_ge_311() {
@@ -620,7 +717,19 @@ show_summary() {
   echo "  journalctl -u sb-agent -f"
   echo "  systemctl status sing-box"
   echo "  journalctl -u sing-box -f"
+  echo "  systemctl status fail2ban"
+  echo "  fail2ban-client status sshd"
   echo "  /usr/local/bin/sb-cert-check.sh"
+  if [[ -f "$SSH_HARDEN_FILE" ]]; then
+    echo "SSH 登录策略: 仅密钥（密码登录已禁用）"
+  else
+    echo "SSH 登录策略: 未启用仅密钥（允许密码登录）"
+  fi
+  if systemctl is-active fail2ban >/dev/null 2>&1; then
+    echo "fail2ban 状态: 已启用"
+  else
+    echo "fail2ban 状态: 未启用"
+  fi
   echo ""
   echo "下一步："
   echo "  1) 在控制端（bot/controller）确认 node_code=${NODE_CODE} 已创建并启用"
@@ -658,6 +767,7 @@ main() {
     prompt_config
     check_domain_resolution_interactive
     configure_ufw_rules
+    configure_security_interactive
     write_config_json
   fi
 
