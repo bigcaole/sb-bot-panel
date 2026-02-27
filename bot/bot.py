@@ -1468,15 +1468,34 @@ def format_admin_overview_text(overview: dict) -> str:
         if node_code:
             pending_parts.append(f"{node_code}({pending_count})")
 
+    near_cap_nodes = tasks.get("near_cap_nodes", [])
+    if not isinstance(near_cap_nodes, list):
+        near_cap_nodes = []
+    near_cap_parts = []
+    for item in near_cap_nodes[:5]:
+        if not isinstance(item, dict):
+            continue
+        node_code = str(item.get("node_code", "")).strip()
+        try:
+            pending_count = int(item.get("pending", 0) or 0)
+        except (TypeError, ValueError):
+            pending_count = 0
+        if node_code:
+            near_cap_parts.append(f"{node_code}({pending_count})")
+
     warnings = security.get("warnings", [])
     if not isinstance(warnings, list):
         warnings = []
+    queue_cap_per_node = int(tasks.get("queue_cap_per_node", 0) or 0)
+    near_cap_threshold = int(tasks.get("near_cap_threshold", 0) or 0)
 
     lines = [
         "控制面概览：",
         f"生成时间：{generated_text}",
-        "用户/节点(启用)：{0}/{1}({2})".format(
+        "用户(活跃/禁用)/节点(启用)：{0}({1}/{2})/{3}({4})".format(
             int(totals.get("users", 0) or 0),
+            int(totals.get("active_users", 0) or 0),
+            int(totals.get("disabled_users", 0) or 0),
             int(totals.get("nodes", 0) or 0),
             int(totals.get("enabled_nodes", 0) or 0),
         ),
@@ -1494,6 +1513,10 @@ def format_admin_overview_text(overview: dict) -> str:
             int(tasks.get("failed", 0) or 0),
             int(tasks.get("timeout", 0) or 0),
         ),
+        "队列阈值：单节点上限 {0}，预警阈值 {1}".format(
+            queue_cap_per_node,
+            near_cap_threshold,
+        ),
         "安全告警：{0} 条".format(len(warnings)),
     ]
 
@@ -1501,6 +1524,8 @@ def format_admin_overview_text(overview: dict) -> str:
         lines.append("离线节点（最多 5 个）：{0}".format(", ".join(offline_codes)))
     if pending_parts:
         lines.append("待执行节点（最多 5 个）：{0}".format(", ".join(pending_parts)))
+    if near_cap_parts:
+        lines.append("队列接近上限（最多 5 个）：{0}".format(", ".join(near_cap_parts)))
     if warnings:
         lines.append("告警摘要：")
         for warning in warnings[:3]:

@@ -73,6 +73,12 @@ def build_security_status_payload() -> Dict[str, Union[bool, int, List[str]]]:
 def build_admin_overview_payload(now_ts: int) -> Dict[str, Union[int, Dict, List]]:
     with get_connection() as conn:
         users_total = int(conn.execute("SELECT COUNT(*) AS c FROM users").fetchone()["c"] or 0)
+        users_active = int(
+            conn.execute("SELECT COUNT(*) AS c FROM users WHERE status = 'active'").fetchone()["c"] or 0
+        )
+        users_disabled = int(
+            conn.execute("SELECT COUNT(*) AS c FROM users WHERE status = 'disabled'").fetchone()["c"] or 0
+        )
         nodes_total = int(conn.execute("SELECT COUNT(*) AS c FROM nodes").fetchone()["c"] or 0)
         nodes_enabled = int(
             conn.execute("SELECT COUNT(*) AS c FROM nodes WHERE enabled = 1").fetchone()["c"] or 0
@@ -146,11 +152,23 @@ def build_admin_overview_payload(now_ts: int) -> Dict[str, Union[int, Dict, List
         pending_by_node.append(
             {"node_code": str(row["node_code"] or ""), "pending": int(row["c"] or 0)}
         )
+    queue_cap_per_node = int(NODE_TASK_MAX_PENDING_PER_NODE)
+    near_cap_threshold = max(1, int((queue_cap_per_node * 8 + 9) / 10))
+    near_cap_nodes: List[Dict[str, Union[str, int]]] = []
+    for item in pending_by_node:
+        try:
+            pending_count = int(item.get("pending", 0) or 0)
+        except (TypeError, ValueError):
+            pending_count = 0
+        if pending_count >= near_cap_threshold:
+            near_cap_nodes.append(item)
 
     return {
         "generated_at": now_ts,
         "totals": {
             "users": users_total,
+            "active_users": users_active,
+            "disabled_users": users_disabled,
             "nodes": nodes_total,
             "enabled_nodes": nodes_enabled,
             "bindings": bindings_total,
@@ -169,6 +187,9 @@ def build_admin_overview_payload(now_ts: int) -> Dict[str, Union[int, Dict, List
             "failed": int(task_counts.get("failed", 0)),
             "timeout": int(task_counts.get("timeout", 0)),
             "success": int(task_counts.get("success", 0)),
+            "queue_cap_per_node": queue_cap_per_node,
+            "near_cap_threshold": near_cap_threshold,
+            "near_cap_nodes": near_cap_nodes,
             "pending_by_node": pending_by_node,
         },
         "security": build_security_status_payload(),
