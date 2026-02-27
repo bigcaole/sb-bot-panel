@@ -66,6 +66,17 @@ has_authorized_keys_for_user() {
   [[ -s "$auth_file" ]]
 }
 
+get_authorized_keys_path_for_user() {
+  local user_name="${1:-root}"
+  local user_home
+  user_home="$(getent passwd "$user_name" | awk -F: '{print $6}' || true)"
+  if [[ -z "$user_home" ]]; then
+    echo ""
+    return
+  fi
+  echo "${user_home}/.ssh/authorized_keys"
+}
+
 detect_sshd_port() {
   local port
   port=""
@@ -315,6 +326,9 @@ show_ssh_security_status() {
 
   echo ""
   echo "----- authorized_keys -----"
+  echo "公钥存放路径提示："
+  echo "  - root: /root/.ssh/authorized_keys"
+  echo "  - 普通用户: /home/<用户名>/.ssh/authorized_keys"
   if has_authorized_keys_for_user root; then
     root_has_keys=1
     msg "root 用户已检测到 authorized_keys。"
@@ -595,7 +609,7 @@ cleanup_ufw_duplicate_ssh_rules() {
 }
 
 generate_ssh_keypair() {
-  local user_name user_home key_path passphrase comment overwrite
+  local user_name user_home key_path passphrase comment overwrite auth_file
   read -r -p "请输入要生成密钥的用户名 [root]: " user_name
   user_name="${user_name:-root}"
   user_home="$(getent passwd "$user_name" | awk -F: '{print $6}' || true)"
@@ -625,17 +639,24 @@ generate_ssh_keypair() {
   chmod 600 "$key_path"
   chmod 644 "${key_path}.pub"
 
-  msg "公钥如下（请加入服务器 ~/.ssh/authorized_keys）："
+  auth_file="$(get_authorized_keys_path_for_user "$user_name")"
+  msg "公钥如下（请追加到服务器文件：${auth_file}）："
   cat "${key_path}.pub"
+  echo ""
+  echo "推荐在目标节点服务器执行："
+  echo "  mkdir -p $(dirname "$auth_file") && chmod 700 $(dirname "$auth_file")"
+  echo "  # 将上方公钥追加到 ${auth_file}"
+  echo "  chmod 600 ${auth_file}"
 }
 
 enable_ssh_key_only_login() {
-  local user_name ssh_service
+  local user_name ssh_service auth_file
   read -r -p "请输入用于校验 authorized_keys 的用户名 [root]: " user_name
   user_name="${user_name:-root}"
+  auth_file="$(get_authorized_keys_path_for_user "$user_name")"
 
   if ! has_authorized_keys_for_user "$user_name"; then
-    warn "用户 ${user_name} 没有可用 authorized_keys，拒绝启用（避免锁死 SSH）。"
+    warn "用户 ${user_name} 没有可用 authorized_keys（${auth_file}），拒绝启用（避免锁死 SSH）。"
     return
   fi
   if ! precheck_ssh_lockout_risk; then

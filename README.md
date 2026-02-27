@@ -78,6 +78,10 @@ sudo bash /path/to/sb-bot-panel/scripts/menu.sh
 - 首次安装后，后续更新建议直接用菜单 `19`，不会重复询问端口/域名等参数。
 - 需要改参数时用菜单 `1`。
 - 安全建议：先用菜单 `14` 生成并部署公钥，再用菜单 `15` 做只读安全检查；可先执行菜单 `16` 做半自动修复，最后再执行菜单 `17` 启用仅密钥登录。
+- 若你在本地电脑生成 SSH 密钥，请把公钥上传到节点服务器：
+  - `root` 用户路径：`/root/.ssh/authorized_keys`
+  - 普通用户路径：`/home/<用户名>/.ssh/authorized_keys`
+  - 建议权限：`.ssh` 目录 `700`，`authorized_keys` 文件 `600`
 - 菜单 `15` 会输出 SSH 风险等级（低/中/高）和修复建议清单；菜单 `16` 会自动修复低风险项（fail2ban/UFW），高风险项仍需人工确认。
 - 也可命令行直接执行：
 
@@ -255,6 +259,12 @@ sudo bash scripts/admin/menu_admin.sh
 - 查看 sing-box / sb-agent 日志（通过任务回传）
 - 修改节点参数（写入 `/etc/sb-agent/config.json`，如 `poll_interval`、`tuic_domain`、`tuic_listen_port` 等）
 - 任务生命周期：controller 自动处理超时任务（默认 120 秒）、失败重试（按任务重试次数）与历史清理（默认保留 7 天）
+
+新机上线最短路径（推荐）：
+
+1. 在新节点执行一次安装命令（见“节点一键安装”）
+2. 在 bot 中进入 `节点与线路 -> 节点远程运维`
+3. 后续使用受控任务完成更新/重启/日志查看/参数调整（无需每次手动 SSH）
 
 安全建议：
 

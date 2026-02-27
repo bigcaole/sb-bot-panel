@@ -190,6 +190,17 @@ has_authorized_keys_for_user() {
   [[ -s "$auth_file" ]]
 }
 
+get_authorized_keys_path_for_user() {
+  local user_name="${1:-root}"
+  local user_home
+  user_home="$(getent passwd "$user_name" | awk -F: '{print $6}' || true)"
+  if [[ -z "$user_home" ]]; then
+    echo ""
+    return
+  fi
+  echo "${user_home}/.ssh/authorized_keys"
+}
+
 detect_sshd_port() {
   local port
   port=""
@@ -286,11 +297,12 @@ precheck_ssh_lockout_risk() {
 
 configure_ssh_key_only_login() {
   local user_name="${1:-root}"
-  local ssh_service
+  local ssh_service auth_file
   ssh_service="$(detect_ssh_service)"
+  auth_file="$(get_authorized_keys_path_for_user "$user_name")"
 
   if ! has_authorized_keys_for_user "$user_name"; then
-    warn "用户 ${user_name} 尚无可用 authorized_keys，跳过启用仅密钥登录，避免锁死 SSH。"
+    warn "用户 ${user_name} 尚无可用 authorized_keys（${auth_file}），跳过启用仅密钥登录，避免锁死 SSH。"
     return 1
   fi
   if ! precheck_ssh_lockout_risk; then
@@ -344,6 +356,10 @@ EOF
 }
 
 configure_security_interactive() {
+  echo "SSH 公钥存放路径提示："
+  echo "  - root: /root/.ssh/authorized_keys"
+  echo "  - 普通用户: /home/<用户名>/.ssh/authorized_keys"
+  echo ""
   if ask_yes_no "是否安装并启用 fail2ban（推荐，用于 SSH 防爆破）？" "Y"; then
     install_and_enable_fail2ban
   else
