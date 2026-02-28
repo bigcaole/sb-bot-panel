@@ -5864,9 +5864,17 @@ async def nodes_create_confirm(
     if CONTROLLER_AUTH_TOKEN:
         init_payload["auth_token"] = CONTROLLER_AUTH_TOKEN
     init_payload["poll_interval"] = AGENT_DEFAULT_POLL_INTERVAL
-    normalized_public_url = normalize_simple_url(CONTROLLER_PUBLIC_URL, "https")
-    if normalized_public_url and not is_local_endpoint_url(normalized_public_url):
-        init_payload["controller_url"] = normalized_public_url
+    controller_url_candidates = [
+        normalize_simple_url(CONTROLLER_PUBLIC_URL, "https"),
+        normalize_simple_url(PANEL_BASE_URL, "https"),
+        normalize_simple_url(CONTROLLER_URL, "http"),
+    ]
+    for candidate_url in controller_url_candidates:
+        if candidate_url and not is_local_endpoint_url(candidate_url):
+            init_payload["controller_url"] = candidate_url
+            break
+    init_keys = [str(key) for key in init_payload.keys()]
+    init_keys_text = "/".join(init_keys) if init_keys else "-"
     if init_payload:
         task_result, task_error, _ = await create_node_task(
             created_node_code,
@@ -5882,15 +5890,15 @@ async def nodes_create_confirm(
             task_id = int(task_result.get("id", 0) or 0)
             deduplicated = bool(task_result.get("deduplicated"))
             if deduplicated:
-                auto_config_lines.append("[OK] 初始化配置任务已存在（去重命中）")
+                auto_config_lines.append(
+                    "[OK] 初始化配置任务已存在（去重命中，键：{0}）".format(init_keys_text)
+                )
             elif task_id > 0:
                 auto_config_lines.append(
-                    "[OK] 已下发初始化配置任务 #{0}（auth_token/poll_interval/controller_url）".format(
-                        task_id
-                    )
+                    "[OK] 已下发初始化配置任务 #{0}（键：{1}）".format(task_id, init_keys_text)
                 )
             else:
-                auto_config_lines.append("[OK] 已下发初始化配置任务")
+                auto_config_lines.append("[OK] 已下发初始化配置任务（键：{0}）".format(init_keys_text))
         else:
             auto_config_lines.append("[WARN] 初始化配置任务返回格式异常")
     else:
