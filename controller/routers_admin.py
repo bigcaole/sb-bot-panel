@@ -59,6 +59,7 @@ from controller.settings import (
     AGENT_DEFAULT_POLL_INTERVAL,
     ADMIN_OVERVIEW_CACHE_TTL_SECONDS,
     ADMIN_API_WHITELIST_ITEMS,
+    ADMIN_API_WHITELIST_SOURCE,
     ADMIN_SECURITY_STATUS_CACHE_TTL_SECONDS,
     AUDIT_LOG_CLEANUP_BATCH_SIZE,
     AUDIT_LOG_CLEANUP_INTERVAL_SECONDS,
@@ -594,6 +595,10 @@ def build_security_status_payload(
         warnings.append("已启用 XFF 信任，但 TRUSTED_PROXY_IPS 为空")
     if not API_RATE_LIMIT_ENABLED:
         warnings.append("轻量限流未启用")
+    if ADMIN_API_WHITELIST_SOURCE == "controller_port_whitelist_fallback":
+        warnings.append(
+            "ADMIN_API_WHITELIST 未显式设置：当前使用 CONTROLLER_PORT_WHITELIST 回退（建议显式配置）"
+        )
     if not ADMIN_API_WHITELIST_ITEMS:
         warnings.append("ADMIN_API_WHITELIST 未设置：管理接口未启用应用层来源限制")
     if admin_api_whitelist_invalid_items:
@@ -630,6 +635,7 @@ def build_security_status_payload(
         "controller_port_whitelist": CONTROLLER_PORT_WHITELIST_ITEMS,
         "controller_port_whitelist_count": len(CONTROLLER_PORT_WHITELIST_ITEMS),
         "admin_api_whitelist": ADMIN_API_WHITELIST_ITEMS,
+        "admin_api_whitelist_source": str(ADMIN_API_WHITELIST_SOURCE),
         "admin_api_whitelist_count": len(ADMIN_API_WHITELIST_ITEMS),
         "admin_api_whitelist_effective_count": int(admin_api_whitelist_effective_count),
         "admin_api_whitelist_invalid": admin_api_whitelist_invalid_items,

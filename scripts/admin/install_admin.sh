@@ -1634,6 +1634,8 @@ run_self_checks() {
   fi
   if [[ -n "$ADMIN_API_WHITELIST" ]]; then
     check_ok ".env 参数存在：ADMIN_API_WHITELIST"
+  elif [[ -n "$CONTROLLER_PORT_WHITELIST" ]]; then
+    check_ok "ADMIN_API_WHITELIST 为空，但将回退 CONTROLLER_PORT_WHITELIST 作为管理接口来源限制"
   else
     check_warn "ADMIN_API_WHITELIST 为空（管理接口未启用应用层来源限制）"
   fi

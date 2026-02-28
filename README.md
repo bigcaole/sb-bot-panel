@@ -582,6 +582,7 @@ scp root@旧IP:/var/backups/sb-migrate/sb-migrate-xxxx.tar.gz root@新IP:/root/
 - `CONTROLLER_PORT=8080`
 - `CONTROLLER_PORT_WHITELIST=`（可选；逗号分隔 IP/CIDR，用于限制 8080 访问来源）
 - `ADMIN_API_WHITELIST=`（可选；逗号分隔 IP/CIDR，用于限制“管理接口”来源，应用层二次限制）
+  - 留空时会回退使用 `CONTROLLER_PORT_WHITELIST`（建议后续显式配置）
 - `SECURITY_BLOCK_PROTECTED_IPS=`（可选；逗号分隔 IP/CIDR，manual/auto 封禁会跳过这些来源；无效项会在安全状态中告警）
 - `ADMIN_AUTH_TOKEN=随机长串`（管理接口 token）
 - `NODE_AUTH_TOKEN=随机长串`（节点接口 token）
