@@ -620,6 +620,26 @@ class ControllerSmokeTestCase(unittest.TestCase):
             payload = create_resp.json()
             self.assertIsNone(payload.get("tuic_server_name"))
 
+    def test_create_node_auto_fills_tuic_server_name_from_reality_when_host_is_ip(self) -> None:
+        with TestClient(app_module.app) as client:
+            create_resp = client.post(
+                "/nodes/create",
+                headers=self._auth_header(),
+                json={
+                    "node_code": "IP2",
+                    "region": "TW",
+                    "host": "5.5.5.5",
+                    "agent_ip": "5.5.5.5",
+                    "reality_server_name": "oracle.com",
+                    "tuic_port_start": 23200,
+                    "tuic_port_end": 23210,
+                    "enabled": 1,
+                },
+            )
+            self.assertEqual(200, create_resp.status_code)
+            payload = create_resp.json()
+            self.assertEqual("oracle.com", str(payload.get("tuic_server_name", "")))
+
     def test_security_block_unblock_smoke(self) -> None:
         with TestClient(app_module.app) as client:
             block_resp = client.post(
