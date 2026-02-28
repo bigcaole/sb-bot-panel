@@ -232,4 +232,10 @@ def init_db() -> None:
             ON security_ip_blocks(expire_at ASC)
             """
         )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_security_ip_blocks_created_at
+            ON security_ip_blocks(created_at DESC)
+            """
+        )
         conn.commit()
