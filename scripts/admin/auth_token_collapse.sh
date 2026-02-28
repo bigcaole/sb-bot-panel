@@ -5,10 +5,45 @@ PROJECT_DIR="${PROJECT_DIR:-/root/sb-bot-panel}"
 ENV_FILE="${PROJECT_DIR}/.env"
 AUTO_YES=0
 SCRIPT_ACTOR="token-collapse"
+AI_CONTEXT_SCRIPT="${PROJECT_DIR}/scripts/admin/ai_context_export.sh"
+AI_CONTEXT_ON_FAIL="${TOKEN_COLLAPSE_EXPORT_AI_CONTEXT_ON_FAIL:-1}"
+AI_CONTEXT_EXPORTED=0
 
 msg() { echo -e "\033[1;32m[信息]\033[0m $*"; }
 warn() { echo -e "\033[1;33m[警告]\033[0m $*"; }
 err() { echo -e "\033[1;31m[错误]\033[0m $*" >&2; }
+
+emit_ai_context_on_failure() {
+  if [[ "${AI_CONTEXT_ON_FAIL}" != "1" ]]; then
+    return
+  fi
+  if [[ "${AI_CONTEXT_EXPORTED}" == "1" ]]; then
+    return
+  fi
+  AI_CONTEXT_EXPORTED=1
+  if [[ ! -x "$AI_CONTEXT_SCRIPT" ]]; then
+    warn "未找到 AI 诊断包脚本: ${AI_CONTEXT_SCRIPT}"
+    return
+  fi
+  local ai_context_path
+  ai_context_path="/tmp/sb-token-collapse-ai-context-on-fail-$(date +%Y%m%d-%H%M%S).md"
+  if bash "$AI_CONTEXT_SCRIPT" --output "$ai_context_path" >/tmp/sb_token_collapse_ai_export.log 2>&1; then
+    echo "失败辅助诊断包：${ai_context_path}"
+    echo "提示：可将该文件整体粘贴给任意 AI 做继续定位。"
+  else
+    warn "自动导出 AI 诊断包失败（不影响原始失败结论），可手动执行: bash scripts/admin/ai_context_export.sh"
+    cat /tmp/sb_token_collapse_ai_export.log || true
+  fi
+}
+
+on_script_exit() {
+  local code=$?
+  if (( code != 0 )); then
+    emit_ai_context_on_failure
+  fi
+}
+
+trap on_script_exit EXIT
 
 require_root() {
   if [[ "${EUID}" -ne 0 ]]; then

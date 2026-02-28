@@ -433,6 +433,7 @@ sb-admin
 执行 `安全加固向导` 并轮换 `AUTH_TOKEN` 后，脚本也会自动触发一次节点 token 同步（默认包含禁用节点并强制新建），降低节点鉴权不同步风险。
 同样地，执行 `收敛 AUTH_TOKEN` 后也会自动触发一次节点 token 同步任务，进一步降低节点掉线风险。
 当 `AUTH_TOKEN` 本身已是单值（No-Op）时，脚本也会尝试执行一次节点 token 对齐同步。
+`收敛 AUTH_TOKEN` 脚本失败时默认自动导出 AI 诊断包到 `/tmp/sb-token-collapse-ai-context-on-fail-*.md`（可用 `TOKEN_COLLAPSE_EXPORT_AI_CONTEXT_ON_FAIL=0` 关闭）。
 执行 `安全加固向导` 时，脚本会提示并可自动把“当前 SSH 来源 IP”加入 `CONTROLLER_PORT_WHITELIST` 与 `SECURITY_BLOCK_PROTECTED_IPS`，减少误封与误锁风险。
 
 统一验收命令（管理服务器）：
