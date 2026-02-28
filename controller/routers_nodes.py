@@ -19,6 +19,7 @@ from controller.nodes_service import (
     list_nodes_service,
     update_node_service,
 )
+from controller.routers_admin import invalidate_admin_snapshots_cache
 from controller.schemas import (
     CreateNodeRequest,
     CreateNodeTaskRequest,
@@ -39,7 +40,9 @@ router = APIRouter(tags=["nodes"])
 
 @router.post("/nodes/create")
 def create_node(payload: CreateNodeRequest, request: Request) -> Dict[str, Union[int, str, None]]:
-    return create_node_service(payload, request)
+    result = create_node_service(payload, request)
+    invalidate_admin_snapshots_cache()
+    return result
 
 
 @router.get("/nodes")
@@ -67,7 +70,7 @@ def create_node_task(
     auth_error = verify_admin_authorization(authorization)
     if auth_error is not None:
         return auth_error
-    return create_node_task_service(
+    result = create_node_task_service(
         node_code=node_code,
         payload=payload,
         request=request,
@@ -75,6 +78,9 @@ def create_node_task(
         retention_seconds=NODE_TASK_RETENTION_SECONDS,
         max_pending_per_node=NODE_TASK_MAX_PENDING_PER_NODE,
     )
+    if isinstance(result, dict):
+        invalidate_admin_snapshots_cache()
+    return result
 
 
 @router.get("/nodes/{node_code}/tasks", response_model=None)
@@ -122,12 +128,15 @@ def report_node_task(
     auth_error = verify_admin_authorization(authorization)
     if auth_error is not None:
         return auth_error
-    return report_node_task_service(
+    result = report_node_task_service(
         node_code=node_code,
         task_id=task_id,
         payload=payload,
         request=request,
     )
+    if isinstance(result, dict):
+        invalidate_admin_snapshots_cache()
+    return result
 
 
 @router.post("/nodes/{node_code}/report_reality", response_model=None)
@@ -140,11 +149,14 @@ def report_node_reality(
     auth_error = verify_admin_authorization(authorization)
     if auth_error is not None:
         return auth_error
-    return report_node_reality_service(
+    result = report_node_reality_service(
         node_code=node_code,
         payload=payload,
         request=request,
     )
+    if isinstance(result, dict):
+        invalidate_admin_snapshots_cache()
+    return result
 
 
 # Used by node-side agent polling periodically to sync node and bound-user config.
@@ -158,9 +170,13 @@ def get_node_sync(node_code: str, request: Request) -> Dict[str, Union[Dict, Lis
 def update_node(
     node_code: str, payload: UpdateNodeRequest, request: Request
 ) -> Dict[str, Union[int, str, None]]:
-    return update_node_service(node_code, payload, request)
+    result = update_node_service(node_code, payload, request)
+    invalidate_admin_snapshots_cache()
+    return result
 
 
 @router.delete("/nodes/{node_code}")
 def delete_node(node_code: str, request: Request) -> Dict[str, bool]:
-    return delete_node_service(node_code, request)
+    result = delete_node_service(node_code, request)
+    invalidate_admin_snapshots_cache()
+    return result
