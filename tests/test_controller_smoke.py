@@ -39,6 +39,7 @@ class ControllerSmokeTestCase(unittest.TestCase):
             "routers_admin.SECURITY_AUTO_BLOCK_DURATION_SECONDS": admin_router_module.SECURITY_AUTO_BLOCK_DURATION_SECONDS,
             "routers_admin.SECURITY_AUTO_BLOCK_MAX_PER_INTERVAL": admin_router_module.SECURITY_AUTO_BLOCK_MAX_PER_INTERVAL,
             "routers_admin.SECURITY_BLOCK_PROTECTED_IPS_ITEMS": admin_router_module.SECURITY_BLOCK_PROTECTED_IPS_ITEMS,
+            "routers_admin.export_admin_ai_context_snapshot": admin_router_module.export_admin_ai_context_snapshot,
             "routers_nodes.NODE_TASK_MAX_PENDING_PER_NODE": nodes_router_module.NODE_TASK_MAX_PENDING_PER_NODE,
         }
 
@@ -60,6 +61,11 @@ class ControllerSmokeTestCase(unittest.TestCase):
         admin_router_module.SECURITY_AUTO_BLOCK_DURATION_SECONDS = 3600
         admin_router_module.SECURITY_AUTO_BLOCK_MAX_PER_INTERVAL = 5
         admin_router_module.SECURITY_BLOCK_PROTECTED_IPS_ITEMS = []
+        def _fake_ai_context_export(output_path: Path):
+            output_path.write_text("# smoke export\n", encoding="utf-8")
+            return True, ""
+
+        admin_router_module.export_admin_ai_context_snapshot = _fake_ai_context_export
         nodes_router_module.NODE_TASK_MAX_PENDING_PER_NODE = 2
 
         db_module.init_db()
@@ -163,6 +169,9 @@ class ControllerSmokeTestCase(unittest.TestCase):
         admin_router_module.SECURITY_BLOCK_PROTECTED_IPS_ITEMS = self._old_values[
             "routers_admin.SECURITY_BLOCK_PROTECTED_IPS_ITEMS"
         ]
+        admin_router_module.export_admin_ai_context_snapshot = self._old_values[
+            "routers_admin.export_admin_ai_context_snapshot"
+        ]
         nodes_router_module.NODE_TASK_MAX_PENDING_PER_NODE = self._old_values[
             "routers_nodes.NODE_TASK_MAX_PENDING_PER_NODE"
         ]
@@ -258,6 +267,16 @@ class ControllerSmokeTestCase(unittest.TestCase):
             self.assertIn("security_events_exclude_local", admin_sec.json())
             self.assertIn("controller_port_whitelist_count", admin_sec.json())
             self.assertIn("unauthorized_audit_sample_seconds", admin_sec.json())
+
+            ai_export_resp = client.post(
+                "/admin/diagnostics/ai_context_export",
+                headers=self._auth_header(),
+            )
+            self.assertEqual(200, ai_export_resp.status_code)
+            ai_export_payload = ai_export_resp.json()
+            self.assertTrue(bool(ai_export_payload.get("ok")))
+            self.assertIn("/tmp/sb-admin-ai-context-manual-", str(ai_export_payload.get("path", "")))
+            self.assertGreater(int(ai_export_payload.get("size_bytes", 0) or 0), 0)
             self.assertIn("security_block_cleanup_interval_seconds", admin_sec.json())
             self.assertIn("audit_log_retention_days", admin_sec.json())
             self.assertIn("audit_log_cleanup_interval_seconds", admin_sec.json())

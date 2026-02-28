@@ -319,6 +319,7 @@ SUBMENUS = {
             ("🔐 HTTPS证书状态", "action:maintain_https_status"),
             ("♻️ HTTPS证书刷新", "action:maintain_https_reload"),
             ("💾 立即备份", "action:maintain_backup"),
+            ("🧠 AI诊断包", "action:maintain_ai_context_export"),
             ("⬅️ 返回管理服务器", "menu:maintain"),
         ],
     },
@@ -386,6 +387,7 @@ PRIVILEGED_CALLBACK_EXACT = {
     "action:backup_stop": ROLE_SUPER,
     "action:nodes_create": ROLE_OPERATOR,
     "action:maintain_backup": ROLE_OPERATOR,
+    "action:maintain_ai_context_export": ROLE_OPERATOR,
     "action:maintain_smoke": ROLE_OPERATOR,
     "action:maintain_log_archive": ROLE_OPERATOR,
     "action:maintain_ops_audit": ROLE_OPERATOR,
@@ -444,6 +446,7 @@ MUTATION_CALLBACK_EXACT = {
     "action:backup_now",
     "backup:stop:confirm",
     "action:maintain_backup",
+    "action:maintain_ai_context_export",
     "action:maintain_smoke",
     "action:maintain_log_archive",
     "action:maintain_update",
@@ -3596,6 +3599,36 @@ async def run_admin_backup_action(query, back_menu_callback: str) -> None:
         f"时间：{created_text}\n\n"
         "可用以下命令拉取备份：\n"
         f"scp root@你的服务器IP:{backup_path} ./",
+        reply_markup=build_back_keyboard(back_menu_callback),
+    )
+
+
+async def run_admin_ai_context_export_action(query, back_menu_callback: str) -> None:
+    result, error_message, _ = await controller_request(
+        "POST", "/admin/diagnostics/ai_context_export"
+    )
+    if error_message:
+        await query.edit_message_text(
+            f"导出 AI 诊断包失败：{localize_controller_error(error_message)}",
+            reply_markup=build_back_keyboard(back_menu_callback),
+        )
+        return
+
+    output_path = str(result.get("path", "")) if isinstance(result, dict) else ""
+    size_bytes = int(result.get("size_bytes", 0)) if isinstance(result, dict) else 0
+    created_at = int(result.get("created_at", 0)) if isinstance(result, dict) else 0
+    created_text = (
+        datetime.fromtimestamp(created_at).strftime("%Y-%m-%d %H:%M:%S")
+        if created_at > 0
+        else "-"
+    )
+    await query.edit_message_text(
+        "AI 诊断包已生成（管理服务器本地）\n\n"
+        f"路径：{output_path}\n"
+        f"大小：{size_bytes} bytes\n"
+        f"时间：{created_text}\n\n"
+        "可直接复制文件内容粘贴给任意 AI：\n"
+        f"cat {output_path}",
         reply_markup=build_back_keyboard(back_menu_callback),
     )
 
@@ -7487,6 +7520,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     if callback_data == "action:maintain_backup":
         await run_admin_backup_action(query, "menu:maintain")
+        return
+
+    if callback_data == "action:maintain_ai_context_export":
+        await run_admin_ai_context_export_action(query, "menu:maintain_cert")
         return
 
     if callback_data == "action:maintain_smoke":

@@ -466,6 +466,7 @@ bash /root/sb-bot-panel/scripts/admin/ai_context_export.sh
 ```
 
 默认输出目录：`/var/backups/sb-controller/ai-context/`
+也可在 Telegram bot 中进入 `管理服务器 -> 证书与备份 -> AI诊断包` 一键生成（返回 `/tmp/...` 路径与审计记录）。
 
 AI 诊断包导出（节点服务器，可直接粘贴给任意 AI）：
 

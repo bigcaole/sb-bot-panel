@@ -78,6 +78,8 @@ from controller.subscription import build_signed_subscription_urls
 router = APIRouter(tags=["admin"])
 # Compatibility alias for existing tests/tools that import controller.routers_admin.AUTH_TOKEN.
 AUTH_TOKEN = SECURITY_AUTH_TOKEN
+ADMIN_AI_CONTEXT_EXPORT_SCRIPT = BASE_DIR / "scripts" / "admin" / "ai_context_export.sh"
+ADMIN_AI_CONTEXT_EXPORT_TIMEOUT_SECONDS = 40
 
 
 def _normalize_controller_url(raw_url: str) -> str:
@@ -615,6 +617,38 @@ def is_source_ip_protected(
         if ip_obj in network:
             return True
     return False
+
+
+def export_admin_ai_context_snapshot(output_path: Path) -> Tuple[bool, str]:
+    script_path = ADMIN_AI_CONTEXT_EXPORT_SCRIPT
+    if not script_path.exists():
+        return False, "script not found: {0}".format(script_path)
+    if not script_path.is_file():
+        return False, "script path is not a file: {0}".format(script_path)
+    try:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        return False, "create output directory failed: {0}".format(exc)
+    try:
+        proc = subprocess.run(  # nosec B603
+            ["bash", str(script_path), "--output", str(output_path)],
+            capture_output=True,
+            text=True,
+            timeout=ADMIN_AI_CONTEXT_EXPORT_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except FileNotFoundError:
+        return False, "bash not found"
+    except subprocess.TimeoutExpired:
+        return False, "export command timeout"
+    if int(proc.returncode or 0) != 0:
+        stderr_text = str(proc.stderr or "").strip()
+        stdout_text = str(proc.stdout or "").strip()
+        detail = stderr_text if stderr_text else stdout_text
+        return False, detail or "export command failed"
+    if not output_path.exists():
+        return False, "export output file not found"
+    return True, ""
 
 
 def run_ufw_command(args: List[str], timeout_seconds: int = 20) -> Tuple[int, str, str]:
@@ -1498,6 +1532,64 @@ def create_backup(
         "size_bytes": size_bytes,
         "cleaned_files": cleaned_files,
         "keep_count": BACKUP_RETENTION_COUNT,
+        "created_at": created_at,
+    }
+
+
+@router.post(
+    "/admin/diagnostics/ai_context_export",
+    summary="Export AI diagnostic context package",
+    description="AUTH_TOKEN 为空时不校验；非空时需要请求头 Authorization: Bearer <AUTH_TOKEN>。",
+    response_model=None,
+)
+def export_ai_context_package(
+    request: Request,
+    authorization: Optional[str] = Header(default=None, alias="Authorization"),
+) -> Union[Dict[str, Union[bool, int, str]], JSONResponse]:
+    auth_error = verify_admin_authorization(authorization)
+    if auth_error is not None:
+        return auth_error
+
+    created_at = int(time.time())
+    output_name = "sb-admin-ai-context-manual-{0}.md".format(
+        time.strftime("%Y%m%d-%H%M%S", time.localtime(created_at))
+    )
+    output_path = Path("/tmp") / output_name
+    export_ok, export_error = export_admin_ai_context_snapshot(output_path)
+    if not export_ok:
+        raise HTTPException(
+            status_code=500,
+            detail="ai context export failed: {0}".format(export_error or "unknown"),
+        )
+
+    try:
+        size_bytes = int(output_path.stat().st_size)
+    except OSError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="read ai context file failed: {0}".format(exc),
+        ) from exc
+
+    with get_connection() as conn:
+        write_audit_log(
+            conn,
+            action="admin.diagnostics.ai_context_export",
+            resource_type="diagnostics",
+            resource_id=output_name,
+            detail={
+                "path": str(output_path),
+                "size_bytes": size_bytes,
+            },
+            actor=get_request_actor(request),
+            source_ip=get_source_ip_for_audit(request),
+            created_at=created_at,
+        )
+        conn.commit()
+
+    return {
+        "ok": True,
+        "path": str(output_path),
+        "size_bytes": size_bytes,
         "created_at": created_at,
     }
 
