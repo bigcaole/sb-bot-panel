@@ -65,6 +65,25 @@ get_controller_port() {
   echo "$port"
 }
 
+get_admin_token_raw_from_env() {
+  local env_file="${PROJECT_DIR}/.env"
+  local admin_raw=""
+  local auth_raw=""
+  local node_raw=""
+  if [[ -f "$env_file" ]]; then
+    admin_raw="$(grep -E '^ADMIN_AUTH_TOKEN=' "$env_file" | tail -n1 | cut -d= -f2- || true)"
+    auth_raw="$(grep -E '^AUTH_TOKEN=' "$env_file" | tail -n1 | cut -d= -f2- || true)"
+    node_raw="$(grep -E '^NODE_AUTH_TOKEN=' "$env_file" | tail -n1 | cut -d= -f2- || true)"
+  fi
+  if [[ -n "${admin_raw//[[:space:]]/}" ]]; then
+    echo "$admin_raw"
+  elif [[ -n "${auth_raw//[[:space:]]/}" ]]; then
+    echo "$auth_raw"
+  else
+    echo "$node_raw"
+  fi
+}
+
 first_auth_token() {
   local raw="${1:-}"
   raw="${raw//$'\n'/}"
@@ -288,17 +307,14 @@ wait_for_controller_ready() {
 }
 
 run_security_maintenance_cleanup() {
-  local env_file="${PROJECT_DIR}/.env"
   local auth_token_raw=""
   local auth_token=""
   local controller_port
   controller_port="$(get_controller_port)"
 
-  if [[ -f "$env_file" ]]; then
-    auth_token_raw="$(grep -E '^AUTH_TOKEN=' "$env_file" | tail -n1 | cut -d= -f2- || true)"
-  fi
+  auth_token_raw="$(get_admin_token_raw_from_env)"
   auth_token="$(pick_working_auth_token "$controller_port" "$auth_token_raw")" || {
-    warn "AUTH_TOKEN 多值模式下未探测到可用 token，回退使用第一个 token。"
+    warn "管理 token 多值模式下未探测到可用 token，回退使用第一个 token。"
   }
   if [[ -z "$auth_token" ]]; then
     auth_token="$(first_auth_token "$auth_token_raw")"
@@ -329,7 +345,6 @@ run_security_maintenance_cleanup() {
 }
 
 run_sync_node_defaults() {
-  local env_file="${PROJECT_DIR}/.env"
   local auth_token_raw=""
   local auth_token=""
   local controller_port
@@ -341,11 +356,9 @@ run_sync_node_defaults() {
   local http_code
 
   controller_port="$(get_controller_port)"
-  if [[ -f "$env_file" ]]; then
-    auth_token_raw="$(grep -E '^AUTH_TOKEN=' "$env_file" | tail -n1 | cut -d= -f2- || true)"
-  fi
+  auth_token_raw="$(get_admin_token_raw_from_env)"
   auth_token="$(pick_working_auth_token "$controller_port" "$auth_token_raw")" || {
-    warn "AUTH_TOKEN 多值模式下未探测到可用 token，回退使用第一个 token。"
+    warn "管理 token 多值模式下未探测到可用 token，回退使用第一个 token。"
   }
   if [[ -z "$auth_token" ]]; then
     auth_token="$(first_auth_token "$auth_token_raw")"
@@ -400,7 +413,6 @@ run_sync_node_defaults() {
 }
 
 run_sync_node_tokens() {
-  local env_file="${PROJECT_DIR}/.env"
   local auth_token_raw=""
   local auth_token=""
   local controller_port
@@ -412,11 +424,9 @@ run_sync_node_tokens() {
   local http_code
 
   controller_port="$(get_controller_port)"
-  if [[ -f "$env_file" ]]; then
-    auth_token_raw="$(grep -E '^AUTH_TOKEN=' "$env_file" | tail -n1 | cut -d= -f2- || true)"
-  fi
+  auth_token_raw="$(get_admin_token_raw_from_env)"
   auth_token="$(pick_working_auth_token "$controller_port" "$auth_token_raw")" || {
-    warn "AUTH_TOKEN 多值模式下未探测到可用 token，回退使用第一个 token。"
+    warn "管理 token 多值模式下未探测到可用 token，回退使用第一个 token。"
   }
   if [[ -z "$auth_token" ]]; then
     auth_token="$(first_auth_token "$auth_token_raw")"
@@ -471,7 +481,6 @@ run_sync_node_tokens() {
 }
 
 run_sync_node_time() {
-  local env_file="${PROJECT_DIR}/.env"
   local auth_token_raw=""
   local auth_token=""
   local controller_port
@@ -483,11 +492,9 @@ run_sync_node_time() {
   local http_code
 
   controller_port="$(get_controller_port)"
-  if [[ -f "$env_file" ]]; then
-    auth_token_raw="$(grep -E '^AUTH_TOKEN=' "$env_file" | tail -n1 | cut -d= -f2- || true)"
-  fi
+  auth_token_raw="$(get_admin_token_raw_from_env)"
   auth_token="$(pick_working_auth_token "$controller_port" "$auth_token_raw")" || {
-    warn "AUTH_TOKEN 多值模式下未探测到可用 token，回退使用第一个 token。"
+    warn "管理 token 多值模式下未探测到可用 token，回退使用第一个 token。"
   }
   if [[ -z "$auth_token" ]]; then
     auth_token="$(first_auth_token "$auth_token_raw")"
@@ -562,7 +569,6 @@ run_sync_menu() {
 }
 
 show_ops_audit_events() {
-  local env_file="${PROJECT_DIR}/.env"
   local auth_token_raw=""
   local auth_token=""
   local controller_port
@@ -571,15 +577,16 @@ show_ops_audit_events() {
   local response
 
   controller_port="$(get_controller_port)"
+  auth_token_raw="$(get_admin_token_raw_from_env)"
+  local env_file="${PROJECT_DIR}/.env"
   if [[ -f "$env_file" ]]; then
-    auth_token_raw="$(grep -E '^AUTH_TOKEN=' "$env_file" | tail -n1 | cut -d= -f2- || true)"
     window_raw="$(grep -E '^BOT_OPS_AUDIT_WINDOW_SECONDS=' "$env_file" | tail -n1 | cut -d= -f2- || true)"
   fi
   if [[ "$window_raw" =~ ^[0-9]+$ ]] && (( window_raw >= 3600 )) && (( window_raw <= 2592000 )); then
     window_seconds="$window_raw"
   fi
   auth_token="$(pick_working_auth_token "$controller_port" "$auth_token_raw")" || {
-    warn "AUTH_TOKEN 多值模式下未探测到可用 token，回退使用第一个 token。"
+    warn "管理 token 多值模式下未探测到可用 token，回退使用第一个 token。"
   }
   if [[ -z "$auth_token" ]]; then
     auth_token="$(first_auth_token "$auth_token_raw")"
