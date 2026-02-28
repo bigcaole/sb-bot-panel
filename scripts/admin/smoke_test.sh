@@ -13,6 +13,8 @@ WARN_ITEMS=()
 FAIL_PY=0
 FAIL_API=0
 SMOKE_ACTOR="smoke-test"
+AI_CONTEXT_SCRIPT="${PROJECT_DIR}/scripts/admin/ai_context_export.sh"
+AI_CONTEXT_ON_FAIL="${SMOKE_EXPORT_AI_CONTEXT_ON_FAIL:-1}"
 
 msg() { echo -e "\033[1;32m[信息]\033[0m $*"; }
 warn() { echo -e "\033[1;33m[警告]\033[0m $*"; }
@@ -28,6 +30,25 @@ record_fail() {
   local item="$1"
   FAIL_ITEMS+=("$item")
   err "$item"
+}
+
+emit_ai_context_on_failure() {
+  if [[ "${AI_CONTEXT_ON_FAIL}" != "1" ]]; then
+    return
+  fi
+  if [[ ! -x "$AI_CONTEXT_SCRIPT" ]]; then
+    warn "未找到 AI 诊断包脚本: ${AI_CONTEXT_SCRIPT}"
+    return
+  fi
+  local ai_context_path
+  ai_context_path="/tmp/sb-admin-ai-context-on-fail-$(date +%Y%m%d-%H%M%S).md"
+  if bash "$AI_CONTEXT_SCRIPT" --output "$ai_context_path" >/tmp/sb_smoke_ai_export.log 2>&1; then
+    echo "失败辅助诊断包：${ai_context_path}"
+    echo "提示：可将该文件整体粘贴给任意 AI 做继续定位。"
+  else
+    warn "自动导出 AI 诊断包失败（不影响退出码），可手动执行: bash scripts/admin/ai_context_export.sh"
+    cat /tmp/sb_smoke_ai_export.log || true
+  fi
 }
 
 first_auth_token() {
@@ -99,6 +120,7 @@ usage() {
   - 默认执行：Python 语法检查 + unittest + API 冒烟（auto）
   - auto 模式下：若 API 不可达，仅给警告，不判失败
   - require-api 模式下：API 不可达会直接失败
+  - 验收失败时默认自动导出 AI 诊断包（可用环境变量 SMOKE_EXPORT_AI_CONTEXT_ON_FAIL=0 关闭）
 EOF
 }
 
@@ -150,6 +172,7 @@ select_python_bin() {
     PYTHON_BIN="$(command -v python3)"
   else
     err "未找到可用的 Python 解释器。"
+    emit_ai_context_on_failure
     exit 1
   fi
   if ! "$PYTHON_BIN" - <<'PY'
@@ -158,6 +181,7 @@ raise SystemExit(0 if sys.version_info >= (3, 11) else 1)
 PY
   then
     err "当前 Python 版本低于 3.11：${PYTHON_BIN}。请先执行安装/更新脚本升级运行环境。"
+    emit_ai_context_on_failure
     exit 10
   fi
   msg "使用 Python: ${PYTHON_BIN}"
@@ -398,6 +422,7 @@ print_summary_and_exit() {
     msg "验收完成：全部检查通过。"
   else
     err "验收失败，请按失败项处理。"
+    emit_ai_context_on_failure
   fi
   exit "${exit_code}"
 }

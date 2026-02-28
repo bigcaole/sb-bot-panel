@@ -441,6 +441,11 @@ sb-admin
 bash /root/sb-bot-panel/scripts/admin/smoke_test.sh --require-api
 ```
 
+说明补充：
+
+- 当验收失败时，脚本默认会自动导出 AI 诊断包到 `/tmp/sb-admin-ai-context-on-fail-*.md`
+- 可通过环境变量关闭：`SMOKE_EXPORT_AI_CONTEXT_ON_FAIL=0`
+
 运维快照导出（管理服务器，排障建议先执行）：
 
 ```bash
