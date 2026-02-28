@@ -494,26 +494,34 @@ def build_unauthorized_events_snapshot(
     }
 
 
-def build_security_status_payload() -> Dict[str, Union[bool, int, List[str]]]:
+def build_security_status_payload(
+    conn: Optional[sqlite3.Connection] = None,
+    now_ts: Optional[int] = None,
+) -> Dict[str, Union[bool, int, List[str]]]:
     auth_tokens = get_auth_tokens()
     weak_token_risks = _collect_auth_token_risks(auth_tokens)
-    now_ts = int(time.time())
+    if now_ts is None:
+        now_ts = int(time.time())
+    else:
+        now_ts = int(now_ts)
     protected_invalid_items = get_invalid_ip_or_cidr_items(SECURITY_BLOCK_PROTECTED_IPS_ITEMS)
     protected_effective_count = max(
         0, int(len(SECURITY_BLOCK_PROTECTED_IPS_ITEMS) - len(protected_invalid_items))
     )
-    with get_connection() as conn:
-        active_block_count = int(
-            conn.execute(
-                """
-                SELECT COUNT(*) AS c
-                FROM security_ip_blocks
-                WHERE expire_at = 0 OR expire_at > ?
-                """,
-                (now_ts,),
-            ).fetchone()["c"]
-            or 0
-        )
+    if conn is None:
+        with get_connection() as local_conn:
+            return build_security_status_payload(conn=local_conn, now_ts=now_ts)
+    active_block_count = int(
+        conn.execute(
+            """
+            SELECT COUNT(*) AS c
+            FROM security_ip_blocks
+            WHERE expire_at = 0 OR expire_at > ?
+            """,
+            (now_ts,),
+        ).fetchone()["c"]
+        or 0
+    )
     warnings: List[str] = []
     if not auth_tokens:
         warnings.append("AUTH_TOKEN 未设置：管理接口未启用鉴权")
@@ -1331,7 +1339,7 @@ def build_admin_overview_payload(now_ts: int) -> Dict[str, Union[int, Dict, List
             "pending_by_node": pending_by_node,
             "idempotency_24h": node_task_idempotency_24h,
         },
-        "security": build_security_status_payload(),
+        "security": build_security_status_payload(conn=conn, now_ts=now_ts),
         "security_events": {
             "unauthorized_1h": int(unauthorized_1h_snapshot["unauthorized"]),
             "unauthorized_24h": int(unauthorized_24h_snapshot["unauthorized"]),
