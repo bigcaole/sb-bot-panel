@@ -406,6 +406,7 @@ PRIVILEGED_CALLBACK_PREFIXES = {
     "usernodes:": ROLE_OPERATOR,
     "node:toggle:": ROLE_OPERATOR,
     "node:monitor_toggle:": ROLE_OPERATOR,
+    "node:sync_preview:": ROLE_OPERATOR,
     "node:delete_confirm:": ROLE_SUPER,
     "node:delete:": ROLE_SUPER,
     "node:edit_": ROLE_OPERATOR,
@@ -1269,6 +1270,7 @@ def build_node_detail_keyboard(
         [
             [InlineKeyboardButton("启用/禁用", callback_data=f"node:toggle:{node_code}")],
             [InlineKeyboardButton(monitor_text, callback_data=f"node:monitor_toggle:{node_code}")],
+            [InlineKeyboardButton("同步预览（排障）", callback_data=f"node:sync_preview:{node_code}")],
             [InlineKeyboardButton("设置节点来源IP白名单", callback_data=f"node:edit_agent_ip:{node_code}")],
             [InlineKeyboardButton("修改入口（影响两种协议）", callback_data=f"node:edit_host:{node_code}")],
             [InlineKeyboardButton("修改REALITY伪装域名（R）", callback_data=f"node:edit_sni:{node_code}")],
@@ -1571,6 +1573,15 @@ def build_node_reality_confirm_keyboard(node_code: str) -> InlineKeyboardMarkup:
 def build_node_back_to_detail_keyboard(node_code: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [[InlineKeyboardButton("返回节点详情", callback_data=f"node:detail:{node_code}")]]
+    )
+
+
+def build_node_sync_preview_keyboard(node_code: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("刷新预览", callback_data=f"node:sync_preview:{node_code}")],
+            [InlineKeyboardButton("返回节点详情", callback_data=f"node:detail:{node_code}")],
+        ]
     )
 
 
@@ -2596,6 +2607,52 @@ def format_node_ops_panel_text(node: dict) -> str:
     )
 
 
+def format_node_sync_preview_text(node_code: str, payload: dict) -> str:
+    node = payload.get("node", {}) if isinstance(payload, dict) else {}
+    users = payload.get("users", []) if isinstance(payload, dict) else []
+    if not isinstance(users, list):
+        users = []
+
+    generated_at = 0
+    try:
+        generated_at = int(payload.get("generated_at", 0) or 0) if isinstance(payload, dict) else 0
+    except (TypeError, ValueError):
+        generated_at = 0
+    generated_text = (
+        datetime.fromtimestamp(generated_at).strftime("%Y-%m-%d %H:%M:%S")
+        if generated_at > 0
+        else "-"
+    )
+    node_enabled = "启用" if int(node.get("enabled", 0) or 0) == 1 else "禁用"
+    limit = 12
+    lines = [
+        "节点同步预览（管理端）",
+        "",
+        f"节点：{node_code}",
+        f"节点状态：{node_enabled}",
+        f"生成时间：{generated_text}",
+        f"下发用户数：{len(users)}",
+        "",
+        "用户预览（最多 12 条）：",
+    ]
+    if not users:
+        lines.append("（无）")
+    else:
+        for idx, item in enumerate(users[:limit], start=1):
+            user_code = str(item.get("user_code", "")).strip() or "-"
+            limit_mode = str(item.get("limit_mode", "tc")).strip() or "tc"
+            speed = int(item.get("speed_mbps", 0) or 0)
+            tuic_port = int(item.get("tuic_port", 0) or 0)
+            lines.append(
+                f"{idx}. {user_code} | mode={limit_mode} | speed={speed}Mbps | tuic={tuic_port}"
+            )
+        if len(users) > limit:
+            lines.append(f"... 其余 {len(users) - limit} 条已省略")
+    lines.append("")
+    lines.append("说明：该页面来自 /admin/nodes/{node_code}/sync_preview，不受 agent_ip 限制。")
+    return "\n".join(lines)
+
+
 def truncate_task_result_text(value: str, limit: int = 240) -> str:
     raw = str(value or "").strip().replace("\r\n", "\n")
     raw = " ".join(raw.split())
@@ -2793,6 +2850,32 @@ async def render_node_detail(
         reply_markup=build_node_detail_keyboard(
             node_code, int(node.get("monitor_enabled", 0) or 0)
         ),
+    )
+
+
+async def render_node_sync_preview(
+    query, node_code: str, notice: str = ""
+) -> None:
+    payload, error_message, status_code = await controller_request(
+        "GET", f"/admin/nodes/{node_code}/sync_preview"
+    )
+    if error_message:
+        localized = localize_controller_error(error_message)
+        if status_code == 404 and localized == "节点不存在":
+            await render_nodes_list(query, notice=f"节点不存在：{node_code}")
+            return
+        await query.edit_message_text(
+            f"读取同步预览失败：{localized}",
+            reply_markup=build_node_sync_preview_keyboard(node_code),
+        )
+        return
+
+    text = format_node_sync_preview_text(node_code, payload if isinstance(payload, dict) else {})
+    if notice:
+        text = f"{notice}\n\n{text}"
+    await query.edit_message_text(
+        text,
+        reply_markup=build_node_sync_preview_keyboard(node_code),
     )
 
 
@@ -7706,6 +7789,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if callback_data.startswith("node:detail:"):
         node_code = callback_data.split(":", maxsplit=2)[2]
         await render_node_detail(query, node_code)
+        return
+
+    if callback_data.startswith("node:sync_preview:"):
+        node_code = callback_data.split(":", maxsplit=2)[2]
+        await render_node_sync_preview(query, node_code)
         return
 
     if callback_data.startswith("node:reality_setup:"):
