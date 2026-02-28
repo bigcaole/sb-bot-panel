@@ -338,6 +338,31 @@ class ControllerSmokeTestCase(unittest.TestCase):
                 int((sync_time_payload.get("payload") or {}).get("server_unix", 0) or 0),
             )
 
+            emergency_preview_resp = client.post(
+                "/admin/emergency/disable_users?dry_run=1&reason=smoke-preview",
+                headers=self._auth_header(),
+            )
+            self.assertEqual(200, emergency_preview_resp.status_code)
+            emergency_preview_payload = emergency_preview_resp.json()
+            self.assertTrue(bool(emergency_preview_payload.get("ok")))
+            self.assertTrue(bool(emergency_preview_payload.get("dry_run")))
+            self.assertEqual(1, int(emergency_preview_payload.get("active_user_count", 0) or 0))
+            self.assertEqual(0, int(emergency_preview_payload.get("changed_user_count", 0) or 0))
+
+            emergency_apply_resp = client.post(
+                "/admin/emergency/disable_users?dry_run=0&reason=smoke-apply",
+                headers=self._auth_header(),
+            )
+            self.assertEqual(200, emergency_apply_resp.status_code)
+            emergency_apply_payload = emergency_apply_resp.json()
+            self.assertTrue(bool(emergency_apply_payload.get("ok")))
+            self.assertFalse(bool(emergency_apply_payload.get("dry_run")))
+            self.assertEqual(1, int(emergency_apply_payload.get("changed_user_count", 0) or 0))
+
+            user_after_emergency = client.get("/users/u1001", headers=self._auth_header())
+            self.assertEqual(200, user_after_emergency.status_code)
+            self.assertEqual("disabled", str(user_after_emergency.json().get("status", "")))
+
             sec_events = client.get(
                 "/admin/security/events?window_seconds=3600&top=3",
                 headers=self._auth_header(),

@@ -1301,6 +1301,97 @@ def cleanup_archives_by_count(
 
 
 @router.post(
+    "/admin/emergency/disable_users",
+    summary="Emergency stop: disable all active users",
+    description=(
+        "AUTH_TOKEN 为空时不校验；非空时需要请求头 Authorization: Bearer <AUTH_TOKEN>。"
+        "默认 dry_run=1 仅预览影响范围；dry_run=0 才会实际禁用全部 active 用户。"
+    ),
+    response_model=None,
+)
+def emergency_disable_active_users(
+    request: Request,
+    dry_run: int = 1,
+    reason: str = "",
+    authorization: Optional[str] = Header(default=None, alias="Authorization"),
+) -> Union[Dict[str, Union[bool, int, str, List[str]]], JSONResponse]:
+    auth_error = verify_admin_authorization(authorization)
+    if auth_error is not None:
+        return auth_error
+
+    dry_run_value = int(dry_run)
+    if dry_run_value not in (0, 1):
+        raise HTTPException(status_code=400, detail="dry_run must be 0 or 1")
+    dry_run_flag = bool(dry_run_value == 1)
+    reason_text = str(reason or "").strip()
+    now_ts = int(time.time())
+
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT u.user_code, COUNT(un.node_code) AS binding_count
+            FROM users u
+            LEFT JOIN user_nodes un ON un.user_code = u.user_code
+            WHERE u.status = 'active'
+            GROUP BY u.user_code
+            ORDER BY u.id ASC
+            LIMIT 20000
+            """
+        ).fetchall()
+        active_user_codes = [
+            str(row["user_code"] or "").strip()
+            for row in rows
+            if str(row["user_code"] or "").strip()
+        ]
+        active_user_count = len(active_user_codes)
+        affected_bindings = 0
+        for row in rows:
+            try:
+                affected_bindings += int(row["binding_count"] or 0)
+            except (TypeError, ValueError):
+                continue
+
+        changed_count = 0
+        if not dry_run_flag and active_user_count > 0:
+            update_result = conn.execute(
+                "UPDATE users SET status = 'disabled' WHERE status = 'active'"
+            )
+            changed_count = int(update_result.rowcount or 0)
+
+        audit_action = "admin.emergency.disable_users.preview" if dry_run_flag else "admin.emergency.disable_users.apply"
+        write_audit_log(
+            conn,
+            action=audit_action,
+            resource_type="emergency",
+            resource_id="users",
+            detail={
+                "dry_run": dry_run_flag,
+                "active_user_count": int(active_user_count),
+                "changed_user_count": int(changed_count),
+                "affected_bindings": int(affected_bindings),
+                "reason": reason_text,
+                "sample_user_codes": active_user_codes[:20],
+            },
+            actor=get_request_actor(request),
+            source_ip=get_source_ip_for_audit(request),
+            created_at=now_ts,
+        )
+        conn.commit()
+
+    return {
+        "ok": True,
+        "dry_run": dry_run_flag,
+        "active_user_count": int(active_user_count),
+        "changed_user_count": int(changed_count),
+        "affected_bindings": int(affected_bindings),
+        "sample_user_codes": active_user_codes[:20],
+        "sample_truncated": bool(active_user_count > 20),
+        "reason": reason_text,
+        "created_at": now_ts,
+    }
+
+
+@router.post(
     "/admin/backup",
     summary="Create controller backup",
     description="AUTH_TOKEN 为空时不校验；非空时需要请求头 Authorization: Bearer <AUTH_TOKEN>。",

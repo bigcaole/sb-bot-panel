@@ -370,6 +370,7 @@ PRIVILEGED_CALLBACK_EXACT = {
     "action:user_nodes": ROLE_OPERATOR,
     "action:speed_switch": ROLE_OPERATOR,
     "action:backup_now": ROLE_OPERATOR,
+    "action:backup_stop": ROLE_SUPER,
     "action:nodes_create": ROLE_OPERATOR,
     "action:maintain_backup": ROLE_OPERATOR,
     "action:maintain_smoke": ROLE_OPERATOR,
@@ -390,6 +391,7 @@ PRIVILEGED_CALLBACK_EXACT = {
     "action:maintain_migrate_import": ROLE_SUPER,
     "action:maintain_token_collapse": ROLE_SUPER,
     "maintain:token_collapse:confirm": ROLE_SUPER,
+    "backup:stop:confirm": ROLE_SUPER,
     "usernodes:manual_input": ROLE_OPERATOR,
     "wizard:create_confirm": ROLE_OPERATOR,
     "wizard:nodes_create_confirm": ROLE_OPERATOR,
@@ -425,6 +427,7 @@ MUTATION_CALLBACK_EXACT = {
     "wizard:create_confirm",
     "wizard:nodes_create_confirm",
     "action:backup_now",
+    "backup:stop:confirm",
     "action:maintain_backup",
     "action:maintain_smoke",
     "action:maintain_log_archive",
@@ -1706,6 +1709,18 @@ def build_backup_audit_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton("刷新", callback_data="action:backup_audit"),
                 InlineKeyboardButton("返回", callback_data="menu:backup"),
             ]
+        ]
+    )
+
+
+def build_backup_stop_confirm_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("确认禁用全部活跃用户", callback_data="backup:stop:confirm"),
+                InlineKeyboardButton("取消", callback_data="backup:stop:cancel"),
+            ],
+            [InlineKeyboardButton("返回备份菜单", callback_data="menu:backup")],
         ]
     )
 
@@ -3186,6 +3201,88 @@ async def run_admin_backup_action(query, back_menu_callback: str) -> None:
         "可用以下命令拉取备份：\n"
         f"scp root@你的服务器IP:{backup_path} ./",
         reply_markup=build_back_keyboard(back_menu_callback),
+    )
+
+
+def format_emergency_disable_users_text(result: dict, dry_run: bool) -> str:
+    active_user_count = int(result.get("active_user_count", 0) or 0)
+    changed_user_count = int(result.get("changed_user_count", 0) or 0)
+    affected_bindings = int(result.get("affected_bindings", 0) or 0)
+    sample_user_codes = result.get("sample_user_codes", [])
+    if not isinstance(sample_user_codes, list):
+        sample_user_codes = []
+    sample_text = "、".join(str(item) for item in sample_user_codes[:20] if str(item).strip())
+    if not sample_text:
+        sample_text = "-"
+    if int(result.get("sample_truncated", 0) or 0) == 1:
+        sample_text = f"{sample_text} ..."
+    created_at = int(result.get("created_at", 0) or 0)
+    created_text = (
+        datetime.fromtimestamp(created_at).strftime("%Y-%m-%d %H:%M:%S")
+        if created_at > 0
+        else "-"
+    )
+    if dry_run:
+        return (
+            "🛑 紧急停止预演（Dry-Run）\n\n"
+            f"将禁用活跃用户：{active_user_count}\n"
+            f"受影响绑定关系：{affected_bindings}\n"
+            f"示例用户：{sample_text}\n"
+            f"时间：{created_text}\n\n"
+            "确认后将执行：禁用全部 active 用户。"
+        )
+    return (
+        "🛑 紧急停止已执行\n\n"
+        f"禁用用户数：{changed_user_count}\n"
+        f"执行前活跃用户：{active_user_count}\n"
+        f"受影响绑定关系：{affected_bindings}\n"
+        f"示例用户：{sample_text}\n"
+        f"时间：{created_text}\n\n"
+        "说明：节点会在下一次同步轮询后收敛生效。"
+    )
+
+
+async def run_emergency_disable_users_preview(query) -> None:
+    result, error_message, _ = await controller_request(
+        "POST", "/admin/emergency/disable_users?dry_run=1&reason=bot-preview"
+    )
+    if error_message:
+        await query.edit_message_text(
+            f"读取紧急停止预演失败：{localize_controller_error(error_message)}",
+            reply_markup=build_back_keyboard("menu:backup"),
+        )
+        return
+    if not isinstance(result, dict):
+        await query.edit_message_text(
+            "读取紧急停止预演失败：响应格式异常",
+            reply_markup=build_back_keyboard("menu:backup"),
+        )
+        return
+    await query.edit_message_text(
+        format_emergency_disable_users_text(result, dry_run=True),
+        reply_markup=build_backup_stop_confirm_keyboard(),
+    )
+
+
+async def run_emergency_disable_users_apply(query) -> None:
+    result, error_message, _ = await controller_request(
+        "POST", "/admin/emergency/disable_users?dry_run=0&reason=bot-confirm"
+    )
+    if error_message:
+        await query.edit_message_text(
+            f"执行紧急停止失败：{localize_controller_error(error_message)}",
+            reply_markup=build_back_keyboard("menu:backup"),
+        )
+        return
+    if not isinstance(result, dict):
+        await query.edit_message_text(
+            "执行紧急停止失败：响应格式异常",
+            reply_markup=build_back_keyboard("menu:backup"),
+        )
+        return
+    await query.edit_message_text(
+        format_emergency_disable_users_text(result, dry_run=False),
+        reply_markup=build_back_keyboard("menu:backup"),
     )
 
 
@@ -7348,9 +7445,17 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
 
     if callback_data == "action:backup_stop":
+        await run_emergency_disable_users_preview(query)
+        return
+
+    if callback_data == "backup:stop:confirm":
+        await run_emergency_disable_users_apply(query)
+        return
+
+    if callback_data == "backup:stop:cancel":
         await query.edit_message_text(
-            "【紧急停止】尚未实现（需要定义停止策略：停发订阅/禁用节点/禁用用户等）。",
-            reply_markup=build_back_keyboard("menu:backup"),
+            SUBMENUS["backup"]["title"],
+            reply_markup=build_submenu("backup"),
         )
         return
 

@@ -84,6 +84,8 @@ class BotDispatchContractTestCase(unittest.TestCase):
             "action:maintain_security_events",
             "action:maintain_sub_policy",
             "action:maintain_log_archive",
+            "action:backup_stop",
+            "backup:stop:confirm",
         }
         for token in required_exact:
             self.assertIn(token, exact)
