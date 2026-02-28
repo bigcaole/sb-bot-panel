@@ -418,7 +418,7 @@ sb-admin
 13. 数据库一致性校验（迁移前建议）
 14. 节点同步（默认参数 / Token / 时间）
 15. 安全加固向导（token 轮换 + 8080 收敛）
-16. 收敛 AUTH_TOKEN（新旧双token -> 单token）
+16. Token 工具（收敛 AUTH_TOKEN / 拆分迁移）
 17. 手动安全清理（过期封禁 + 审计日志）
 18. SSH 安全状态总览（只读）
 19. SSH 一键安全修复（半自动）
@@ -438,6 +438,13 @@ sb-admin
 同样地，执行 `收敛 AUTH_TOKEN` 后也会自动触发一次节点 token 同步任务，进一步降低节点掉线风险。
 当 `AUTH_TOKEN` 本身已是单值（No-Op）时，脚本也会尝试执行一次节点 token 对齐同步。
 `收敛 AUTH_TOKEN` 脚本失败时默认自动导出 AI 诊断包到 `/tmp/sb-token-collapse-ai-context-on-fail-*.md`（可用 `TOKEN_COLLAPSE_EXPORT_AI_CONTEXT_ON_FAIL=0` 关闭）。
+若历史环境仍处于兼容模式（仅 `AUTH_TOKEN`），可执行拆分迁移脚本一键切换到 `ADMIN_AUTH_TOKEN` + `NODE_AUTH_TOKEN`：
+
+```bash
+bash /root/sb-bot-panel/scripts/admin/auth_token_split_migrate.sh --yes
+```
+
+拆分迁移脚本会自动重启服务并触发节点 token 同步；失败时默认导出诊断包到 `/tmp/sb-token-split-ai-context-on-fail-*.md`。
 执行 `安全加固向导` 时，脚本会提示并可自动把“当前 SSH 来源 IP”加入 `CONTROLLER_PORT_WHITELIST` 与 `SECURITY_BLOCK_PROTECTED_IPS`，减少误封与误锁风险。
 
 统一验收命令（管理服务器）：

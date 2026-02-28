@@ -343,7 +343,7 @@ PY
       if [[ "${auth_token_split_active}" != "1" ]]; then
         if [[ "${REQUIRE_TOKEN_SPLIT}" == "1" ]]; then
           FAIL_API=1
-          record_fail "token 拆分检查失败：当前仍是兼容模式（auth_token_split_active=false）"
+          record_fail "token 拆分检查失败：当前仍是兼容模式（auth_token_split_active=false）。可执行：bash /root/sb-bot-panel/scripts/admin/auth_token_split_migrate.sh --yes"
         else
           record_warn "token 拆分未启用（兼容模式）；建议拆分 ADMIN_AUTH_TOKEN 与 NODE_AUTH_TOKEN"
         fi

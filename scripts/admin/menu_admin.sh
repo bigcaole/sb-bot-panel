@@ -17,6 +17,7 @@ SMOKE_SCRIPT="${PROJECT_DIR}/scripts/admin/smoke_test.sh"
 DB_CHECK_SCRIPT="${PROJECT_DIR}/scripts/admin/db_consistency_check.sh"
 HARDEN_SCRIPT="${PROJECT_DIR}/scripts/admin/harden_security.sh"
 TOKEN_COLLAPSE_SCRIPT="${PROJECT_DIR}/scripts/admin/auth_token_collapse.sh"
+TOKEN_SPLIT_MIGRATE_SCRIPT="${PROJECT_DIR}/scripts/admin/auth_token_split_migrate.sh"
 LOG_ARCHIVE_SCRIPT="${PROJECT_DIR}/scripts/admin/log_archive.sh"
 OPS_SNAPSHOT_SCRIPT="${PROJECT_DIR}/scripts/admin/ops_snapshot.sh"
 AI_CONTEXT_SCRIPT="${PROJECT_DIR}/scripts/admin/ai_context_export.sh"
@@ -836,7 +837,7 @@ show_menu() {
 13. 数据库一致性校验（迁移前建议）
 14. 节点同步（默认参数 / Token / 时间）
 15. 安全加固向导（token轮换 + 8080收敛）
-16. 收敛 AUTH_TOKEN（新旧双token -> 单token）
+16. Token 工具（收敛 AUTH_TOKEN / 拆分迁移）
 17. 手动安全清理（过期封禁 + 审计日志）
 18. SSH 安全状态总览（只读）
 19. SSH 一键安全修复（半自动）
@@ -1092,10 +1093,23 @@ main() {
         pause
         ;;
       16)
-        if [[ -f "$TOKEN_COLLAPSE_SCRIPT" ]]; then
-          bash "$TOKEN_COLLAPSE_SCRIPT"
+        echo "请选择 token 操作："
+        echo "  1) 收敛 AUTH_TOKEN（新旧双token -> 单token）"
+        echo "  2) 拆分迁移（AUTH_TOKEN -> ADMIN/NODE 拆分过渡）"
+        read -r -p "请输入 [1/2]（默认 1）: " token_action
+        token_action="${token_action:-1}"
+        if [[ "$token_action" == "2" ]]; then
+          if [[ -f "$TOKEN_SPLIT_MIGRATE_SCRIPT" ]]; then
+            bash "$TOKEN_SPLIT_MIGRATE_SCRIPT"
+          else
+            err "未找到 token 拆分迁移脚本: $TOKEN_SPLIT_MIGRATE_SCRIPT"
+          fi
         else
-          err "未找到 token 收敛脚本: $TOKEN_COLLAPSE_SCRIPT"
+          if [[ -f "$TOKEN_COLLAPSE_SCRIPT" ]]; then
+            bash "$TOKEN_COLLAPSE_SCRIPT"
+          else
+            err "未找到 token 收敛脚本: $TOKEN_COLLAPSE_SCRIPT"
+          fi
         fi
         pause
         ;;
