@@ -237,10 +237,10 @@ run_api_checks() {
 
   local controller_port="${CONTROLLER_PORT:-8080}"
   local api_url="${API_BASE_URL:-http://127.0.0.1:${controller_port}}"
-  local auth_token_raw="${AUTH_TOKEN:-}"
+  local auth_token_raw="${ADMIN_AUTH_TOKEN:-${AUTH_TOKEN:-${NODE_AUTH_TOKEN:-}}}"
   local auth_token
   auth_token="$(pick_working_auth_token "$api_url" "$auth_token_raw")" || {
-    record_warn "检测到 AUTH_TOKEN 多 token 过渡模式，但未探测到可用 token，已回退使用第一个 token。"
+    record_warn "检测到管理 token 多值模式，但未探测到可用 token，已回退使用第一个 token。"
   }
   if [[ -z "$auth_token" ]]; then
     auth_token="$(first_auth_token "$auth_token_raw")"
@@ -248,7 +248,7 @@ run_api_checks() {
   auth_token="${auth_token#"${auth_token%%[![:space:]]*}"}"
   auth_token="${auth_token%"${auth_token##*[![:space:]]}"}"
   if [[ -n "$auth_token_raw" && "$auth_token_raw" == *","* ]]; then
-    record_warn "检测到 AUTH_TOKEN 多 token 过渡模式，验收会自动优先选取可用 token。"
+    record_warn "检测到管理 token 多值模式，验收会自动优先选取可用 token。"
   fi
   local require_node_lock="${SMOKE_REQUIRE_NODE_LOCK:-0}"
   local code
@@ -320,32 +320,32 @@ run_api_checks() {
     code="$(http_code "${api_url}/nodes")"
     if [[ "$code" != "200" ]]; then
       FAIL_API=1
-      record_fail "AUTH_TOKEN 为空时 /nodes 应可访问，期望 200，实际 ${code}"
+      record_fail "管理 token 为空时 /nodes 应可访问，期望 200，实际 ${code}"
     fi
     code="$(http_code "${api_url}/admin/db/integrity")"
     if [[ "$code" != "200" ]]; then
       FAIL_API=1
-      record_fail "AUTH_TOKEN 为空时 /admin/db/integrity 应可访问，期望 200，实际 ${code}"
+      record_fail "管理 token 为空时 /admin/db/integrity 应可访问，期望 200，实际 ${code}"
     fi
     code="$(http_code "${api_url}/admin/overview")"
     if [[ "$code" != "200" ]]; then
       FAIL_API=1
-      record_fail "AUTH_TOKEN 为空时 /admin/overview 应可访问，期望 200，实际 ${code}"
+      record_fail "管理 token 为空时 /admin/overview 应可访问，期望 200，实际 ${code}"
     fi
     code="$(http_code "${api_url}/admin/node_tasks/idempotency")"
     if [[ "$code" != "200" ]]; then
       FAIL_API=1
-      record_fail "AUTH_TOKEN 为空时 /admin/node_tasks/idempotency 应可访问，期望 200，实际 ${code}"
+      record_fail "管理 token 为空时 /admin/node_tasks/idempotency 应可访问，期望 200，实际 ${code}"
     fi
     code="$(http_code "${api_url}/admin/security/maintenance_cleanup" -X POST)"
     if [[ "$code" != "200" ]]; then
       FAIL_API=1
-      record_fail "AUTH_TOKEN 为空时 /admin/security/maintenance_cleanup 应可访问，期望 200，实际 ${code}"
+      record_fail "管理 token 为空时 /admin/security/maintenance_cleanup 应可访问，期望 200，实际 ${code}"
     fi
     code="$(http_code "${api_url}/admin/security/auto_block/run" -X POST)"
     if [[ "$code" != "200" ]]; then
       FAIL_API=1
-      record_fail "AUTH_TOKEN 为空时 /admin/security/auto_block/run 应可访问，期望 200，实际 ${code}"
+      record_fail "管理 token 为空时 /admin/security/auto_block/run 应可访问，期望 200，实际 ${code}"
     fi
   fi
 

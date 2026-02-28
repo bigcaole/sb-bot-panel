@@ -36,10 +36,14 @@ from controller.security import (
     build_unauthorized_audit_key,
     check_and_consume_rate_limit,
     get_rate_limit_identity,
+    has_any_admin_auth_token,
+    has_any_node_auth_token,
     is_auth_exempt_path,
+    is_node_agent_auth_path,
     is_rate_limit_target_path,
     should_write_unauthorized_audit,
     verify_admin_authorization,
+    verify_node_authorization,
 )
 
 
@@ -115,9 +119,8 @@ async def auth_middleware(request: Request, call_next):
             task_name="security_auto_block",
         )
 
-    if not AUTH_TOKEN:
-        return await call_next(request)
-    if is_auth_exempt_path(request.url.path):
+    request_path = str(request.url.path or "/")
+    if is_auth_exempt_path(request_path):
         return await call_next(request)
     if API_RATE_LIMIT_ENABLED and is_rate_limit_target_path(request.url.path):
         identity = get_rate_limit_identity(request)
@@ -130,7 +133,14 @@ async def auth_middleware(request: Request, call_next):
             )
 
     authorization = request.headers.get("Authorization")
-    auth_error = verify_admin_authorization(authorization)
+    if is_node_agent_auth_path(request_path):
+        auth_error = verify_node_authorization(authorization)
+        if (not has_any_node_auth_token()) and auth_error is None:
+            return await call_next(request)
+    else:
+        auth_error = verify_admin_authorization(authorization)
+        if (not has_any_admin_auth_token()) and auth_error is None:
+            return await call_next(request)
     if auth_error is not None:
         try:
             source_ip = get_source_ip_for_audit(request)
@@ -168,7 +178,7 @@ async def rate_limit_middleware(request: Request, call_next):
         return await call_next(request)
     # AUTH_TOKEN 开启时，受保护路径的限流已在 auth_middleware 中处理，
     # 这里跳过以避免重复计数。
-    if AUTH_TOKEN and not is_auth_exempt_path(request.url.path):
+    if (has_any_admin_auth_token() or has_any_node_auth_token()) and not is_auth_exempt_path(request.url.path):
         return await call_next(request)
     if not is_rate_limit_target_path(request.url.path):
         return await call_next(request)

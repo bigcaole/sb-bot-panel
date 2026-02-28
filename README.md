@@ -576,7 +576,9 @@ scp root@旧IP:/var/backups/sb-migrate/sb-migrate-xxxx.tar.gz root@新IP:/root/
 - `CONTROLLER_PORT=8080`
 - `CONTROLLER_PORT_WHITELIST=`（可选；逗号分隔 IP/CIDR，用于限制 8080 访问来源）
 - `SECURITY_BLOCK_PROTECTED_IPS=`（可选；逗号分隔 IP/CIDR，manual/auto 封禁会跳过这些来源；无效项会在安全状态中告警）
-- `AUTH_TOKEN=随机长串`（可空；空值表示关闭接口鉴权；支持 `new_token,old_token` 过渡轮换）
+- `ADMIN_AUTH_TOKEN=随机长串`（可空；管理接口 token，支持 `new_token,old_token` 过渡轮换）
+- `NODE_AUTH_TOKEN=随机长串`（可空；节点接口 token，支持 `new_token,old_token` 过渡轮换）
+- `AUTH_TOKEN=随机长串`（兼容兜底：当 ADMIN/NODE 未设置时使用；支持 `new_token,old_token`）
 - `SUB_LINK_SIGN_KEY=`（可选；设置后可生成带签名订阅链接）
 - `SUB_LINK_REQUIRE_SIGNATURE=0`（可选；1=强制订阅必须带签名）
 - `SUB_LINK_DEFAULT_TTL_SECONDS=604800`（可选；签名默认有效期）
@@ -654,8 +656,9 @@ scp root@旧IP:/var/backups/sb-migrate/sb-migrate-xxxx.tar.gz root@新IP:/root/
   - `OPS_ADMIN_CHAT_IDS`：运维写操作
   - `SUPER_ADMIN_CHAT_IDS`：高危操作（删除/迁移导入/远程运维）
 - Controller API 支持可选 Bearer 鉴权（全局中间件）：
-  - `AUTH_TOKEN` 为空：不校验，保持兼容行为
-  - `AUTH_TOKEN` 非空：除 `/health`、`/sub/*` 外其余接口都必须带 `Authorization: Bearer <AUTH_TOKEN>`
+  - 管理接口优先使用 `ADMIN_AUTH_TOKEN`，节点接口优先使用 `NODE_AUTH_TOKEN`
+  - 若对应 token 为空，则回退到 `AUTH_TOKEN`（兼容旧配置）
+  - 全部为空时：不校验，保持兼容行为
 - API 文档入口默认关闭：
   - `API_DOCS_ENABLED=0` 时，`/docs`、`/redoc`、`/openapi.json` 返回 404
   - 仅在排障场景临时开启：`API_DOCS_ENABLED=1`
@@ -691,10 +694,11 @@ scp root@旧IP:/var/backups/sb-migrate/sb-migrate-xxxx.tar.gz root@新IP:/root/
 - 公有仓库通常不需要 token。
 - 私有仓库建议使用 deploy key 或 PAT（Personal Access Token）。
 
-### AUTH_TOKEN 开关与验证
+### 鉴权 Token 开关与验证
 
-1. 启用鉴权：在 `.env` 设置非空 `AUTH_TOKEN`，重启 `sb-controller`
-2. 关闭鉴权：将 `.env` 里的 `AUTH_TOKEN=` 留空，重启 `sb-controller`
+1. 启用管理鉴权：设置非空 `ADMIN_AUTH_TOKEN`（或兼容使用 `AUTH_TOKEN`），重启 `sb-controller`
+2. 启用节点鉴权：设置非空 `NODE_AUTH_TOKEN`（或兼容使用 `AUTH_TOKEN`），重启 `sb-controller`
+3. 关闭鉴权：将 `ADMIN_AUTH_TOKEN/NODE_AUTH_TOKEN/AUTH_TOKEN` 全部留空后重启
 
 验证命令（启用鉴权时）：
 

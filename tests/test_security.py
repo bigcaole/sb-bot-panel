@@ -6,6 +6,8 @@ from controller import security
 class SecurityTestCase(unittest.TestCase):
     def setUp(self) -> None:
         self._old_auth_token = security.AUTH_TOKEN
+        self._old_admin_auth_token = security.ADMIN_AUTH_TOKEN
+        self._old_node_auth_token = security.NODE_AUTH_TOKEN
         self._old_api_docs_enabled = security.API_DOCS_ENABLED
         self._old_window = security.API_RATE_LIMIT_WINDOW_SECONDS
         self._old_max = security.API_RATE_LIMIT_MAX_REQUESTS
@@ -19,6 +21,8 @@ class SecurityTestCase(unittest.TestCase):
 
     def tearDown(self) -> None:
         security.AUTH_TOKEN = self._old_auth_token
+        security.ADMIN_AUTH_TOKEN = self._old_admin_auth_token
+        security.NODE_AUTH_TOKEN = self._old_node_auth_token
         security.API_DOCS_ENABLED = self._old_api_docs_enabled
         security.API_RATE_LIMIT_WINDOW_SECONDS = self._old_window
         security.API_RATE_LIMIT_MAX_REQUESTS = self._old_max
@@ -46,19 +50,49 @@ class SecurityTestCase(unittest.TestCase):
 
     def test_verify_admin_authorization_optional_when_no_token(self) -> None:
         security.AUTH_TOKEN = ""
+        security.ADMIN_AUTH_TOKEN = ""
+        security.NODE_AUTH_TOKEN = ""
         self.assertIsNone(security.verify_admin_authorization(None))
 
     def test_verify_admin_authorization_strict_when_token_set(self) -> None:
         security.AUTH_TOKEN = "abc123"
+        security.ADMIN_AUTH_TOKEN = ""
+        security.NODE_AUTH_TOKEN = ""
         self.assertIsNotNone(security.verify_admin_authorization(None))
         self.assertIsNotNone(security.verify_admin_authorization("Bearer wrong"))
         self.assertIsNone(security.verify_admin_authorization("Bearer abc123"))
 
     def test_verify_admin_authorization_accepts_token_rotation_list(self) -> None:
         security.AUTH_TOKEN = "newtoken,oldtoken"
+        security.ADMIN_AUTH_TOKEN = ""
+        security.NODE_AUTH_TOKEN = ""
         self.assertIsNone(security.verify_admin_authorization("Bearer newtoken"))
         self.assertIsNone(security.verify_admin_authorization("Bearer oldtoken"))
         self.assertIsNotNone(security.verify_admin_authorization("Bearer invalid"))
+
+    def test_split_tokens_admin_and_node_are_isolated(self) -> None:
+        security.AUTH_TOKEN = ""
+        security.ADMIN_AUTH_TOKEN = "admin-only"
+        security.NODE_AUTH_TOKEN = "node-only"
+        self.assertIsNone(security.verify_admin_authorization("Bearer admin-only"))
+        self.assertIsNotNone(security.verify_admin_authorization("Bearer node-only"))
+        self.assertIsNone(security.verify_node_authorization("Bearer node-only"))
+        self.assertIsNotNone(security.verify_node_authorization("Bearer admin-only"))
+
+    def test_split_tokens_fallback_to_legacy_when_missing(self) -> None:
+        security.AUTH_TOKEN = "legacy-token"
+        security.ADMIN_AUTH_TOKEN = ""
+        security.NODE_AUTH_TOKEN = ""
+        self.assertIsNone(security.verify_admin_authorization("Bearer legacy-token"))
+        self.assertIsNone(security.verify_node_authorization("Bearer legacy-token"))
+
+    def test_is_node_agent_auth_path(self) -> None:
+        self.assertTrue(security.is_node_agent_auth_path("/nodes/JP1/sync"))
+        self.assertTrue(security.is_node_agent_auth_path("/nodes/JP1/tasks/next"))
+        self.assertTrue(security.is_node_agent_auth_path("/nodes/JP1/tasks/12/report"))
+        self.assertTrue(security.is_node_agent_auth_path("/nodes/JP1/report_reality"))
+        self.assertFalse(security.is_node_agent_auth_path("/nodes/JP1/tasks/create"))
+        self.assertFalse(security.is_node_agent_auth_path("/admin/nodes/JP1/sync_preview"))
 
     def test_check_and_consume_rate_limit_window(self) -> None:
         security.API_RATE_LIMIT_WINDOW_SECONDS = 10

@@ -44,7 +44,9 @@ CONTROLLER_URL = os.getenv("CONTROLLER_URL", "http://127.0.0.1:8080").rstrip("/"
 if not CONTROLLER_URL:
     CONTROLLER_URL = "http://127.0.0.1:8080"
 CONTROLLER_PUBLIC_URL = os.getenv("CONTROLLER_PUBLIC_URL", "").strip().rstrip("/")
-CONTROLLER_AUTH_TOKEN = get_primary_auth_token(os.getenv("AUTH_TOKEN", "").strip())
+CONTROLLER_AUTH_TOKEN = get_primary_auth_token(
+    os.getenv("ADMIN_AUTH_TOKEN", "").strip()
+) or get_primary_auth_token(os.getenv("AUTH_TOKEN", "").strip())
 BOT_ACTOR_LABEL = os.getenv("BOT_ACTOR_LABEL", "sb-bot").strip() or "sb-bot"
 try:
     CONTROLLER_HTTP_TIMEOUT_SECONDS = float(
@@ -1888,7 +1890,7 @@ def localize_controller_error(error_message: str) -> str:
     if error_message.startswith("node source ip not allowed for"):
         return "节点来源IP不在白名单中"
     mapping = {
-        "unauthorized": "未授权（请检查 AUTH_TOKEN）",
+        "unauthorized": "未授权（请检查 ADMIN_AUTH_TOKEN/AUTH_TOKEN）",
         "subscription signature required": "订阅签名缺失",
         "subscription signature expired": "订阅签名已过期",
         "invalid subscription signature": "订阅签名无效",
@@ -4643,9 +4645,15 @@ async def run_admin_security_events_action(query, include_local: bool) -> None:
     elif isinstance(status_result, dict):
         auth_enabled = bool(status_result.get("auth_enabled"))
         auth_enabled_text = "已启用" if auth_enabled else "未启用"
+        admin_token_count = int(status_result.get("admin_auth_token_count", 0) or 0)
+        node_token_count = int(status_result.get("node_auth_token_count", 0) or 0)
         token_count_value = int(status_result.get("auth_token_count", 0) or 0)
-        token_count_text = str(token_count_value)
-        token_rotation_text = "是" if token_count_value > 1 else "否"
+        if admin_token_count > 0 or node_token_count > 0:
+            token_count_text = f"管理{admin_token_count}/节点{node_token_count}"
+            token_rotation_text = "是" if (admin_token_count > 1 or node_token_count > 1) else "否"
+        else:
+            token_count_text = str(token_count_value)
+            token_rotation_text = "是" if token_count_value > 1 else "否"
         blocked_ip_count_text = str(int(status_result.get("blocked_ip_count", 0) or 0))
         sample_seconds = int(status_result.get("unauthorized_audit_sample_seconds", 0) or 0)
         sample_enabled = bool(status_result.get("unauthorized_audit_sampling_enabled"))
@@ -4714,7 +4722,7 @@ async def run_admin_security_events_action(query, include_local: bool) -> None:
         if unauthorized_count >= 50:
             advice.append("1h 未授权较高，建议在云防火墙/UFW 增加来源限制。")
         if auth_enabled_text == "未启用":
-            advice.append("立即启用 AUTH_TOKEN 鉴权。")
+            advice.append("立即启用 ADMIN_AUTH_TOKEN/NODE_AUTH_TOKEN 鉴权。")
     if not advice:
         advice.append("继续观察 1h 趋势。")
 
@@ -4723,7 +4731,7 @@ async def run_admin_security_events_action(query, include_local: bool) -> None:
         f"未授权请求数：{unauthorized_count}",
         "统计模式：{0}".format("包含本机来源" if include_local_effective else "过滤本机测试来源"),
         f"鉴权状态：{auth_enabled_text}",
-        f"AUTH_TOKEN 数量：{token_count_text}",
+        f"Token 数量：{token_count_text}",
         f"多token过渡：{token_rotation_text}",
         f"未授权审计采样：{sample_text}",
         f"自动封禁策略：{auto_block_text}",

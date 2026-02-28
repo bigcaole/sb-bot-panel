@@ -24,10 +24,14 @@ class ControllerSmokeTestCase(unittest.TestCase):
             "app.AUTH_TOKEN": app_module.AUTH_TOKEN,
             "app.API_RATE_LIMIT_ENABLED": app_module.API_RATE_LIMIT_ENABLED,
             "security.AUTH_TOKEN": security_module.AUTH_TOKEN,
+            "security.ADMIN_AUTH_TOKEN": security_module.ADMIN_AUTH_TOKEN,
+            "security.NODE_AUTH_TOKEN": security_module.NODE_AUTH_TOKEN,
             "security.API_RATE_LIMIT_ENABLED": security_module.API_RATE_LIMIT_ENABLED,
             "routers_sub.SUB_LINK_SIGN_KEY": sub_router_module.SUB_LINK_SIGN_KEY,
             "routers_sub.SUB_LINK_REQUIRE_SIGNATURE": sub_router_module.SUB_LINK_REQUIRE_SIGNATURE,
             "routers_admin.AUTH_TOKEN": admin_router_module.AUTH_TOKEN,
+            "routers_admin.ADMIN_AUTH_TOKEN": admin_router_module.ADMIN_AUTH_TOKEN,
+            "routers_admin.NODE_AUTH_TOKEN": admin_router_module.NODE_AUTH_TOKEN,
             "routers_admin.SUB_LINK_SIGN_KEY": admin_router_module.SUB_LINK_SIGN_KEY,
             "routers_admin.SUB_LINK_REQUIRE_SIGNATURE": admin_router_module.SUB_LINK_REQUIRE_SIGNATURE,
             "routers_admin.SUB_LINK_DEFAULT_TTL_SECONDS": admin_router_module.SUB_LINK_DEFAULT_TTL_SECONDS,
@@ -53,10 +57,14 @@ class ControllerSmokeTestCase(unittest.TestCase):
         app_module.AUTH_TOKEN = "test-token"
         app_module.API_RATE_LIMIT_ENABLED = False
         security_module.AUTH_TOKEN = "test-token"
+        security_module.ADMIN_AUTH_TOKEN = ""
+        security_module.NODE_AUTH_TOKEN = ""
         security_module.API_RATE_LIMIT_ENABLED = False
         sub_router_module.SUB_LINK_SIGN_KEY = "sign-key"
         sub_router_module.SUB_LINK_REQUIRE_SIGNATURE = True
         admin_router_module.AUTH_TOKEN = "test-token"
+        admin_router_module.ADMIN_AUTH_TOKEN = ""
+        admin_router_module.NODE_AUTH_TOKEN = ""
         admin_router_module.SUB_LINK_SIGN_KEY = "sign-key"
         admin_router_module.SUB_LINK_REQUIRE_SIGNATURE = True
         admin_router_module.SUB_LINK_DEFAULT_TTL_SECONDS = 600
@@ -154,12 +162,16 @@ class ControllerSmokeTestCase(unittest.TestCase):
         app_module.AUTH_TOKEN = self._old_values["app.AUTH_TOKEN"]
         app_module.API_RATE_LIMIT_ENABLED = self._old_values["app.API_RATE_LIMIT_ENABLED"]
         security_module.AUTH_TOKEN = self._old_values["security.AUTH_TOKEN"]
+        security_module.ADMIN_AUTH_TOKEN = self._old_values["security.ADMIN_AUTH_TOKEN"]
+        security_module.NODE_AUTH_TOKEN = self._old_values["security.NODE_AUTH_TOKEN"]
         security_module.API_RATE_LIMIT_ENABLED = self._old_values["security.API_RATE_LIMIT_ENABLED"]
         sub_router_module.SUB_LINK_SIGN_KEY = self._old_values["routers_sub.SUB_LINK_SIGN_KEY"]
         sub_router_module.SUB_LINK_REQUIRE_SIGNATURE = self._old_values[
             "routers_sub.SUB_LINK_REQUIRE_SIGNATURE"
         ]
         admin_router_module.AUTH_TOKEN = self._old_values["routers_admin.AUTH_TOKEN"]
+        admin_router_module.ADMIN_AUTH_TOKEN = self._old_values["routers_admin.ADMIN_AUTH_TOKEN"]
+        admin_router_module.NODE_AUTH_TOKEN = self._old_values["routers_admin.NODE_AUTH_TOKEN"]
         admin_router_module.SUB_LINK_SIGN_KEY = self._old_values["routers_admin.SUB_LINK_SIGN_KEY"]
         admin_router_module.SUB_LINK_REQUIRE_SIGNATURE = self._old_values[
             "routers_admin.SUB_LINK_REQUIRE_SIGNATURE"
@@ -638,6 +650,55 @@ class ControllerSmokeTestCase(unittest.TestCase):
             self.assertTrue(bool(auto_block_payload.get("ok")))
             self.assertIn("enabled", auto_block_payload)
             self.assertIn("blocked_count", auto_block_payload)
+
+    def test_split_admin_and_node_tokens(self) -> None:
+        security_module.AUTH_TOKEN = ""
+        security_module.ADMIN_AUTH_TOKEN = "admin-token"
+        security_module.NODE_AUTH_TOKEN = "node-token"
+        admin_router_module.AUTH_TOKEN = ""
+        admin_router_module.ADMIN_AUTH_TOKEN = "admin-token"
+        admin_router_module.NODE_AUTH_TOKEN = "node-token"
+
+        with TestClient(app_module.app) as client:
+            admin_headers = {"Authorization": "Bearer admin-token"}
+            node_headers = {"Authorization": "Bearer node-token"}
+
+            admin_nodes = client.get("/nodes", headers=admin_headers)
+            self.assertEqual(200, admin_nodes.status_code)
+            node_nodes = client.get("/nodes", headers=node_headers)
+            self.assertEqual(401, node_nodes.status_code)
+
+            node_sync = client.get("/nodes/JP1/sync", headers=node_headers)
+            self.assertEqual(200, node_sync.status_code)
+            admin_sync = client.get("/nodes/JP1/sync", headers=admin_headers)
+            self.assertEqual(401, admin_sync.status_code)
+
+            node_report = client.post(
+                "/nodes/JP1/report_reality",
+                headers=node_headers,
+                json={
+                    "reality_public_key": "pubkey-node-split",
+                    "reality_short_id": "1234abcd",
+                },
+            )
+            self.assertEqual(200, node_report.status_code)
+            admin_report = client.post(
+                "/nodes/JP1/report_reality",
+                headers=admin_headers,
+                json={
+                    "reality_public_key": "pubkey-admin-split",
+                    "reality_short_id": "dcba4321",
+                },
+            )
+            self.assertEqual(401, admin_report.status_code)
+
+            admin_sec = client.get("/admin/security/status", headers=admin_headers)
+            self.assertEqual(200, admin_sec.status_code)
+            payload = admin_sec.json()
+            self.assertTrue(bool(payload.get("admin_auth_enabled")))
+            self.assertTrue(bool(payload.get("node_auth_enabled")))
+            self.assertEqual(1, int(payload.get("admin_auth_token_count", 0) or 0))
+            self.assertEqual(1, int(payload.get("node_auth_token_count", 0) or 0))
 
     def test_rate_limit_applies_before_auth_for_protected_paths(self) -> None:
         old_app_enabled = app_module.API_RATE_LIMIT_ENABLED

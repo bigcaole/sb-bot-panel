@@ -21,6 +21,8 @@ def _get_int_env(name: str, default: int) -> int:
 
 
 AUTH_TOKEN = os.getenv("AUTH_TOKEN", "").strip()
+ADMIN_AUTH_TOKEN = os.getenv("ADMIN_AUTH_TOKEN", "").strip()
+NODE_AUTH_TOKEN = os.getenv("NODE_AUTH_TOKEN", "").strip()
 TRUST_X_FORWARDED_FOR = os.getenv("TRUST_X_FORWARDED_FOR", "0").strip() in (
     "1",
     "true",
@@ -86,6 +88,12 @@ RATE_LIMIT_STATIC_SEGMENTS: Set[str] = {
     "status",
     "audit",
 }
+_NODE_AGENT_PATH_PATTERNS = (
+    re.compile(r"^/nodes/[^/]+/sync$"),
+    re.compile(r"^/nodes/[^/]+/tasks/next$"),
+    re.compile(r"^/nodes/[^/]+/tasks/[0-9]+/report$"),
+    re.compile(r"^/nodes/[^/]+/report_reality$"),
+)
 
 
 def _trim_oldest_state_items(
@@ -106,17 +114,42 @@ def _trim_oldest_state_items(
         state.pop(key, None)
 
 
-def get_auth_tokens() -> list:
+def _split_auth_tokens(raw: str) -> list:
     tokens = []
-    for item in str(AUTH_TOKEN or "").split(","):
+    for item in str(raw or "").split(","):
         token = str(item or "").strip()
         if token:
             tokens.append(token)
     return tokens
 
 
-def verify_admin_authorization(authorization: Optional[str]) -> Optional[JSONResponse]:
-    tokens = get_auth_tokens()
+def get_admin_auth_tokens() -> list:
+    effective = str(ADMIN_AUTH_TOKEN or "").strip()
+    if not effective:
+        effective = str(AUTH_TOKEN or "").strip()
+    if not effective:
+        effective = str(NODE_AUTH_TOKEN or "").strip()
+    return _split_auth_tokens(effective)
+
+
+def get_node_auth_tokens() -> list:
+    effective = str(NODE_AUTH_TOKEN or "").strip()
+    if not effective:
+        effective = str(AUTH_TOKEN or "").strip()
+    if not effective:
+        effective = str(ADMIN_AUTH_TOKEN or "").strip()
+    return _split_auth_tokens(effective)
+
+
+def get_auth_tokens() -> list:
+    # Backward-compatible alias for existing call sites/tests.
+    return get_admin_auth_tokens()
+
+
+def verify_authorization_with_tokens(
+    authorization: Optional[str],
+    tokens: list,
+) -> Optional[JSONResponse]:
     if not tokens:
         return None
     auth_value = str(authorization or "")
@@ -125,6 +158,30 @@ def verify_admin_authorization(authorization: Optional[str]) -> Optional[JSONRes
         if hmac.compare_digest(auth_value, expected):
             return None
     return JSONResponse(status_code=401, content={"ok": False, "error": "unauthorized"})
+
+
+def verify_admin_authorization(authorization: Optional[str]) -> Optional[JSONResponse]:
+    return verify_authorization_with_tokens(authorization, get_admin_auth_tokens())
+
+
+def verify_node_authorization(authorization: Optional[str]) -> Optional[JSONResponse]:
+    return verify_authorization_with_tokens(authorization, get_node_auth_tokens())
+
+
+def has_any_admin_auth_token() -> bool:
+    return bool(get_admin_auth_tokens())
+
+
+def has_any_node_auth_token() -> bool:
+    return bool(get_node_auth_tokens())
+
+
+def is_node_agent_auth_path(path: str) -> bool:
+    normalized = str(path or "").strip() or "/"
+    for pattern in _NODE_AGENT_PATH_PATTERNS:
+        if pattern.match(normalized):
+            return True
+    return False
 
 
 def is_auth_exempt_path(path: str) -> bool:

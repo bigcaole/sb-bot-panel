@@ -27,7 +27,7 @@ from controller.schemas import (
     ReportNodeTaskRequest,
     UpdateNodeRequest,
 )
-from controller.security import verify_admin_authorization
+from controller.security import verify_admin_authorization, verify_node_authorization
 from controller.settings import (
     NODE_TASK_MAX_PENDING_PER_NODE,
     NODE_TASK_RETENTION_SECONDS,
@@ -106,7 +106,7 @@ def get_next_node_task(
     request: Request,
     authorization: Optional[str] = Header(default=None, alias="Authorization"),
 ) -> Union[Dict[str, Any], JSONResponse]:
-    auth_error = verify_admin_authorization(authorization)
+    auth_error = verify_node_authorization(authorization)
     if auth_error is not None:
         return auth_error
     return get_next_node_task_service(
@@ -125,7 +125,7 @@ def report_node_task(
     request: Request,
     authorization: Optional[str] = Header(default=None, alias="Authorization"),
 ) -> Union[Dict[str, Any], JSONResponse]:
-    auth_error = verify_admin_authorization(authorization)
+    auth_error = verify_node_authorization(authorization)
     if auth_error is not None:
         return auth_error
     result = report_node_task_service(
@@ -146,7 +146,7 @@ def report_node_reality(
     request: Request,
     authorization: Optional[str] = Header(default=None, alias="Authorization"),
 ) -> Union[Dict[str, Any], JSONResponse]:
-    auth_error = verify_admin_authorization(authorization)
+    auth_error = verify_node_authorization(authorization)
     if auth_error is not None:
         return auth_error
     result = report_node_reality_service(

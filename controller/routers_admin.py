@@ -38,14 +38,17 @@ from controller.schemas import (
     VerifyDbExportRequest,
 )
 from controller.security import (
+    ADMIN_AUTH_TOKEN as SECURITY_ADMIN_AUTH_TOKEN,
     AUTH_TOKEN as SECURITY_AUTH_TOKEN,
+    NODE_AUTH_TOKEN as SECURITY_NODE_AUTH_TOKEN,
     API_RATE_LIMIT_ENABLED,
     API_RATE_LIMIT_MAX_REQUESTS,
     API_RATE_LIMIT_WINDOW_SECONDS,
     TRUSTED_PROXY_IPS,
     TRUST_X_FORWARDED_FOR,
     UNAUTHORIZED_AUDIT_SAMPLE_SECONDS,
-    get_auth_tokens,
+    get_admin_auth_tokens,
+    get_node_auth_tokens,
     verify_admin_authorization,
 )
 from controller.settings import (
@@ -85,6 +88,8 @@ from controller.subscription import build_signed_subscription_urls
 router = APIRouter(tags=["admin"])
 # Compatibility alias for existing tests/tools that import controller.routers_admin.AUTH_TOKEN.
 AUTH_TOKEN = SECURITY_AUTH_TOKEN
+ADMIN_AUTH_TOKEN = SECURITY_ADMIN_AUTH_TOKEN
+NODE_AUTH_TOKEN = SECURITY_NODE_AUTH_TOKEN
 ADMIN_AI_CONTEXT_EXPORT_SCRIPT = BASE_DIR / "scripts" / "admin" / "ai_context_export.sh"
 ADMIN_AI_CONTEXT_EXPORT_TIMEOUT_SECONDS = 40
 ADMIN_OPS_SNAPSHOT_SCRIPT = BASE_DIR / "scripts" / "admin" / "ops_snapshot.sh"
@@ -298,12 +303,12 @@ def sync_node_auth_tokens(
     if auth_error is not None:
         return auth_error
 
-    tokens = get_auth_tokens()
+    tokens = get_node_auth_tokens()
     if not tokens:
-        raise HTTPException(status_code=400, detail="AUTH_TOKEN 未配置")
+        raise HTTPException(status_code=400, detail="NODE_AUTH_TOKEN 未配置")
     primary_token = str(tokens[0]).strip()
     if not primary_token:
-        raise HTTPException(status_code=400, detail="AUTH_TOKEN 主 token 为空")
+        raise HTTPException(status_code=400, detail="NODE_AUTH_TOKEN 主 token 为空")
 
     include_disabled_flag = int(include_disabled) == 1
     force_new_flag = int(force_new) == 1
@@ -335,12 +340,12 @@ def sync_node_agent_defaults(
     if auth_error is not None:
         return auth_error
 
-    tokens = get_auth_tokens()
+    tokens = get_node_auth_tokens()
     if not tokens:
-        raise HTTPException(status_code=400, detail="AUTH_TOKEN 未配置")
+        raise HTTPException(status_code=400, detail="NODE_AUTH_TOKEN 未配置")
     primary_token = str(tokens[0]).strip()
     if not primary_token:
-        raise HTTPException(status_code=400, detail="AUTH_TOKEN 主 token 为空")
+        raise HTTPException(status_code=400, detail="NODE_AUTH_TOKEN 主 token 为空")
 
     config_payload: Dict[str, Union[int, str]] = {
         "auth_token": primary_token,
@@ -515,7 +520,13 @@ def build_security_status_payload(
     conn: Optional[sqlite3.Connection] = None,
     now_ts: Optional[int] = None,
 ) -> Dict[str, Union[bool, int, List[str]]]:
-    auth_tokens = get_auth_tokens()
+    admin_auth_tokens = get_admin_auth_tokens()
+    node_auth_tokens = get_node_auth_tokens()
+    auth_tokens = list(admin_auth_tokens)
+    for item in node_auth_tokens:
+        value = str(item or "").strip()
+        if value and value not in auth_tokens:
+            auth_tokens.append(value)
     weak_token_risks = _collect_auth_token_risks(auth_tokens)
     if now_ts is None:
         now_ts = int(time.time())
@@ -540,12 +551,16 @@ def build_security_status_payload(
         or 0
     )
     warnings: List[str] = []
-    if not auth_tokens:
-        warnings.append("AUTH_TOKEN 未设置：管理接口未启用鉴权")
-    if len(auth_tokens) > 1:
-        warnings.append("AUTH_TOKEN 处于多 token 过渡模式（建议迁移完成后移除旧 token）")
+    if not admin_auth_tokens:
+        warnings.append("ADMIN_AUTH_TOKEN 未设置：管理接口未启用鉴权")
+    if not node_auth_tokens:
+        warnings.append("NODE_AUTH_TOKEN 未设置：节点接口未启用鉴权")
+    if len(admin_auth_tokens) > 1:
+        warnings.append("ADMIN_AUTH_TOKEN 处于多 token 过渡模式（建议迁移完成后移除旧 token）")
+    if len(node_auth_tokens) > 1:
+        warnings.append("NODE_AUTH_TOKEN 处于多 token 过渡模式（建议迁移完成后移除旧 token）")
     if weak_token_risks:
-        warnings.append("AUTH_TOKEN 强度偏弱（建议至少 24 位随机串，含字母与数字）")
+        warnings.append("鉴权 token 强度偏弱（建议至少 24 位随机串，含字母与数字）")
     if not SUB_LINK_SIGN_KEY:
         warnings.append("SUB_LINK_SIGN_KEY 未设置：订阅签名功能不可用")
     if SUB_LINK_SIGN_KEY and not SUB_LINK_REQUIRE_SIGNATURE:
@@ -572,8 +587,12 @@ def build_security_status_payload(
         warnings.append("SECURITY_BLOCK_PROTECTED_IPS 含无效项（已忽略），请修正格式")
 
     return {
-        "auth_enabled": bool(auth_tokens),
+        "auth_enabled": bool(admin_auth_tokens),
         "auth_token_count": len(auth_tokens),
+        "admin_auth_enabled": bool(admin_auth_tokens),
+        "admin_auth_token_count": len(admin_auth_tokens),
+        "node_auth_enabled": bool(node_auth_tokens),
+        "node_auth_token_count": len(node_auth_tokens),
         "weak_auth_token_count": len(weak_token_risks),
         "weak_auth_token_risks": weak_token_risks,
         "controller_port_whitelist": CONTROLLER_PORT_WHITELIST_ITEMS,
