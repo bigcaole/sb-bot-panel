@@ -983,6 +983,32 @@ async def reply_text_with_auto_clear(
     return sent
 
 
+async def edit_or_reply_with_auto_clear(
+    query,
+    context: ContextTypes.DEFAULT_TYPE,
+    text: str,
+    reply_markup=None,
+) -> None:
+    try:
+        await query.edit_message_text(text, reply_markup=reply_markup)
+        if query.message and isinstance(reply_markup, InlineKeyboardMarkup):
+            schedule_menu_auto_clear(context, query.message.chat_id, query.message.message_id)
+        return
+    except (BadRequest, Forbidden):
+        pass
+
+    if query.message:
+        try:
+            await reply_text_with_auto_clear(
+                query.message, context, text, reply_markup=reply_markup
+            )
+            return
+        except (BadRequest, Forbidden):
+            pass
+
+    await query.answer("操作完成，请重新打开菜单查看结果。", show_alert=True)
+
+
 async def refresh_callback_menu_ttl(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
@@ -5440,7 +5466,9 @@ async def create_user_confirm(
         "POST", "/users/create", payload=payload
     )
     if error_message:
-        await query.edit_message_text(
+        await edit_or_reply_with_auto_clear(
+            query,
+            context,
             f"创建失败：{error_message}\n\n"
             f"{format_create_summary(payload['display_name'], payload['tuic_port'], payload['speed_mbps'], payload['valid_days'])}",
             reply_markup=build_create_confirm_keyboard(),
@@ -5448,7 +5476,9 @@ async def create_user_confirm(
         return CREATE_CONFIRM
 
     if not isinstance(result, dict):
-        await query.edit_message_text(
+        await edit_or_reply_with_auto_clear(
+            query,
+            context,
             "创建失败：控制器返回格式异常。\n\n"
             f"{format_create_summary(payload['display_name'], payload['tuic_port'], payload['speed_mbps'], payload['valid_days'])}",
             reply_markup=build_create_confirm_keyboard(),
@@ -5462,7 +5492,9 @@ async def create_user_confirm(
     speed_text = "不限速（0 Mbps）" if speed_mbps == 0 else f"{speed_mbps} Mbps"
     tuic_port = result.get("tuic_port", "")
 
-    await query.edit_message_text(
+    await edit_or_reply_with_auto_clear(
+        query,
+        context,
         "创建成功\n\n"
         f"用户代码：{user_code}\n"
         f"到期时间：{expire_text}\n"
@@ -5731,7 +5763,9 @@ async def nodes_create_confirm(
         "POST", "/nodes/create", payload=payload
     )
     if error_message:
-        await query.edit_message_text(
+        await edit_or_reply_with_auto_clear(
+            query,
+            context,
             f"创建节点失败：{error_message}",
             reply_markup=build_submenu("nodes"),
         )
@@ -5739,7 +5773,9 @@ async def nodes_create_confirm(
         return ConversationHandler.END
 
     if not isinstance(result, dict):
-        await query.edit_message_text(
+        await edit_or_reply_with_auto_clear(
+            query,
+            context,
             "创建节点失败：控制器返回格式异常",
             reply_markup=build_submenu("nodes"),
         )
@@ -5747,7 +5783,9 @@ async def nodes_create_confirm(
         return ConversationHandler.END
 
     reality_text = result.get("reality_server_name") or "未设置"
-    await query.edit_message_text(
+    await edit_or_reply_with_auto_clear(
+        query,
+        context,
         "创建节点成功\n\n"
         f"节点代码：{result.get('node_code', payload['node_code'])}\n"
         f"地区：{result.get('region', payload['region'])}\n"
