@@ -9,7 +9,9 @@ class SecurityTestCase(unittest.TestCase):
         self._old_api_docs_enabled = security.API_DOCS_ENABLED
         self._old_window = security.API_RATE_LIMIT_WINDOW_SECONDS
         self._old_max = security.API_RATE_LIMIT_MAX_REQUESTS
+        self._old_state_max_keys = security.RATE_LIMIT_STATE_MAX_KEYS
         self._old_unauth_sample = security.UNAUTHORIZED_AUDIT_SAMPLE_SECONDS
+        self._old_unauth_state_max_keys = security.UNAUTHORIZED_AUDIT_STATE_MAX_KEYS
         security._RATE_LIMIT_STATE.clear()
         security._RATE_LIMIT_LAST_CLEANUP_AT = 0
         security._UNAUTH_AUDIT_STATE.clear()
@@ -20,7 +22,9 @@ class SecurityTestCase(unittest.TestCase):
         security.API_DOCS_ENABLED = self._old_api_docs_enabled
         security.API_RATE_LIMIT_WINDOW_SECONDS = self._old_window
         security.API_RATE_LIMIT_MAX_REQUESTS = self._old_max
+        security.RATE_LIMIT_STATE_MAX_KEYS = self._old_state_max_keys
         security.UNAUTHORIZED_AUDIT_SAMPLE_SECONDS = self._old_unauth_sample
+        security.UNAUTHORIZED_AUDIT_STATE_MAX_KEYS = self._old_unauth_state_max_keys
         security._RATE_LIMIT_STATE.clear()
         security._RATE_LIMIT_LAST_CLEANUP_AT = 0
         security._UNAUTH_AUDIT_STATE.clear()
@@ -111,6 +115,31 @@ class SecurityTestCase(unittest.TestCase):
         key = security.build_unauthorized_audit_key("1.2.3.4", "/nodes", "GET")
         self.assertEqual(security.should_write_unauthorized_audit(key, 100), (True, 0))
         self.assertEqual(security.should_write_unauthorized_audit(key, 101), (True, 0))
+
+    def test_rate_limit_state_prunes_when_exceeds_max_keys(self) -> None:
+        security.API_RATE_LIMIT_WINDOW_SECONDS = 3600
+        security.API_RATE_LIMIT_MAX_REQUESTS = 100
+        security.RATE_LIMIT_STATE_MAX_KEYS = 100
+        now_ts = 100
+        for index in range(101):
+            identity = f"ip{index}:/admin/overview"
+            limited, retry_after = security.check_and_consume_rate_limit(identity, now_ts + index)
+            self.assertEqual((limited, retry_after), (False, 0))
+
+        self.assertLessEqual(len(security._RATE_LIMIT_STATE), 100)
+        self.assertNotIn("ip0:/admin/overview", security._RATE_LIMIT_STATE)
+
+    def test_unauth_audit_state_prunes_when_exceeds_max_keys(self) -> None:
+        security.UNAUTHORIZED_AUDIT_SAMPLE_SECONDS = 30
+        security.UNAUTHORIZED_AUDIT_STATE_MAX_KEYS = 100
+        for index in range(101):
+            key = security.build_unauthorized_audit_key(f"198.51.100.{index}", "/nodes", "GET")
+            should_write, dropped = security.should_write_unauthorized_audit(key, 100 + index)
+            self.assertEqual((should_write, dropped), (True, 0))
+
+        self.assertLessEqual(len(security._UNAUTH_AUDIT_STATE), 100)
+        old_key = security.build_unauthorized_audit_key("198.51.100.0", "/nodes", "GET")
+        self.assertNotIn(old_key, security._UNAUTH_AUDIT_STATE)
 
 
 if __name__ == "__main__":
