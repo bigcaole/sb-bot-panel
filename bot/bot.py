@@ -5436,31 +5436,10 @@ async def create_user_confirm(
         "valid_days": wizard_data["valid_days"],
         "note": "",
     }
-    headers = {}
-    if CONTROLLER_AUTH_TOKEN:
-        headers["Authorization"] = f"Bearer {CONTROLLER_AUTH_TOKEN}"
-
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.post(
-                f"{CONTROLLER_URL}/users/create",
-                json=payload,
-                headers=headers,
-            )
-    except httpx.HTTPError as exc:
-        await query.edit_message_text(
-            f"创建失败：无法连接控制器接口（{exc}）。\n\n"
-            f"{format_create_summary(payload['display_name'], payload['tuic_port'], payload['speed_mbps'], payload['valid_days'])}",
-            reply_markup=build_create_confirm_keyboard(),
-        )
-        return CREATE_CONFIRM
-
-    if response.status_code >= 400:
-        try:
-            error_body = response.json()
-            error_message = str(error_body.get("detail", error_body))
-        except ValueError:
-            error_message = response.text or f"HTTP {response.status_code}"
+    result, error_message, _ = await controller_request(
+        "POST", "/users/create", payload=payload
+    )
+    if error_message:
         await query.edit_message_text(
             f"创建失败：{error_message}\n\n"
             f"{format_create_summary(payload['display_name'], payload['tuic_port'], payload['speed_mbps'], payload['valid_days'])}",
@@ -5468,7 +5447,14 @@ async def create_user_confirm(
         )
         return CREATE_CONFIRM
 
-    result = response.json()
+    if not isinstance(result, dict):
+        await query.edit_message_text(
+            "创建失败：控制器返回格式异常。\n\n"
+            f"{format_create_summary(payload['display_name'], payload['tuic_port'], payload['speed_mbps'], payload['valid_days'])}",
+            reply_markup=build_create_confirm_keyboard(),
+        )
+        return CREATE_CONFIRM
+
     user_code = result.get("user_code", "")
     expire_at = int(result.get("expire_at", 0))
     expire_text = datetime.fromtimestamp(expire_at).strftime("%Y-%m-%d %H:%M:%S")
@@ -5741,31 +5727,10 @@ async def nodes_create_confirm(
     reality_server_name = wizard_data.get("reality_server_name", "")
     if reality_server_name:
         payload["reality_server_name"] = reality_server_name
-    headers = {}
-    if CONTROLLER_AUTH_TOKEN:
-        headers["Authorization"] = f"Bearer {CONTROLLER_AUTH_TOKEN}"
-
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.post(
-                f"{CONTROLLER_URL}/nodes/create",
-                json=payload,
-                headers=headers,
-            )
-    except httpx.HTTPError as exc:
-        await query.edit_message_text(
-            f"创建节点失败：无法连接控制器接口（{exc}）。",
-            reply_markup=build_submenu("nodes"),
-        )
-        context.user_data.pop(NODES_WIZARD_KEY, None)
-        return ConversationHandler.END
-
-    if response.status_code >= 400:
-        try:
-            error_body = response.json()
-            error_message = str(error_body.get("detail", error_body))
-        except ValueError:
-            error_message = response.text or f"HTTP {response.status_code}"
+    result, error_message, _ = await controller_request(
+        "POST", "/nodes/create", payload=payload
+    )
+    if error_message:
         await query.edit_message_text(
             f"创建节点失败：{error_message}",
             reply_markup=build_submenu("nodes"),
@@ -5773,7 +5738,14 @@ async def nodes_create_confirm(
         context.user_data.pop(NODES_WIZARD_KEY, None)
         return ConversationHandler.END
 
-    result = response.json()
+    if not isinstance(result, dict):
+        await query.edit_message_text(
+            "创建节点失败：控制器返回格式异常",
+            reply_markup=build_submenu("nodes"),
+        )
+        context.user_data.pop(NODES_WIZARD_KEY, None)
+        return ConversationHandler.END
+
     reality_text = result.get("reality_server_name") or "未设置"
     await query.edit_message_text(
         "创建节点成功\n\n"
