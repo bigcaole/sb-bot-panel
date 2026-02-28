@@ -43,6 +43,7 @@ def get_primary_auth_token(raw: str) -> str:
 CONTROLLER_URL = os.getenv("CONTROLLER_URL", "http://127.0.0.1:8080").rstrip("/")
 if not CONTROLLER_URL:
     CONTROLLER_URL = "http://127.0.0.1:8080"
+CONTROLLER_PUBLIC_URL = os.getenv("CONTROLLER_PUBLIC_URL", "").strip().rstrip("/")
 CONTROLLER_AUTH_TOKEN = get_primary_auth_token(os.getenv("AUTH_TOKEN", "").strip())
 BOT_ACTOR_LABEL = os.getenv("BOT_ACTOR_LABEL", "sb-bot").strip() or "sb-bot"
 try:
@@ -138,6 +139,16 @@ if NODE_TIME_SYNC_INTERVAL_SECONDS < 0:
     NODE_TIME_SYNC_INTERVAL_SECONDS = 0
 if NODE_TIME_SYNC_INTERVAL_SECONDS > 30 * 86400:
     NODE_TIME_SYNC_INTERVAL_SECONDS = 30 * 86400
+try:
+    AGENT_DEFAULT_POLL_INTERVAL = int(
+        os.getenv("AGENT_DEFAULT_POLL_INTERVAL", "15").strip() or "15"
+    )
+except ValueError:
+    AGENT_DEFAULT_POLL_INTERVAL = 15
+if AGENT_DEFAULT_POLL_INTERVAL < 5:
+    AGENT_DEFAULT_POLL_INTERVAL = 5
+if AGENT_DEFAULT_POLL_INTERVAL > 3600:
+    AGENT_DEFAULT_POLL_INTERVAL = 3600
 
 WIZARD_KEY = "create_user_wizard"
 CREATE_DISPLAY_NAME, CREATE_TUIC_PORT, CREATE_SPEED_MBPS, CREATE_VALID_DAYS, CREATE_CONFIRM = range(5)
@@ -667,6 +678,12 @@ def normalize_simple_url(raw_value: str, default_scheme: str = "http") -> str:
         return value.rstrip("/")
     scheme = "https" if default_scheme == "https" else "http"
     return "{0}://{1}".format(scheme, value.rstrip("/"))
+
+
+def is_local_endpoint_url(raw_url: str) -> bool:
+    parsed = urlparse(str(raw_url or "").strip())
+    host = str(parsed.hostname or "").strip().lower()
+    return host in ("127.0.0.1", "localhost", "::1")
 
 
 def build_maintain_logs_keyboard() -> InlineKeyboardMarkup:
@@ -5842,6 +5859,43 @@ async def nodes_create_confirm(
         return ConversationHandler.END
 
     created_node_code = str(result.get("node_code", payload["node_code"]))
+    auto_config_lines = []
+    init_payload = {}
+    if CONTROLLER_AUTH_TOKEN:
+        init_payload["auth_token"] = CONTROLLER_AUTH_TOKEN
+    init_payload["poll_interval"] = AGENT_DEFAULT_POLL_INTERVAL
+    normalized_public_url = normalize_simple_url(CONTROLLER_PUBLIC_URL, "https")
+    if normalized_public_url and not is_local_endpoint_url(normalized_public_url):
+        init_payload["controller_url"] = normalized_public_url
+    if init_payload:
+        task_result, task_error, _ = await create_node_task(
+            created_node_code,
+            "config_set",
+            payload=init_payload,
+            max_attempts=1,
+        )
+        if task_error:
+            auto_config_lines.append(
+                "[WARN] 初始化配置任务下发失败：{0}".format(localize_controller_error(task_error))
+            )
+        elif isinstance(task_result, dict):
+            task_id = int(task_result.get("id", 0) or 0)
+            deduplicated = bool(task_result.get("deduplicated"))
+            if deduplicated:
+                auto_config_lines.append("[OK] 初始化配置任务已存在（去重命中）")
+            elif task_id > 0:
+                auto_config_lines.append(
+                    "[OK] 已下发初始化配置任务 #{0}（auth_token/poll_interval/controller_url）".format(
+                        task_id
+                    )
+                )
+            else:
+                auto_config_lines.append("[OK] 已下发初始化配置任务")
+        else:
+            auto_config_lines.append("[WARN] 初始化配置任务返回格式异常")
+    else:
+        auto_config_lines.append("[WARN] 初始化配置未下发：缺少可用配置项")
+
     node_detail, node_detail_error, _ = await controller_request("GET", f"/nodes/{created_node_code}")
     readiness_lines = []
     if isinstance(node_detail, dict) and not node_detail_error:
@@ -5888,8 +5942,11 @@ async def nodes_create_confirm(
         readiness_lines.append(f"[WARN] 就绪诊断读取失败：{localize_controller_error(node_detail_error)}")
 
     readiness_text = ""
-    if readiness_lines:
-        readiness_text = "\n\n就绪诊断：\n" + "\n".join(readiness_lines)
+    merged_lines = []
+    merged_lines.extend(auto_config_lines)
+    merged_lines.extend(readiness_lines)
+    if merged_lines:
+        readiness_text = "\n\n就绪诊断：\n" + "\n".join(merged_lines)
 
     reality_text = result.get("reality_server_name") or "未设置"
     await edit_or_reply_with_auto_clear(

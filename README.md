@@ -293,6 +293,7 @@ sudo bash scripts/admin/bot_regression_check.sh
 - 修改节点参数（写入 `/etc/sb-agent/config.json`，如 `poll_interval`、`tuic_domain`、`tuic_listen_port` 等）
 - 任务生命周期：controller 自动处理超时任务（默认 120 秒）、失败重试（按任务重试次数）与历史清理（默认保留 7 天）
 - 节点详情支持“同步预览（排障）”：调用 `/admin/nodes/{node_code}/sync_preview`，可在管理端直接查看该节点将收到的下发内容（不受 `agent_ip` 限制）
+- 通过 bot 新建节点后，会自动尝试为该节点下发初始化 `config_set`（`auth_token`/`poll_interval`/可用时 `controller_url`），减少手工同步步骤。
 
 新机上线最短路径（推荐）：
 
