@@ -319,6 +319,7 @@ SUBMENUS = {
             ("🔐 HTTPS证书状态", "action:maintain_https_status"),
             ("♻️ HTTPS证书刷新", "action:maintain_https_reload"),
             ("💾 立即备份", "action:maintain_backup"),
+            ("📦 诊断打包", "action:maintain_diag_bundle"),
             ("🧾 运维快照", "action:maintain_ops_snapshot"),
             ("🧠 AI诊断包", "action:maintain_ai_context_export"),
             ("⬅️ 返回管理服务器", "menu:maintain"),
@@ -388,6 +389,7 @@ PRIVILEGED_CALLBACK_EXACT = {
     "action:backup_stop": ROLE_SUPER,
     "action:nodes_create": ROLE_OPERATOR,
     "action:maintain_backup": ROLE_OPERATOR,
+    "action:maintain_diag_bundle": ROLE_OPERATOR,
     "action:maintain_ops_snapshot": ROLE_OPERATOR,
     "action:maintain_ai_context_export": ROLE_OPERATOR,
     "action:maintain_smoke": ROLE_OPERATOR,
@@ -448,6 +450,7 @@ MUTATION_CALLBACK_EXACT = {
     "action:backup_now",
     "backup:stop:confirm",
     "action:maintain_backup",
+    "action:maintain_diag_bundle",
     "action:maintain_ops_snapshot",
     "action:maintain_ai_context_export",
     "action:maintain_smoke",
@@ -3632,6 +3635,67 @@ async def run_admin_ops_snapshot_action(query, back_menu_callback: str) -> None:
         f"时间：{created_text}\n\n"
         "可直接查看：\n"
         f"cat {output_path}",
+        reply_markup=build_back_keyboard(back_menu_callback),
+    )
+
+
+async def run_admin_diag_bundle_action(query, back_menu_callback: str) -> None:
+    ops_result, ops_error, _ = await controller_request(
+        "POST", "/admin/diagnostics/ops_snapshot"
+    )
+    ai_result, ai_error, _ = await controller_request(
+        "POST", "/admin/diagnostics/ai_context_export"
+    )
+
+    if ops_error and ai_error:
+        await query.edit_message_text(
+            "诊断打包失败：\n"
+            f"- 运维快照：{localize_controller_error(ops_error)}\n"
+            f"- AI诊断包：{localize_controller_error(ai_error)}",
+            reply_markup=build_back_keyboard(back_menu_callback),
+        )
+        return
+
+    lines = ["诊断打包结果（管理服务器本地）", ""]
+    if not ops_error and isinstance(ops_result, dict):
+        lines.extend(
+            [
+                "运维快照：",
+                f"- 路径：{str(ops_result.get('path', ''))}",
+                f"- 大小：{int(ops_result.get('size_bytes', 0) or 0)} bytes",
+                "",
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                "运维快照：失败",
+                f"- 原因：{localize_controller_error(ops_error or 'unknown')}",
+                "",
+            ]
+        )
+
+    if not ai_error and isinstance(ai_result, dict):
+        lines.extend(
+            [
+                "AI诊断包：",
+                f"- 路径：{str(ai_result.get('path', ''))}",
+                f"- 大小：{int(ai_result.get('size_bytes', 0) or 0)} bytes",
+                "",
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                "AI诊断包：失败",
+                f"- 原因：{localize_controller_error(ai_error or 'unknown')}",
+                "",
+            ]
+        )
+
+    lines.append("提示：优先把 AI 诊断包内容整体粘贴给 AI 分析。")
+    await query.edit_message_text(
+        "\n".join(lines),
         reply_markup=build_back_keyboard(back_menu_callback),
     )
 
@@ -7553,6 +7617,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     if callback_data == "action:maintain_backup":
         await run_admin_backup_action(query, "menu:maintain")
+        return
+
+    if callback_data == "action:maintain_diag_bundle":
+        await run_admin_diag_bundle_action(query, "menu:maintain_cert")
         return
 
     if callback_data == "action:maintain_ops_snapshot":

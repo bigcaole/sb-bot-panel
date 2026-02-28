@@ -1,4 +1,5 @@
 import time
+from threading import Lock
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -48,6 +49,32 @@ else:
 _SECURITY_BLOCK_CLEANUP_LAST_AT = 0
 _AUDIT_LOG_CLEANUP_LAST_AT = 0
 _SECURITY_AUTO_BLOCK_LAST_AT = 0
+_SECURITY_BLOCK_CLEANUP_LOCK = Lock()
+_AUDIT_LOG_CLEANUP_LOCK = Lock()
+_SECURITY_AUTO_BLOCK_LOCK = Lock()
+
+
+def _maybe_run_periodic_task(
+    now_ts: int,
+    interval_seconds: int,
+    last_at: int,
+    task_lock: Lock,
+    task_runner,
+) -> int:
+    if now_ts - int(last_at) < int(interval_seconds):
+        return int(last_at)
+    if not task_lock.acquire(blocking=False):
+        return int(last_at)
+    try:
+        if now_ts - int(last_at) < int(interval_seconds):
+            return int(last_at)
+        try:
+            task_runner()
+        except Exception:
+            pass
+        return int(now_ts)
+    finally:
+        task_lock.release()
 
 
 @app.middleware("http")
@@ -56,36 +83,28 @@ async def auth_middleware(request: Request, call_next):
     global _AUDIT_LOG_CLEANUP_LAST_AT
     global _SECURITY_AUTO_BLOCK_LAST_AT
     now_ts = int(time.time())
-    if now_ts - int(_SECURITY_BLOCK_CLEANUP_LAST_AT) >= SECURITY_BLOCK_CLEANUP_INTERVAL_SECONDS:
-        try:
-            cleanup_expired_ip_blocks_once(now_ts=now_ts)
-        except Exception:
-            pass
-        _SECURITY_BLOCK_CLEANUP_LAST_AT = now_ts
-    if now_ts - int(_AUDIT_LOG_CLEANUP_LAST_AT) >= AUDIT_LOG_CLEANUP_INTERVAL_SECONDS:
-        try:
-            with get_connection() as conn:
-                cleanup_old_audit_logs(
-                    conn,
-                    now_ts=now_ts,
-                    retention_days=AUDIT_LOG_RETENTION_DAYS,
-                    batch_size=AUDIT_LOG_CLEANUP_BATCH_SIZE,
-                )
-                conn.commit()
-        except Exception:
-            pass
-        _AUDIT_LOG_CLEANUP_LAST_AT = now_ts
-    if (
-        SECURITY_AUTO_BLOCK_ENABLED
-        and now_ts - int(_SECURITY_AUTO_BLOCK_LAST_AT) >= SECURITY_AUTO_BLOCK_INTERVAL_SECONDS
-    ):
-        try:
-            with get_connection() as conn:
-                run_security_auto_block_once(conn, now_ts=now_ts)
-                conn.commit()
-        except Exception:
-            pass
-        _SECURITY_AUTO_BLOCK_LAST_AT = now_ts
+    _SECURITY_BLOCK_CLEANUP_LAST_AT = _maybe_run_periodic_task(
+        now_ts=now_ts,
+        interval_seconds=SECURITY_BLOCK_CLEANUP_INTERVAL_SECONDS,
+        last_at=_SECURITY_BLOCK_CLEANUP_LAST_AT,
+        task_lock=_SECURITY_BLOCK_CLEANUP_LOCK,
+        task_runner=lambda: cleanup_expired_ip_blocks_once(now_ts=now_ts),
+    )
+    _AUDIT_LOG_CLEANUP_LAST_AT = _maybe_run_periodic_task(
+        now_ts=now_ts,
+        interval_seconds=AUDIT_LOG_CLEANUP_INTERVAL_SECONDS,
+        last_at=_AUDIT_LOG_CLEANUP_LAST_AT,
+        task_lock=_AUDIT_LOG_CLEANUP_LOCK,
+        task_runner=lambda: _run_audit_log_cleanup_once(now_ts=now_ts),
+    )
+    if SECURITY_AUTO_BLOCK_ENABLED:
+        _SECURITY_AUTO_BLOCK_LAST_AT = _maybe_run_periodic_task(
+            now_ts=now_ts,
+            interval_seconds=SECURITY_AUTO_BLOCK_INTERVAL_SECONDS,
+            last_at=_SECURITY_AUTO_BLOCK_LAST_AT,
+            task_lock=_SECURITY_AUTO_BLOCK_LOCK,
+            task_runner=lambda: _run_security_auto_block_once(now_ts=now_ts),
+        )
 
     if not AUTH_TOKEN:
         return await call_next(request)
@@ -142,6 +161,23 @@ async def rate_limit_middleware(request: Request, call_next):
             headers={"Retry-After": str(retry_after)},
         )
     return await call_next(request)
+
+
+def _run_audit_log_cleanup_once(now_ts: int) -> None:
+    with get_connection() as conn:
+        cleanup_old_audit_logs(
+            conn,
+            now_ts=now_ts,
+            retention_days=AUDIT_LOG_RETENTION_DAYS,
+            batch_size=AUDIT_LOG_CLEANUP_BATCH_SIZE,
+        )
+        conn.commit()
+
+
+def _run_security_auto_block_once(now_ts: int) -> None:
+    with get_connection() as conn:
+        run_security_auto_block_once(conn, now_ts=now_ts)
+        conn.commit()
 
 
 @app.on_event("startup")

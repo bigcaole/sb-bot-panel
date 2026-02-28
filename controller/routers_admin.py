@@ -625,8 +625,9 @@ def is_source_ip_protected(
     return False
 
 
-def export_admin_ai_context_snapshot(output_path: Path) -> Tuple[bool, str]:
-    script_path = ADMIN_AI_CONTEXT_EXPORT_SCRIPT
+def _run_local_export_script(
+    script_path: Path, output_path: Path, timeout_seconds: int
+) -> Tuple[bool, str]:
     if not script_path.exists():
         return False, "script not found: {0}".format(script_path)
     if not script_path.is_file():
@@ -640,7 +641,7 @@ def export_admin_ai_context_snapshot(output_path: Path) -> Tuple[bool, str]:
             ["bash", str(script_path), "--output", str(output_path)],
             capture_output=True,
             text=True,
-            timeout=ADMIN_AI_CONTEXT_EXPORT_TIMEOUT_SECONDS,
+            timeout=max(5, int(timeout_seconds)),
             check=False,
         )
     except FileNotFoundError:
@@ -655,38 +656,22 @@ def export_admin_ai_context_snapshot(output_path: Path) -> Tuple[bool, str]:
     if not output_path.exists():
         return False, "export output file not found"
     return True, ""
+
+
+def export_admin_ai_context_snapshot(output_path: Path) -> Tuple[bool, str]:
+    return _run_local_export_script(
+        script_path=ADMIN_AI_CONTEXT_EXPORT_SCRIPT,
+        output_path=output_path,
+        timeout_seconds=ADMIN_AI_CONTEXT_EXPORT_TIMEOUT_SECONDS,
+    )
 
 
 def export_admin_ops_snapshot(output_path: Path) -> Tuple[bool, str]:
-    script_path = ADMIN_OPS_SNAPSHOT_SCRIPT
-    if not script_path.exists():
-        return False, "script not found: {0}".format(script_path)
-    if not script_path.is_file():
-        return False, "script path is not a file: {0}".format(script_path)
-    try:
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-    except OSError as exc:
-        return False, "create output directory failed: {0}".format(exc)
-    try:
-        proc = subprocess.run(  # nosec B603
-            ["bash", str(script_path), "--output", str(output_path)],
-            capture_output=True,
-            text=True,
-            timeout=ADMIN_OPS_SNAPSHOT_TIMEOUT_SECONDS,
-            check=False,
-        )
-    except FileNotFoundError:
-        return False, "bash not found"
-    except subprocess.TimeoutExpired:
-        return False, "export command timeout"
-    if int(proc.returncode or 0) != 0:
-        stderr_text = str(proc.stderr or "").strip()
-        stdout_text = str(proc.stdout or "").strip()
-        detail = stderr_text if stderr_text else stdout_text
-        return False, detail or "export command failed"
-    if not output_path.exists():
-        return False, "export output file not found"
-    return True, ""
+    return _run_local_export_script(
+        script_path=ADMIN_OPS_SNAPSHOT_SCRIPT,
+        output_path=output_path,
+        timeout_seconds=ADMIN_OPS_SNAPSHOT_TIMEOUT_SECONDS,
+    )
 
 
 def run_ufw_command(args: List[str], timeout_seconds: int = 20) -> Tuple[int, str, str]:
