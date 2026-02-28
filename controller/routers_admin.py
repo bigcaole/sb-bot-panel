@@ -84,6 +84,16 @@ ADMIN_AI_CONTEXT_EXPORT_SCRIPT = BASE_DIR / "scripts" / "admin" / "ai_context_ex
 ADMIN_AI_CONTEXT_EXPORT_TIMEOUT_SECONDS = 40
 ADMIN_OPS_SNAPSHOT_SCRIPT = BASE_DIR / "scripts" / "admin" / "ops_snapshot.sh"
 ADMIN_OPS_SNAPSHOT_TIMEOUT_SECONDS = 40
+WEAK_AUTH_TOKEN_EXAMPLES = {
+    "devtoken123",
+    "change_me_to_a_random_token",
+    "changeme",
+    "change_me",
+    "token",
+    "password",
+    "admin",
+    "123456",
+}
 
 
 def _normalize_controller_url(raw_url: str) -> str:
@@ -102,6 +112,28 @@ def _normalize_public_base_url(raw_url: str) -> str:
     if not re.match(r"^https?://", value):
         value = "https://{0}".format(value)
     return value.rstrip("/")
+
+
+def _collect_auth_token_risks(tokens: List[str]) -> List[Dict[str, Union[int, List[str]]]]:
+    risks: List[Dict[str, Union[int, List[str]]]] = []
+    for index, raw_token in enumerate(tokens, start=1):
+        token = str(raw_token or "").strip()
+        if not token:
+            continue
+        issues: List[str] = []
+        if len(token) < 24:
+            issues.append("too_short")
+        if token.lower() in WEAK_AUTH_TOKEN_EXAMPLES:
+            issues.append("default_like")
+        if token.isdigit():
+            issues.append("numeric_only")
+        if len(set(token)) < 6:
+            issues.append("low_character_variety")
+        if not any(ch.isalpha() for ch in token) or not any(ch.isdigit() for ch in token):
+            issues.append("missing_alpha_or_digit")
+        if issues:
+            risks.append({"index": index, "issues": issues})
+    return risks
 
 
 def _enqueue_task_for_nodes(
@@ -439,6 +471,7 @@ def build_unauthorized_events_snapshot(
 
 def build_security_status_payload() -> Dict[str, Union[bool, int, List[str]]]:
     auth_tokens = get_auth_tokens()
+    weak_token_risks = _collect_auth_token_risks(auth_tokens)
     now_ts = int(time.time())
     protected_invalid_items = get_invalid_ip_or_cidr_items(SECURITY_BLOCK_PROTECTED_IPS_ITEMS)
     protected_effective_count = max(
@@ -461,6 +494,8 @@ def build_security_status_payload() -> Dict[str, Union[bool, int, List[str]]]:
         warnings.append("AUTH_TOKEN 未设置：管理接口未启用鉴权")
     if len(auth_tokens) > 1:
         warnings.append("AUTH_TOKEN 处于多 token 过渡模式（建议迁移完成后移除旧 token）")
+    if weak_token_risks:
+        warnings.append("AUTH_TOKEN 强度偏弱（建议至少 24 位随机串，含字母与数字）")
     if not SUB_LINK_SIGN_KEY:
         warnings.append("SUB_LINK_SIGN_KEY 未设置：订阅签名功能不可用")
     if SUB_LINK_SIGN_KEY and not SUB_LINK_REQUIRE_SIGNATURE:
@@ -489,6 +524,8 @@ def build_security_status_payload() -> Dict[str, Union[bool, int, List[str]]]:
     return {
         "auth_enabled": bool(auth_tokens),
         "auth_token_count": len(auth_tokens),
+        "weak_auth_token_count": len(weak_token_risks),
+        "weak_auth_token_risks": weak_token_risks,
         "controller_port_whitelist": CONTROLLER_PORT_WHITELIST_ITEMS,
         "controller_port_whitelist_count": len(CONTROLLER_PORT_WHITELIST_ITEMS),
         "trust_x_forwarded_for": TRUST_X_FORWARDED_FOR,

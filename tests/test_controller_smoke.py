@@ -277,6 +277,8 @@ class ControllerSmokeTestCase(unittest.TestCase):
             self.assertIn("controller_port_whitelist_count", admin_sec.json())
             self.assertIn("unauthorized_audit_sample_seconds", admin_sec.json())
             self.assertIn("api_docs_enabled", admin_sec.json())
+            self.assertIn("weak_auth_token_count", admin_sec.json())
+            self.assertIn("weak_auth_token_risks", admin_sec.json())
 
             ai_export_resp = client.post(
                 "/admin/diagnostics/ai_context_export",
