@@ -7,6 +7,7 @@ from fastapi import HTTPException
 
 from controller import db
 from controller.subscription import (
+    build_subscription_links_text,
     build_signed_subscription_urls,
     build_sub_signature,
     verify_sub_access,
@@ -105,6 +106,52 @@ class SubscriptionTestCase(unittest.TestCase):
         with self.assertRaises(HTTPException) as ctx:
             verify_sub_access("u1001", sign_key="", require_signature=False, exp="", sig="")
         self.assertEqual(403, ctx.exception.status_code)
+
+    def test_links_text_explains_no_binding_reason(self) -> None:
+        text = build_subscription_links_text("u1001")
+        self.assertIn("# no available links", text)
+        self.assertIn("user has no node bindings", text)
+
+    def test_links_text_explains_all_nodes_disabled_reason(self) -> None:
+        now_ts = int(time.time())
+        with db.get_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO nodes(
+                    node_code, region, host, reality_server_name, tuic_server_name,
+                    tuic_listen_port, monitor_enabled, tuic_port_start, tuic_port_end,
+                    enabled, supports_reality, supports_tuic, note
+                )
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "JP1",
+                    "JP",
+                    "jp1.example.com",
+                    "www.cloudflare.com",
+                    "jp1.example.com",
+                    8443,
+                    0,
+                    20010,
+                    20019,
+                    0,
+                    1,
+                    1,
+                    "",
+                ),
+            )
+            conn.execute(
+                """
+                INSERT INTO user_nodes(user_code, node_code, tuic_port, created_at)
+                VALUES(?, ?, ?, ?)
+                """,
+                ("u1001", "JP1", 20010, now_ts),
+            )
+            conn.commit()
+
+        text = build_subscription_links_text("u1001")
+        self.assertIn("# no available links", text)
+        self.assertIn("all bound nodes are disabled", text)
 
 
 if __name__ == "__main__":

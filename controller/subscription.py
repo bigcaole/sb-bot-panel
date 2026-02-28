@@ -94,6 +94,12 @@ def build_subscription_links_text(user_code: str) -> str:
         if user_row is None:
             raise HTTPException(status_code=404, detail="User not found")
 
+        total_bindings_row = conn.execute(
+            "SELECT COUNT(*) AS c FROM user_nodes WHERE user_code = ?",
+            (user_code,),
+        ).fetchone()
+        total_bindings = int(total_bindings_row["c"] or 0)
+
         node_rows = conn.execute(
             """
             SELECT
@@ -175,7 +181,14 @@ def build_subscription_links_text(user_code: str) -> str:
             generated_links += 1
 
     if generated_links == 0:
-        return "# no available links"
+        lines.append("# no available links")
+        if total_bindings <= 0:
+            lines.append("# reason: user has no node bindings")
+        elif len(node_rows) <= 0:
+            lines.append("# reason: all bound nodes are disabled")
+        else:
+            lines.append("# reason: no protocol link can be generated from current node params")
+        return "\n".join(lines)
 
     return "\n".join(lines)
 
