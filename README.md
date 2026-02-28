@@ -727,7 +727,7 @@ bash /root/sb-bot-panel/scripts/admin/smoke_test.sh --require-api --require-toke
   - 配置 `SUB_LINK_SIGN_KEY` 后，可通过 `/admin/sub/sign/{user_code}` 生成带签名 URL
   - 开启 `SUB_LINK_REQUIRE_SIGNATURE=1` 后，`/sub/*` 必须携带 `exp` + `sig`
 - 支持轻量限流（默认开启）：
-  - `API_RATE_LIMIT_ENABLED=1` 后，会对高风险管理路径按 IP+路径限流，超限返回 429
+  - `API_RATE_LIMIT_ENABLED=1` 后，会对高风险管理路径按 `IP+路径+鉴权桶(auth/anon/open)` 限流，超限返回 429
 - 节点任务接口的管理侧返回已对敏感字段做脱敏（如 `auth_token`、`Authorization: Bearer ...` 显示为 `***`），避免误泄露；节点拉取任务时仍使用真实值。
 - 安全状态检查：
   - `GET /admin/security/status` 可查看当前鉴权、订阅签名、XFF 信任、限流等配置状态与告警提示
