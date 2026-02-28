@@ -1696,6 +1696,115 @@ def create_migrate_export(
 
 
 @router.get(
+    "/admin/traffic/ranking",
+    summary="Estimated traffic ranking (non-metered)",
+    description=(
+        "AUTH_TOKEN 为空时不校验；非空时需要请求头 Authorization: Bearer <AUTH_TOKEN>。"
+        "按用户限速配置与绑定节点数量给出估算排行（非真实流量计费数据）。"
+    ),
+    response_model=None,
+)
+def get_admin_traffic_ranking(
+    limit: int = 20,
+    authorization: Optional[str] = Header(default=None, alias="Authorization"),
+) -> Union[Dict[str, Union[int, str, List[Dict[str, Union[int, str]]]]], JSONResponse]:
+    auth_error = verify_admin_authorization(authorization)
+    if auth_error is not None:
+        return auth_error
+
+    limit_value = int(limit or 0)
+    if limit_value < 1:
+        limit_value = 1
+    if limit_value > 100:
+        limit_value = 100
+
+    now_ts = int(time.time())
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                u.user_code,
+                u.display_name,
+                u.status,
+                u.expire_at,
+                u.speed_mbps,
+                u.limit_mode,
+                COUNT(un.node_code) AS bindings
+            FROM users u
+            LEFT JOIN user_nodes un ON un.user_code = u.user_code
+            GROUP BY u.user_code
+            ORDER BY u.id ASC
+            LIMIT 2000
+            """
+        ).fetchall()
+
+    items: List[Dict[str, Union[int, str]]] = []
+    active_total = 0
+    ranked_total = 0
+    for row in rows:
+        status_value = str(row["status"] or "").strip().lower()
+        try:
+            expire_at = int(row["expire_at"] or 0)
+        except (TypeError, ValueError):
+            expire_at = 0
+        if status_value == "active":
+            active_total += 1
+        if status_value != "active":
+            continue
+        if expire_at > 0 and expire_at <= now_ts:
+            continue
+
+        try:
+            bindings = int(row["bindings"] or 0)
+        except (TypeError, ValueError):
+            bindings = 0
+        if bindings <= 0:
+            continue
+
+        try:
+            speed_mbps = int(row["speed_mbps"] or 0)
+        except (TypeError, ValueError):
+            speed_mbps = 0
+        limit_mode = str(row["limit_mode"] or "tc").strip().lower() or "tc"
+        if limit_mode != "tc":
+            speed_mbps = 0
+        estimated_mbps = int(max(0, speed_mbps) * max(0, bindings))
+        ranked_total += 1
+        items.append(
+            {
+                "user_code": str(row["user_code"] or ""),
+                "display_name": str(row["display_name"] or ""),
+                "limit_mode": limit_mode,
+                "speed_mbps": int(max(0, speed_mbps)),
+                "bindings": int(max(0, bindings)),
+                "estimated_mbps": estimated_mbps,
+            }
+        )
+
+    items.sort(
+        key=lambda x: (
+            -int(x.get("estimated_mbps", 0) or 0),
+            -int(x.get("speed_mbps", 0) or 0),
+            str(x.get("user_code", "")),
+        )
+    )
+    top_items = items[:limit_value]
+    for idx, item in enumerate(top_items, start=1):
+        item["rank"] = int(idx)
+
+    return {
+        "ok": True,
+        "generated_at": now_ts,
+        "limit": int(limit_value),
+        "ranked_user_count": int(ranked_total),
+        "active_user_count": int(active_total),
+        "items": top_items,
+        "note": "estimated_by_speed_x_bindings",
+        "warning": "non-metered-estimate",
+    }
+
+
+@router.get(
     "/admin/node_access/status",
     summary="Node access control status",
     description="AUTH_TOKEN 为空时不校验；非空时需要请求头 Authorization: Bearer <AUTH_TOKEN>。",

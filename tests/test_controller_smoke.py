@@ -248,6 +248,17 @@ class ControllerSmokeTestCase(unittest.TestCase):
             self.assertIn("unauthorized_24h", overview_payload["security_events"])
             self.assertIn("top_unauthorized_ips", overview_payload["security_events"])
 
+            traffic_resp = client.get(
+                "/admin/traffic/ranking?limit=10",
+                headers=self._auth_header(),
+            )
+            self.assertEqual(200, traffic_resp.status_code)
+            traffic_payload = traffic_resp.json()
+            self.assertTrue(bool(traffic_payload.get("ok")))
+            self.assertIn("items", traffic_payload)
+            self.assertIn("note", traffic_payload)
+            self.assertIn("warning", traffic_payload)
+
             db_integrity = client.get("/admin/db/integrity", headers=self._auth_header())
             self.assertEqual(200, db_integrity.status_code)
             self.assertTrue(bool(db_integrity.json().get("ok")))

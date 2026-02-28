@@ -3087,6 +3087,44 @@ def format_query_user_detail_text(user: dict, user_nodes: list) -> str:
     return "\n".join(lines)
 
 
+def format_query_traffic_ranking_text(payload: dict) -> str:
+    generated_at = int(payload.get("generated_at", 0) or 0)
+    generated_text = (
+        datetime.fromtimestamp(generated_at).strftime("%Y-%m-%d %H:%M:%S")
+        if generated_at > 0
+        else "-"
+    )
+    ranked_user_count = int(payload.get("ranked_user_count", 0) or 0)
+    active_user_count = int(payload.get("active_user_count", 0) or 0)
+    items = payload.get("items", [])
+    if not isinstance(items, list):
+        items = []
+
+    lines = [
+        "流量排行（估算）",
+        f"生成时间：{generated_text}",
+        f"活跃用户：{active_user_count}，参与排行：{ranked_user_count}",
+        "规则：估算带宽 = speed_mbps × 绑定节点数（非真实计费流量）",
+        "",
+    ]
+    if items:
+        for item in items:
+            rank = int(item.get("rank", 0) or 0)
+            user_code = str(item.get("user_code", ""))
+            display_name = str(item.get("display_name") or "").strip()
+            user_label = f"{display_name}（{user_code}）" if display_name else user_code
+            limit_mode = format_limit_mode_label(str(item.get("limit_mode", "tc")))
+            speed_mbps = int(item.get("speed_mbps", 0) or 0)
+            bindings = int(item.get("bindings", 0) or 0)
+            estimated_mbps = int(item.get("estimated_mbps", 0) or 0)
+            lines.append(
+                f"{rank}. {user_label} | 模式:{limit_mode} | 限速:{speed_mbps}Mbps | 节点:{bindings} | 估算:{estimated_mbps}Mbps"
+            )
+    else:
+        lines.append("（暂无可排行的活跃用户）")
+    return "\n".join(lines)
+
+
 async def render_user_nodes_picker(query) -> None:
     users, error_message, _ = await controller_request("GET", "/users")
     if error_message:
@@ -7012,8 +7050,24 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
 
     if callback_data == "action:query_traffic":
+        ranking_payload, error_message, _ = await controller_request(
+            "GET",
+            "/admin/traffic/ranking?limit=20",
+        )
+        if error_message:
+            await query.edit_message_text(
+                f"获取流量排行失败：{localize_controller_error(error_message)}",
+                reply_markup=build_back_keyboard("menu:query"),
+            )
+            return
+        if not isinstance(ranking_payload, dict):
+            await query.edit_message_text(
+                "获取流量排行失败：响应格式异常",
+                reply_markup=build_back_keyboard("menu:query"),
+            )
+            return
         await query.edit_message_text(
-            "【流量排行】尚未实现（需要节点侧上报统计或接入计费系统）。",
+            format_query_traffic_ranking_text(ranking_payload),
             reply_markup=build_back_keyboard("menu:query"),
         )
         return
