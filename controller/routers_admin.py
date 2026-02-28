@@ -1,5 +1,6 @@
 import ipaddress
 import re
+import sqlite3
 import subprocess
 import shutil
 import tarfile
@@ -420,6 +421,7 @@ def build_unauthorized_events_snapshot(
     window_seconds: int,
     top_limit: int,
     include_local: Optional[bool] = None,
+    conn: Optional[sqlite3.Connection] = None,
 ) -> Dict[str, Union[int, List[Dict[str, Union[int, str]]]]]:
     if window_seconds < 60:
         window_seconds = 60
@@ -439,27 +441,36 @@ def build_unauthorized_events_snapshot(
         where_sql += (
             " AND source_ip NOT IN ('127.0.0.1', '::1', 'localhost', 'testclient', '::ffff:127.0.0.1')"
         )
-    with get_connection() as conn:
-        unauthorized_count = int(
-            conn.execute(
-                "SELECT COUNT(*) AS c FROM audit_logs WHERE {0}".format(where_sql),
-                (since_ts,),
-            ).fetchone()["c"]
-            or 0
-        )
-        unauthorized_top_rows = conn.execute(
-            """
-            SELECT source_ip, COUNT(*) AS c
-            FROM audit_logs
-            WHERE {0}
-              AND source_ip IS NOT NULL
-              AND source_ip != ''
-            GROUP BY source_ip
-            ORDER BY c DESC, source_ip ASC
-            LIMIT ?
-            """.format(where_sql),
-            (since_ts, top_limit),
-        ).fetchall()
+    if conn is None:
+        with get_connection() as local_conn:
+            return build_unauthorized_events_snapshot(
+                now_ts=now_ts,
+                window_seconds=window_seconds,
+                top_limit=top_limit,
+                include_local=include_local,
+                conn=local_conn,
+            )
+
+    unauthorized_count = int(
+        conn.execute(
+            "SELECT COUNT(*) AS c FROM audit_logs WHERE {0}".format(where_sql),
+            (since_ts,),
+        ).fetchone()["c"]
+        or 0
+    )
+    unauthorized_top_rows = conn.execute(
+        """
+        SELECT source_ip, COUNT(*) AS c
+        FROM audit_logs
+        WHERE {0}
+          AND source_ip IS NOT NULL
+          AND source_ip != ''
+        GROUP BY source_ip
+        ORDER BY c DESC, source_ip ASC
+        LIMIT ?
+        """.format(where_sql),
+        (since_ts, top_limit),
+    ).fetchall()
 
     top_items: List[Dict[str, Union[int, str]]] = []
     for row in unauthorized_top_rows:
@@ -1215,6 +1226,24 @@ def build_admin_overview_payload(now_ts: int) -> Dict[str, Union[int, Dict, List
             LIMIT 10
             """
         ).fetchall()
+        unauthorized_24h_snapshot = build_unauthorized_events_snapshot(
+            now_ts=now_ts,
+            window_seconds=86400,
+            top_limit=5,
+            conn=conn,
+        )
+        unauthorized_1h_snapshot = build_unauthorized_events_snapshot(
+            now_ts=now_ts,
+            window_seconds=3600,
+            top_limit=3,
+            conn=conn,
+        )
+        node_task_idempotency_24h = get_node_task_idempotency_snapshot(
+            now_ts=now_ts,
+            window_seconds=86400,
+            top_limit=5,
+            conn=conn,
+        )
 
     monitor_enabled_count = len(monitor_rows)
     monitor_online = 0
@@ -1256,21 +1285,6 @@ def build_admin_overview_payload(now_ts: int) -> Dict[str, Union[int, Dict, List
         pending_by_node.append(
             {"node_code": str(row["node_code"] or ""), "pending": int(row["c"] or 0)}
         )
-    unauthorized_24h_snapshot = build_unauthorized_events_snapshot(
-        now_ts=now_ts,
-        window_seconds=86400,
-        top_limit=5,
-    )
-    unauthorized_1h_snapshot = build_unauthorized_events_snapshot(
-        now_ts=now_ts,
-        window_seconds=3600,
-        top_limit=3,
-    )
-    node_task_idempotency_24h = get_node_task_idempotency_snapshot(
-        now_ts=now_ts,
-        window_seconds=86400,
-        top_limit=5,
-    )
     queue_cap_per_node = int(NODE_TASK_MAX_PENDING_PER_NODE)
     near_cap_threshold = max(1, int((queue_cap_per_node * 8 + 9) / 10))
     near_cap_nodes: List[Dict[str, Union[str, int]]] = []
@@ -1322,7 +1336,10 @@ def build_admin_overview_payload(now_ts: int) -> Dict[str, Union[int, Dict, List
 
 
 def get_node_task_idempotency_snapshot(
-    now_ts: int, window_seconds: int = 86400, top_limit: int = 10
+    now_ts: int,
+    window_seconds: int = 86400,
+    top_limit: int = 10,
+    conn: Optional[sqlite3.Connection] = None,
 ) -> Dict[str, Union[int, float, List[Dict[str, Union[str, int, float]]]]]:
     if window_seconds < 60:
         window_seconds = 60
@@ -1334,40 +1351,48 @@ def get_node_task_idempotency_snapshot(
         top_limit = 20
     since_ts = int(now_ts - window_seconds)
 
-    with get_connection() as conn:
-        created_count = int(
-            conn.execute(
-                """
-                SELECT COUNT(*) AS c
-                FROM audit_logs
-                WHERE action = 'node.task.create' AND created_at >= ?
-                """,
-                (since_ts,),
-            ).fetchone()["c"]
-            or 0
-        )
-        deduplicated_count = int(
-            conn.execute(
-                """
-                SELECT COUNT(*) AS c
-                FROM audit_logs
-                WHERE action = 'node.task.deduplicated' AND created_at >= ?
-                """,
-                (since_ts,),
-            ).fetchone()["c"]
-            or 0
-        )
-        per_node_rows = conn.execute(
+    if conn is None:
+        with get_connection() as local_conn:
+            return get_node_task_idempotency_snapshot(
+                now_ts=now_ts,
+                window_seconds=window_seconds,
+                top_limit=top_limit,
+                conn=local_conn,
+            )
+
+    created_count = int(
+        conn.execute(
             """
-            SELECT
-              json_extract(detail, '$.node_code') AS node_code,
-              action
+            SELECT COUNT(*) AS c
             FROM audit_logs
-            WHERE action IN ('node.task.create', 'node.task.deduplicated')
-              AND created_at >= ?
+            WHERE action = 'node.task.create' AND created_at >= ?
             """,
             (since_ts,),
-        ).fetchall()
+        ).fetchone()["c"]
+        or 0
+    )
+    deduplicated_count = int(
+        conn.execute(
+            """
+            SELECT COUNT(*) AS c
+            FROM audit_logs
+            WHERE action = 'node.task.deduplicated' AND created_at >= ?
+            """,
+            (since_ts,),
+        ).fetchone()["c"]
+        or 0
+    )
+    per_node_rows = conn.execute(
+        """
+        SELECT
+          json_extract(detail, '$.node_code') AS node_code,
+          action
+        FROM audit_logs
+        WHERE action IN ('node.task.create', 'node.task.deduplicated')
+          AND created_at >= ?
+        """,
+        (since_ts,),
+    ).fetchall()
 
     per_node_counter: Dict[str, Dict[str, int]] = {}
     for row in per_node_rows:
