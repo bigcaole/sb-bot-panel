@@ -1,4 +1,5 @@
 import hmac
+import heapq
 import ipaddress
 import os
 import re
@@ -85,6 +86,24 @@ RATE_LIMIT_STATIC_SEGMENTS: Set[str] = {
     "status",
     "audit",
 }
+
+
+def _trim_oldest_state_items(
+    state: Dict[str, Tuple[int, int]],
+    max_keys: int,
+) -> None:
+    if max_keys < 1:
+        max_keys = 1
+    overflow = int(len(state) - max_keys)
+    if overflow <= 0:
+        return
+    oldest_items = heapq.nsmallest(
+        overflow,
+        state.items(),
+        key=lambda item: int((item[1] or (0, 0))[0] or 0),
+    )
+    for key, _ in oldest_items:
+        state.pop(key, None)
 
 
 def get_auth_tokens() -> list:
@@ -202,11 +221,7 @@ def check_and_consume_rate_limit(identity: str, now_ts: int) -> Tuple[bool, int]
                 _RATE_LIMIT_STATE.pop(key, None)
             _RATE_LIMIT_LAST_CLEANUP_AT = now_ts
         if len(_RATE_LIMIT_STATE) > RATE_LIMIT_STATE_MAX_KEYS:
-            overflow = len(_RATE_LIMIT_STATE) - RATE_LIMIT_STATE_MAX_KEYS
-            for key, _ in sorted(_RATE_LIMIT_STATE.items(), key=lambda item: int(item[1][0] or 0))[
-                :overflow
-            ]:
-                _RATE_LIMIT_STATE.pop(key, None)
+            _trim_oldest_state_items(_RATE_LIMIT_STATE, RATE_LIMIT_STATE_MAX_KEYS)
 
     if count > API_RATE_LIMIT_MAX_REQUESTS:
         retry_after = API_RATE_LIMIT_WINDOW_SECONDS - (now_ts - window_start)
@@ -246,20 +261,14 @@ def should_write_unauthorized_audit(key: str, now_ts: int) -> Tuple[bool, int]:
                     _UNAUTH_AUDIT_STATE.pop(expired_key, None)
                 _UNAUTH_AUDIT_LAST_CLEANUP_AT = int(now_ts)
             if len(_UNAUTH_AUDIT_STATE) > UNAUTHORIZED_AUDIT_STATE_MAX_KEYS:
-                overflow = len(_UNAUTH_AUDIT_STATE) - UNAUTHORIZED_AUDIT_STATE_MAX_KEYS
-                for state_key, _ in sorted(
-                    _UNAUTH_AUDIT_STATE.items(), key=lambda item: int(item[1][0] or 0)
-                )[:overflow]:
-                    _UNAUTH_AUDIT_STATE.pop(state_key, None)
+                _trim_oldest_state_items(
+                    _UNAUTH_AUDIT_STATE, UNAUTHORIZED_AUDIT_STATE_MAX_KEYS
+                )
             return True, dropped_count
 
         _UNAUTH_AUDIT_STATE[key] = (int(last_ts), int(dropped or 0) + 1)
         if len(_UNAUTH_AUDIT_STATE) > UNAUTHORIZED_AUDIT_STATE_MAX_KEYS:
-            overflow = len(_UNAUTH_AUDIT_STATE) - UNAUTHORIZED_AUDIT_STATE_MAX_KEYS
-            for state_key, _ in sorted(
-                _UNAUTH_AUDIT_STATE.items(), key=lambda item: int(item[1][0] or 0)
-            )[:overflow]:
-                _UNAUTH_AUDIT_STATE.pop(state_key, None)
+            _trim_oldest_state_items(_UNAUTH_AUDIT_STATE, UNAUTHORIZED_AUDIT_STATE_MAX_KEYS)
         return False, int(dropped or 0) + 1
 
 
