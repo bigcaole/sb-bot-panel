@@ -326,7 +326,7 @@ run_security_maintenance_cleanup() {
   local response=""
   if [[ -n "$auth_token" ]]; then
     response="$(curl -fsSL -X POST "$url" -H "Authorization: Bearer ${auth_token}" -H "X-Actor: ${ADMIN_SCRIPT_ACTOR}")" || {
-      err "执行手动安全清理失败，请检查 AUTH_TOKEN 或 controller 状态。"
+      err "执行手动安全清理失败，请检查管理鉴权 token（ADMIN_AUTH_TOKEN/AUTH_TOKEN）或 controller 状态。"
       return 1
     }
   else
@@ -810,7 +810,9 @@ show_config_guide() {
   echo "  - ENABLE_HTTPS（是否启用 Caddy 自动申请/续期证书）"
   echo "  - HTTPS_DOMAIN（管理端证书域名，如 panel.example.com）"
   echo "  - HTTPS_ACME_EMAIL（可选，证书账号邮箱）"
-  echo "  - AUTH_TOKEN（可选；用于保护 controller 接口；默认建议随机串，不建议弱口令）"
+  echo "  - ADMIN_AUTH_TOKEN（管理接口鉴权 token，推荐）"
+  echo "  - NODE_AUTH_TOKEN（节点接口鉴权 token，推荐）"
+  echo "  - AUTH_TOKEN（兼容回退字段；仅在 ADMIN/NODE 未设置时生效）"
   echo "  - SECURITY_EVENTS_EXCLUDE_LOCAL（是否过滤本机测试来源，建议 1）"
   echo "  - BOT_TOKEN（建议填写；留空将使用占位值并跳过启动 sb-bot）"
   echo "  - ADMIN_CHAT_IDS（可选；限制谁能使用 bot）"
@@ -1102,7 +1104,7 @@ main() {
       16)
         echo "请选择 token 操作："
         echo "  1) 收敛 token（AUTH/ADMIN/NODE 多值 -> 单值）"
-        echo "  2) 拆分迁移（AUTH_TOKEN -> ADMIN/NODE 拆分过渡）"
+        echo "  2) 拆分迁移（兼容模式 -> ADMIN/NODE 拆分过渡）"
         read -r -p "请输入 [1/2]（默认 1）: " token_action
         token_action="${token_action:-1}"
         if [[ "$token_action" == "2" ]]; then
