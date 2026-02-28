@@ -660,6 +660,7 @@ scp root@旧IP:/var/backups/sb-migrate/sb-migrate-xxxx.tar.gz root@新IP:/root/
   - 开启 `SUB_LINK_REQUIRE_SIGNATURE=1` 后，`/sub/*` 必须携带 `exp` + `sig`
 - 支持轻量限流（默认关闭）：
   - `API_RATE_LIMIT_ENABLED=1` 后，会对高风险管理路径按 IP+路径限流，超限返回 429
+- 节点任务接口的管理侧返回已对敏感字段做脱敏（如 `auth_token` 显示为 `***`），避免误泄露；节点拉取任务时仍使用真实值。
 - 安全状态检查：
   - `GET /admin/security/status` 可查看当前鉴权、订阅签名、XFF 信任、限流等配置状态与告警提示
   - `GET /admin/security/events?window_seconds=3600&top=5` 可按窗口查看未授权来源统计（适合观察加固后的实时效果）

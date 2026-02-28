@@ -93,7 +93,7 @@ def create_node_task_service(
                 (node_code, task_type, payload_hash, payload_json),
             ).fetchone()
             if existing_row is not None:
-                task_data = build_task_row_dict(existing_row)
+                task_data = build_task_row_dict(existing_row, redact_sensitive=True)
                 write_audit_log(
                     conn,
                     action="node.task.deduplicated",
@@ -188,7 +188,7 @@ def create_node_task_service(
         ).fetchone()
     if created_row is None:
         raise HTTPException(status_code=500, detail="create task failed")
-    created_data = build_task_row_dict(created_row)
+    created_data = build_task_row_dict(created_row, redact_sensitive=True)
     created_data["deduplicated"] = False
     return created_data
 
@@ -239,7 +239,7 @@ def list_node_tasks_service(
             """,
             (node_code, limit),
         ).fetchall()
-    return [build_task_row_dict(row) for row in rows]
+    return [build_task_row_dict(row, redact_sensitive=True) for row in rows]
 
 
 def get_next_node_task_service(

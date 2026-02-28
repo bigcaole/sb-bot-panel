@@ -819,6 +819,40 @@ class ControllerSmokeTestCase(unittest.TestCase):
                 str(second_task.get("payload_hash", "")),
             )
 
+    def test_node_task_payload_redaction_for_admin_views(self) -> None:
+        with TestClient(app_module.app) as client:
+            create_resp = client.post(
+                "/nodes/JP1/tasks/create",
+                headers=self._auth_header(),
+                json={
+                    "task_type": "config_set",
+                    "payload": {"auth_token": "node-secret-token", "poll_interval": 15},
+                },
+            )
+            self.assertEqual(200, create_resp.status_code)
+            create_payload = create_resp.json()
+            self.assertEqual("***", str((create_payload.get("payload") or {}).get("auth_token")))
+            self.assertEqual(15, int((create_payload.get("payload") or {}).get("poll_interval", 0) or 0))
+
+            list_resp = client.get(
+                "/nodes/JP1/tasks?limit=5",
+                headers=self._auth_header(),
+            )
+            self.assertEqual(200, list_resp.status_code)
+            list_payload = list_resp.json()
+            self.assertTrue(isinstance(list_payload, list))
+            self.assertGreaterEqual(len(list_payload), 1)
+            self.assertEqual("***", str((list_payload[0].get("payload") or {}).get("auth_token")))
+
+            next_resp = client.post(
+                "/nodes/JP1/tasks/next",
+                headers=self._auth_header(),
+            )
+            self.assertEqual(200, next_resp.status_code)
+            next_payload = next_resp.json()
+            task_obj = next_payload.get("task") or {}
+            self.assertEqual("node-secret-token", str((task_obj.get("payload") or {}).get("auth_token")))
+
     def test_node_task_backlog_limit_smoke(self) -> None:
         with TestClient(app_module.app) as client:
             first_resp = client.post(

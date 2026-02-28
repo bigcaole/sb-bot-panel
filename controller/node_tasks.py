@@ -27,6 +27,14 @@ NODE_CONFIG_SET_ALLOWED_KEYS = {
     "auth_token",
     "node_code",
 }
+SENSITIVE_PAYLOAD_KEYWORDS = (
+    "token",
+    "secret",
+    "password",
+    "private_key",
+    "api_key",
+    "apikey",
+)
 
 
 def _parse_int_payload(value: Any, field: str) -> int:
@@ -146,16 +154,43 @@ def parse_task_payload(payload_json: Optional[str]) -> Dict[str, Any]:
     return {}
 
 
-def build_task_row_dict(row: sqlite3.Row) -> Dict[str, Any]:
+def _is_sensitive_payload_key(key: str) -> bool:
+    normalized = str(key or "").strip().lower()
+    if not normalized:
+        return False
+    return any(keyword in normalized for keyword in SENSITIVE_PAYLOAD_KEYWORDS)
+
+
+def _redact_payload_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            str(key): ("***" if _is_sensitive_payload_key(str(key)) else _redact_payload_value(item))
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_payload_value(item) for item in value]
+    return value
+
+
+def sanitize_task_payload_for_display(payload_obj: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(payload_obj, dict):
+        return {}
+    return _redact_payload_value(payload_obj)
+
+
+def build_task_row_dict(row: sqlite3.Row, redact_sensitive: bool = False) -> Dict[str, Any]:
     attempts = int(row["attempts"] or 0)
     max_attempts = int(row["max_attempts"] or 1)
     if max_attempts < 1:
         max_attempts = 1
+    payload_obj = parse_task_payload(row["payload_json"])
+    if redact_sensitive:
+        payload_obj = sanitize_task_payload_for_display(payload_obj)
     return {
         "id": int(row["id"]),
         "node_code": str(row["node_code"]),
         "task_type": str(row["task_type"]),
-        "payload": parse_task_payload(row["payload_json"]),
+        "payload": payload_obj,
         "payload_hash": str(row["payload_hash"] or ""),
         "status": str(row["status"]),
         "attempts": attempts,

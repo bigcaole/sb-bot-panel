@@ -26,6 +26,7 @@ from controller.db_migration import (
     validate_export_payload,
 )
 from controller.node_runtime_service import create_node_task_service, get_node_sync_service
+from controller.node_tasks import sanitize_task_payload_for_display
 from controller.schemas import (
     AuditEventRequest,
     BlockIpRequest,
@@ -191,7 +192,7 @@ def _enqueue_task_for_nodes(
         "task_type": task_type,
         "include_disabled": include_disabled_flag,
         "force_new": force_new_flag,
-        "payload": task_payload,
+        "payload": sanitize_task_payload_for_display(task_payload),
         "failures": failures[:20],
     }
 

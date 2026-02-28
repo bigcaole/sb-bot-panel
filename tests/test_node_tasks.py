@@ -35,6 +35,21 @@ class NodeTasksValidationTestCase(unittest.TestCase):
         with self.assertRaises(HTTPException):
             node_tasks.validate_node_task_payload_size(oversized)
 
+    def test_sanitize_task_payload_for_display_redacts_sensitive_keys(self) -> None:
+        payload = {
+            "auth_token": "abc123",
+            "controller_url": "http://127.0.0.1:8080",
+            "nested": {"api_key": "k-1", "note": "ok"},
+            "items": [{"secret": "s1"}, {"value": 1}],
+        }
+        masked = node_tasks.sanitize_task_payload_for_display(payload)
+        self.assertEqual("***", masked.get("auth_token"))
+        self.assertEqual("http://127.0.0.1:8080", masked.get("controller_url"))
+        self.assertEqual("***", (masked.get("nested") or {}).get("api_key"))
+        self.assertEqual("ok", (masked.get("nested") or {}).get("note"))
+        self.assertEqual("***", ((masked.get("items") or [])[0]).get("secret"))
+        self.assertEqual(1, ((masked.get("items") or [None, {}])[1]).get("value"))
+
 
 if __name__ == "__main__":
     unittest.main()
