@@ -42,6 +42,9 @@ class ControllerSmokeTestCase(unittest.TestCase):
             "routers_admin._ADMIN_OVERVIEW_CACHE_TTL_SECONDS": admin_router_module._ADMIN_OVERVIEW_CACHE_TTL_SECONDS,
             "routers_admin._ADMIN_OVERVIEW_CACHE_EXPIRE_AT": admin_router_module._ADMIN_OVERVIEW_CACHE_EXPIRE_AT,
             "routers_admin._ADMIN_OVERVIEW_CACHE_PAYLOAD": admin_router_module._ADMIN_OVERVIEW_CACHE_PAYLOAD,
+            "routers_admin._SECURITY_STATUS_CACHE_TTL_SECONDS": admin_router_module._SECURITY_STATUS_CACHE_TTL_SECONDS,
+            "routers_admin._SECURITY_STATUS_CACHE_EXPIRE_AT": admin_router_module._SECURITY_STATUS_CACHE_EXPIRE_AT,
+            "routers_admin._SECURITY_STATUS_CACHE_PAYLOAD": admin_router_module._SECURITY_STATUS_CACHE_PAYLOAD,
             "routers_admin.export_admin_ai_context_snapshot": admin_router_module.export_admin_ai_context_snapshot,
             "routers_admin.export_admin_ops_snapshot": admin_router_module.export_admin_ops_snapshot,
             "routers_nodes.NODE_TASK_MAX_PENDING_PER_NODE": nodes_router_module.NODE_TASK_MAX_PENDING_PER_NODE,
@@ -68,6 +71,9 @@ class ControllerSmokeTestCase(unittest.TestCase):
         admin_router_module._ADMIN_OVERVIEW_CACHE_TTL_SECONDS = 30
         admin_router_module._ADMIN_OVERVIEW_CACHE_EXPIRE_AT = 0
         admin_router_module._ADMIN_OVERVIEW_CACHE_PAYLOAD = None
+        admin_router_module._SECURITY_STATUS_CACHE_TTL_SECONDS = 30
+        admin_router_module._SECURITY_STATUS_CACHE_EXPIRE_AT = 0
+        admin_router_module._SECURITY_STATUS_CACHE_PAYLOAD = None
         def _fake_ai_context_export(output_path: Path):
             output_path.write_text("# smoke export\n", encoding="utf-8")
             return True, ""
@@ -189,6 +195,15 @@ class ControllerSmokeTestCase(unittest.TestCase):
         ]
         admin_router_module._ADMIN_OVERVIEW_CACHE_PAYLOAD = self._old_values[
             "routers_admin._ADMIN_OVERVIEW_CACHE_PAYLOAD"
+        ]
+        admin_router_module._SECURITY_STATUS_CACHE_TTL_SECONDS = self._old_values[
+            "routers_admin._SECURITY_STATUS_CACHE_TTL_SECONDS"
+        ]
+        admin_router_module._SECURITY_STATUS_CACHE_EXPIRE_AT = self._old_values[
+            "routers_admin._SECURITY_STATUS_CACHE_EXPIRE_AT"
+        ]
+        admin_router_module._SECURITY_STATUS_CACHE_PAYLOAD = self._old_values[
+            "routers_admin._SECURITY_STATUS_CACHE_PAYLOAD"
         ]
         admin_router_module.export_admin_ai_context_snapshot = self._old_values[
             "routers_admin.export_admin_ai_context_snapshot"
@@ -652,6 +667,36 @@ class ControllerSmokeTestCase(unittest.TestCase):
             admin_router_module.build_admin_overview_payload = original_builder
             admin_router_module._ADMIN_OVERVIEW_CACHE_EXPIRE_AT = 0
             admin_router_module._ADMIN_OVERVIEW_CACHE_PAYLOAD = None
+
+    def test_security_status_cache_reuses_payload_within_ttl(self) -> None:
+        original_builder = admin_router_module.build_security_status_payload
+        call_counter = {"count": 0}
+
+        def wrapped_builder(conn=None, now_ts=None):
+            call_counter["count"] += 1
+            return original_builder(conn=conn, now_ts=now_ts)
+
+        admin_router_module._SECURITY_STATUS_CACHE_TTL_SECONDS = 30
+        admin_router_module._SECURITY_STATUS_CACHE_EXPIRE_AT = 0
+        admin_router_module._SECURITY_STATUS_CACHE_PAYLOAD = None
+        admin_router_module.build_security_status_payload = wrapped_builder
+        try:
+            with TestClient(app_module.app) as client:
+                first = client.get("/admin/security/status", headers=self._auth_header())
+                self.assertEqual(200, first.status_code)
+                first_count = int(call_counter["count"])
+                second = client.get("/admin/security/status", headers=self._auth_header())
+                self.assertEqual(200, second.status_code)
+                self.assertEqual(first_count, int(call_counter["count"]))
+                self.assertGreaterEqual(first_count, 1)
+                self.assertEqual(
+                    bool(first.json().get("auth_enabled")),
+                    bool(second.json().get("auth_enabled")),
+                )
+        finally:
+            admin_router_module.build_security_status_payload = original_builder
+            admin_router_module._SECURITY_STATUS_CACHE_EXPIRE_AT = 0
+            admin_router_module._SECURITY_STATUS_CACHE_PAYLOAD = None
 
     def test_subscription_sign_and_access_smoke(self) -> None:
         with TestClient(app_module.app) as client:

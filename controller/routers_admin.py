@@ -101,6 +101,10 @@ _ADMIN_OVERVIEW_CACHE_TTL_SECONDS = 5
 _ADMIN_OVERVIEW_CACHE_EXPIRE_AT = 0
 _ADMIN_OVERVIEW_CACHE_PAYLOAD: Optional[Dict[str, Union[int, Dict, List]]] = None
 _ADMIN_OVERVIEW_CACHE_LOCK = Lock()
+_SECURITY_STATUS_CACHE_TTL_SECONDS = 5
+_SECURITY_STATUS_CACHE_EXPIRE_AT = 0
+_SECURITY_STATUS_CACHE_PAYLOAD: Optional[Dict[str, Union[bool, int, List[str]]]] = None
+_SECURITY_STATUS_CACHE_LOCK = Lock()
 
 
 def _normalize_controller_url(raw_url: str) -> str:
@@ -592,6 +596,27 @@ def build_security_status_payload(
         "node_task_max_pending_per_node": NODE_TASK_MAX_PENDING_PER_NODE,
         "warnings": warnings,
     }
+
+
+def get_security_status_payload_cached(now_ts: int) -> Dict[str, Union[bool, int, List[str]]]:
+    global _SECURITY_STATUS_CACHE_EXPIRE_AT
+    global _SECURITY_STATUS_CACHE_PAYLOAD
+    cache_ttl = int(_SECURITY_STATUS_CACHE_TTL_SECONDS)
+    if cache_ttl <= 0:
+        return build_security_status_payload(now_ts=now_ts)
+
+    cached_payload = _SECURITY_STATUS_CACHE_PAYLOAD
+    if cached_payload is not None and now_ts < int(_SECURITY_STATUS_CACHE_EXPIRE_AT):
+        return cached_payload
+
+    with _SECURITY_STATUS_CACHE_LOCK:
+        cached_payload = _SECURITY_STATUS_CACHE_PAYLOAD
+        if cached_payload is not None and now_ts < int(_SECURITY_STATUS_CACHE_EXPIRE_AT):
+            return cached_payload
+        fresh_payload = build_security_status_payload(now_ts=now_ts)
+        _SECURITY_STATUS_CACHE_PAYLOAD = fresh_payload
+        _SECURITY_STATUS_CACHE_EXPIRE_AT = int(now_ts + cache_ttl)
+        return fresh_payload
 
 
 def get_invalid_ip_or_cidr_items(items: List[str]) -> List[str]:
@@ -2288,7 +2313,7 @@ def get_admin_security_status(
     auth_error = verify_admin_authorization(authorization)
     if auth_error is not None:
         return auth_error
-    return build_security_status_payload()
+    return get_security_status_payload_cached(now_ts=int(time.time()))
 
 
 @router.post(
