@@ -100,6 +100,34 @@ class AuditCleanupTestCase(unittest.TestCase):
             self.assertEqual('{"k":"v"}', str(row["detail"] or ""))
             self.assertEqual(80, len(str(row["source_ip"] or "")))
 
+    def test_write_audit_log_normalizes_control_chars(self) -> None:
+        with self._build_conn() as conn:
+            write_audit_log(
+                conn,
+                action="node.task\ncreate\tok",
+                resource_type="http\radmin",
+                resource_id=" /nodes/\nJP1\t ",
+                detail="x",
+                actor="bot\nops\t1",
+                source_ip="127.0.0.1\n",
+                created_at=1_700_000_000,
+            )
+            conn.commit()
+            row = conn.execute(
+                """
+                SELECT actor, action, resource_type, resource_id, source_ip
+                FROM audit_logs
+                ORDER BY id DESC
+                LIMIT 1
+                """
+            ).fetchone()
+            self.assertIsNotNone(row)
+            self.assertEqual("bot ops 1", str(row["actor"] or ""))
+            self.assertEqual("node.task create ok", str(row["action"] or ""))
+            self.assertEqual("http admin", str(row["resource_type"] or ""))
+            self.assertEqual("/nodes/ JP1", str(row["resource_id"] or ""))
+            self.assertEqual("127.0.0.1", str(row["source_ip"] or ""))
+
 
 if __name__ == "__main__":
     unittest.main()

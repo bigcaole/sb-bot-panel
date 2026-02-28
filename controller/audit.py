@@ -14,8 +14,17 @@ MAX_AUDIT_RESOURCE_ID_LENGTH = 240
 MAX_AUDIT_SOURCE_IP_LENGTH = 80
 
 
+def _normalize_inline_text(value: Any) -> str:
+    text = str(value or "")
+    if not text:
+        return ""
+    # 审计字段统一保持单行，避免控制字符污染日志/终端显示。
+    sanitized = "".join(ch if ch.isprintable() and ch not in ("\r", "\n", "\t") else " " for ch in text)
+    return " ".join(sanitized.split())
+
+
 def _safe_trimmed_text(value: Any, max_length: int) -> str:
-    text = str(value or "").strip()
+    text = _normalize_inline_text(value).strip()
     if max_length < 1:
         return ""
     if len(text) > max_length:
