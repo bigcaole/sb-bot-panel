@@ -35,6 +35,13 @@ SENSITIVE_PAYLOAD_KEYWORDS = (
     "api_key",
     "apikey",
 )
+SENSITIVE_RESULT_PATTERNS = (
+    re.compile(
+        r'(?i)("?(?:auth[_-]?token|token|password|secret|api[_-]?key|private[_-]?key)"?\s*[:=]\s*"?)([^",\s]+)("?)'
+    ),
+    re.compile(r"(?i)(authorization\s*:\s*bearer\s+)([A-Za-z0-9._\-~+/=]{6,})()"),
+    re.compile(r"(?i)(\bbearer\s+)([A-Za-z0-9._\-~+/=]{12,})()"),
+)
 
 
 def _parse_int_payload(value: Any, field: str) -> int:
@@ -178,14 +185,26 @@ def sanitize_task_payload_for_display(payload_obj: Dict[str, Any]) -> Dict[str, 
     return _redact_payload_value(payload_obj)
 
 
+def sanitize_task_result_for_display(result_text: Any) -> str:
+    text = str(result_text or "")
+    if not text:
+        return ""
+    masked = text
+    for pattern in SENSITIVE_RESULT_PATTERNS:
+        masked = pattern.sub(r"\1***\3", masked)
+    return masked
+
+
 def build_task_row_dict(row: sqlite3.Row, redact_sensitive: bool = False) -> Dict[str, Any]:
     attempts = int(row["attempts"] or 0)
     max_attempts = int(row["max_attempts"] or 1)
     if max_attempts < 1:
         max_attempts = 1
     payload_obj = parse_task_payload(row["payload_json"])
+    result_text = str(row["result_text"] or "")
     if redact_sensitive:
         payload_obj = sanitize_task_payload_for_display(payload_obj)
+        result_text = sanitize_task_result_for_display(result_text)
     return {
         "id": int(row["id"]),
         "node_code": str(row["node_code"]),
@@ -197,7 +216,7 @@ def build_task_row_dict(row: sqlite3.Row, redact_sensitive: bool = False) -> Dic
         "max_attempts": max_attempts,
         "created_at": int(row["created_at"] or 0),
         "updated_at": int(row["updated_at"] or 0),
-        "result_text": str(row["result_text"] or ""),
+        "result_text": result_text,
     }
 
 

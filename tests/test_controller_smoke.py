@@ -831,8 +831,15 @@ class ControllerSmokeTestCase(unittest.TestCase):
             )
             self.assertEqual(200, create_resp.status_code)
             create_payload = create_resp.json()
+            created_task_id = int(create_payload.get("id", 0) or 0)
             self.assertEqual("***", str((create_payload.get("payload") or {}).get("auth_token")))
             self.assertEqual(15, int((create_payload.get("payload") or {}).get("poll_interval", 0) or 0))
+            with db_module.get_connection() as conn:
+                conn.execute(
+                    "UPDATE node_tasks SET result_text = ? WHERE id = ?",
+                    ("Authorization: Bearer abcdef123456", created_task_id),
+                )
+                conn.commit()
 
             list_resp = client.get(
                 "/nodes/JP1/tasks?limit=5",
@@ -843,6 +850,10 @@ class ControllerSmokeTestCase(unittest.TestCase):
             self.assertTrue(isinstance(list_payload, list))
             self.assertGreaterEqual(len(list_payload), 1)
             self.assertEqual("***", str((list_payload[0].get("payload") or {}).get("auth_token")))
+            self.assertIn(
+                "Authorization: Bearer ***",
+                str((list_payload[0].get("result_text") or "")),
+            )
 
             next_resp = client.post(
                 "/nodes/JP1/tasks/next",

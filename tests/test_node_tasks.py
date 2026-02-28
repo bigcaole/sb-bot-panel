@@ -50,6 +50,19 @@ class NodeTasksValidationTestCase(unittest.TestCase):
         self.assertEqual("***", ((masked.get("items") or [])[0]).get("secret"))
         self.assertEqual(1, ((masked.get("items") or [None, {}])[1]).get("value"))
 
+    def test_sanitize_task_result_for_display_redacts_sensitive_values(self) -> None:
+        raw = (
+            "auth_token=abcdef123456\n"
+            "Authorization: Bearer abcdef.123456\n"
+            '{"auth_token":"xyz","controller_url":"http://127.0.0.1:8080"}\n'
+            "normal_line=ok"
+        )
+        masked = node_tasks.sanitize_task_result_for_display(raw)
+        self.assertIn("auth_token=***", masked)
+        self.assertIn("Authorization: Bearer ***", masked)
+        self.assertIn('"auth_token":"***"', masked)
+        self.assertIn("normal_line=ok", masked)
+
 
 if __name__ == "__main__":
     unittest.main()
