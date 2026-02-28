@@ -206,6 +206,29 @@ class ControllerSmokeTestCase(unittest.TestCase):
             self.assertEqual(1, len(sync_users))
             self.assertEqual(0, int(sync_users[0].get("speed_mbps", -1)))
 
+            report_reality_resp = client.post(
+                "/nodes/JP1/report_reality",
+                headers=self._auth_header(),
+                json={
+                    "reality_public_key": "pubkey-updated-from-agent",
+                    "reality_short_id": "abcd1234",
+                },
+            )
+            self.assertEqual(200, report_reality_resp.status_code)
+            report_reality_payload = report_reality_resp.json()
+            self.assertTrue(bool(report_reality_payload.get("ok")))
+            self.assertEqual("JP1", str(report_reality_payload.get("node_code", "")))
+            self.assertEqual("abcd1234", str(report_reality_payload.get("reality_short_id", "")))
+
+            node_after_report = client.get("/nodes/JP1", headers=self._auth_header())
+            self.assertEqual(200, node_after_report.status_code)
+            node_after_report_payload = node_after_report.json()
+            self.assertEqual(
+                "pubkey-updated-from-agent",
+                str(node_after_report_payload.get("reality_public_key", "")),
+            )
+            self.assertEqual("abcd1234", str(node_after_report_payload.get("reality_short_id", "")))
+
             admin_sec = client.get("/admin/security/status", headers=self._auth_header())
             self.assertEqual(200, admin_sec.status_code)
             self.assertTrue(bool(admin_sec.json().get("auth_enabled")))

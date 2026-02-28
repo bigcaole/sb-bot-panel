@@ -56,6 +56,11 @@ class ReportNodeTaskRequest(BaseModel):
     result: str = ""
 
 
+class ReportNodeRealityRequest(BaseModel):
+    reality_public_key: str = Field(min_length=1, max_length=512)
+    reality_short_id: str = Field(min_length=1, max_length=32)
+
+
 class UpdateNodeRequest(BaseModel):
     region: Optional[str] = None
     host: Optional[str] = None

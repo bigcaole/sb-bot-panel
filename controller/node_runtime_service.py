@@ -1,6 +1,7 @@
 import json
 import time
 import hashlib
+import re
 from typing import Any, Dict, List, Union
 
 from fastapi import HTTPException, Request
@@ -15,7 +16,7 @@ from controller.node_tasks import (
     validate_node_task_payload,
     validate_node_task_payload_size,
 )
-from controller.schemas import CreateNodeTaskRequest, ReportNodeTaskRequest
+from controller.schemas import CreateNodeTaskRequest, ReportNodeRealityRequest, ReportNodeTaskRequest
 from controller.security import verify_node_agent_ip
 
 
@@ -472,4 +473,57 @@ def get_node_sync_service(node_code: str, request: Request) -> Dict[str, Union[D
         "node": node_data,
         "users": user_items,
         "generated_at": generated_at,
+    }
+
+
+def report_node_reality_service(
+    node_code: str,
+    payload: ReportNodeRealityRequest,
+    request: Request,
+) -> Dict[str, Union[bool, str, int]]:
+    public_key = str(payload.reality_public_key or "").strip()
+    short_id_raw = str(payload.reality_short_id or "").strip().lower()
+    if not public_key:
+        raise HTTPException(status_code=400, detail="reality_public_key is required")
+    if not re.fullmatch(r"[0-9a-f]{1,8}", short_id_raw):
+        raise HTTPException(status_code=400, detail="reality_short_id must be a hex string (1-8 chars)")
+
+    now_ts = int(time.time())
+    with get_connection() as conn:
+        node_row = conn.execute(
+            "SELECT node_code, agent_ip FROM nodes WHERE node_code = ?",
+            (node_code,),
+        ).fetchone()
+        if node_row is None:
+            raise HTTPException(status_code=404, detail="Node not found")
+        verify_node_agent_ip(request, node_code, node_row["agent_ip"])
+
+        conn.execute(
+            """
+            UPDATE nodes
+            SET reality_public_key = ?, reality_short_id = ?, last_seen_at = ?
+            WHERE node_code = ?
+            """,
+            (public_key, short_id_raw, now_ts, node_code),
+        )
+        write_audit_log(
+            conn,
+            action="node.reality.report",
+            resource_type="node",
+            resource_id=node_code,
+            detail={
+                "reality_public_key_len": len(public_key),
+                "reality_short_id": short_id_raw,
+            },
+            actor=get_request_actor(request),
+            source_ip=get_source_ip_for_audit(request),
+            created_at=now_ts,
+        )
+        conn.commit()
+
+    return {
+        "ok": True,
+        "node_code": node_code,
+        "reality_short_id": short_id_raw,
+        "updated_at": now_ts,
     }
