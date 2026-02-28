@@ -46,7 +46,8 @@ NODE_CODE=""
 AUTH_TOKEN=""
 TUIC_DOMAIN=""
 ACME_EMAIL=""
-TUIC_LISTEN_PORT=8443
+TUIC_DEFAULT_PORT=24443
+TUIC_LISTEN_PORT=$TUIC_DEFAULT_PORT
 POLL_INTERVAL=15
 PUBLIC_IP=""
 AGENT_PYTHON_BIN=""
@@ -549,12 +550,12 @@ load_existing_config_or_fail() {
   POLL_INTERVAL="$(read_old_config_value "poll_interval")"
 
   CONTROLLER_URL="${CONTROLLER_URL:-http://127.0.0.1:8080}"
-  NODE_CODE="${NODE_CODE:-JP1}"
+  NODE_CODE="${NODE_CODE:-N1}"
   TUIC_DOMAIN="${TUIC_DOMAIN:-}"
   ACME_EMAIL="${ACME_EMAIL:-}"
 
   if ! [[ "${TUIC_LISTEN_PORT}" =~ ^[0-9]+$ ]] || (( TUIC_LISTEN_PORT < 1 || TUIC_LISTEN_PORT > 65535 )); then
-    TUIC_LISTEN_PORT=8443
+    TUIC_LISTEN_PORT=$TUIC_DEFAULT_PORT
   fi
   if ! [[ "${POLL_INTERVAL}" =~ ^[0-9]+$ ]] || (( POLL_INTERVAL < 5 )); then
     POLL_INTERVAL=15
@@ -578,11 +579,11 @@ prompt_config() {
   echo "  3) auth_token：节点访问 controller 的 Bearer token"
   echo "  4) tuic_domain：TUIC 证书域名（留空=不启用 TUIC）"
   echo "  5) acme_email：证书申请邮箱（启用 TUIC 时建议填写）"
-  echo "  6) tuic_listen_port：TUIC 监听 UDP 端口（默认 8443）"
+  echo "  6) tuic_listen_port：TUIC 监听 UDP 端口（默认 ${TUIC_DEFAULT_PORT}，建议高位端口）"
   echo "  7) poll_interval：agent 轮询间隔秒数（默认 15）"
   echo ""
 
-  read -r -p "1) 请输入 controller_url（支持省略 http/https，例如 panel.cwzs.de:8080） [${old_controller:-http://127.0.0.1:8080}]: " CONTROLLER_URL
+  read -r -p "1) 请输入 controller_url（支持省略 http/https，例如 panel.example.com:8080） [${old_controller:-http://127.0.0.1:8080}]: " CONTROLLER_URL
   CONTROLLER_URL="${CONTROLLER_URL:-${old_controller:-http://127.0.0.1:8080}}"
   local controller_scheme controller_host
   controller_host="$(extract_url_host "$CONTROLLER_URL")"
@@ -593,20 +594,20 @@ prompt_config() {
   CONTROLLER_URL="$(normalize_input_url "$CONTROLLER_URL" "$controller_scheme")"
 
   while [[ -z "$NODE_CODE" ]]; do
-    read -r -p "2) 请输入 node_code（例如 JP1） [${old_node:-JP1}]: " NODE_CODE
-    NODE_CODE="${NODE_CODE:-${old_node:-JP1}}"
+    read -r -p "2) 请输入 node_code（例如 N1） [${old_node:-N1}]: " NODE_CODE
+    NODE_CODE="${NODE_CODE:-${old_node:-N1}}"
     NODE_CODE="$(echo "$NODE_CODE" | tr -d '[:space:]')"
   done
 
   read -r -p "3) 请输入 auth_token（用于拉取 sync） [${old_token:-devtoken123}]: " AUTH_TOKEN
   AUTH_TOKEN="${AUTH_TOKEN:-${old_token:-devtoken123}}"
 
-  read -r -p "4) 请输入 tuic_domain（例如 jp1.cwzs.de；留空=不启用TUIC） [${old_domain}]: " TUIC_DOMAIN
+  read -r -p "4) 请输入 tuic_domain（例如 node1.example.com；留空=不启用TUIC） [${old_domain}]: " TUIC_DOMAIN
   TUIC_DOMAIN="${TUIC_DOMAIN:-$old_domain}"
   TUIC_DOMAIN="${TUIC_DOMAIN//[$'\r\n']}"
 
   if [[ -n "$TUIC_DOMAIN" ]]; then
-    read -r -p "5) 请输入 acme_email（例如 admin@cwzs.de） [${old_email:-admin@example.com}]: " ACME_EMAIL
+    read -r -p "5) 请输入 acme_email（例如 admin@example.com） [${old_email:-admin@example.com}]: " ACME_EMAIL
     ACME_EMAIL="${ACME_EMAIL:-${old_email:-admin@example.com}}"
     ACME_EMAIL="$(echo "$ACME_EMAIL" | tr -d '[:space:]')"
     if [[ "$ACME_EMAIL" == "admin@example.com" ]]; then
@@ -617,11 +618,11 @@ prompt_config() {
     msg "已选择不启用 TUIC，跳过证书邮箱。"
   fi
 
-  read -r -p "6) 请输入 tuic_listen_port（默认 8443） [${old_tuic_port:-8443}]: " TUIC_LISTEN_PORT
-  TUIC_LISTEN_PORT="${TUIC_LISTEN_PORT:-${old_tuic_port:-8443}}"
+  read -r -p "6) 请输入 tuic_listen_port（默认 ${TUIC_DEFAULT_PORT}） [${old_tuic_port:-$TUIC_DEFAULT_PORT}]: " TUIC_LISTEN_PORT
+  TUIC_LISTEN_PORT="${TUIC_LISTEN_PORT:-${old_tuic_port:-$TUIC_DEFAULT_PORT}}"
   if ! [[ "$TUIC_LISTEN_PORT" =~ ^[0-9]+$ ]] || (( TUIC_LISTEN_PORT < 1 || TUIC_LISTEN_PORT > 65535 )); then
-    warn "端口无效，已回退为 8443"
-    TUIC_LISTEN_PORT=8443
+    warn "端口无效，已回退为 ${TUIC_DEFAULT_PORT}"
+    TUIC_LISTEN_PORT=$TUIC_DEFAULT_PORT
   fi
 
   read -r -p "7) 请输入 poll_interval（秒，默认 15） [${old_poll:-15}]: " POLL_INTERVAL
@@ -658,11 +659,11 @@ prompt_config_quick() {
   fi
   CONTROLLER_URL="$(normalize_input_url "$CONTROLLER_URL" "$controller_scheme")"
 
-  read -r -p "node_code（节点唯一标识） [${old_node:-JP1}]: " NODE_CODE
-  NODE_CODE="${NODE_CODE:-${old_node:-JP1}}"
+  read -r -p "node_code（节点唯一标识） [${old_node:-N1}]: " NODE_CODE
+  NODE_CODE="${NODE_CODE:-${old_node:-N1}}"
   NODE_CODE="$(echo "$NODE_CODE" | tr -d '[:space:]')"
   if [[ -z "$NODE_CODE" ]]; then
-    NODE_CODE="JP1"
+    NODE_CODE="N1"
   fi
 
   read -r -p "auth_token（用于拉取 sync） [${old_token:-devtoken123}]: " AUTH_TOKEN
@@ -670,10 +671,10 @@ prompt_config_quick() {
 
   TUIC_DOMAIN="${old_domain:-}"
   ACME_EMAIL="${old_email:-}"
-  TUIC_LISTEN_PORT="${old_tuic_port:-8443}"
+  TUIC_LISTEN_PORT="${old_tuic_port:-$TUIC_DEFAULT_PORT}"
   POLL_INTERVAL="${old_poll:-15}"
   if ! [[ "$TUIC_LISTEN_PORT" =~ ^[0-9]+$ ]] || (( TUIC_LISTEN_PORT < 1 || TUIC_LISTEN_PORT > 65535 )); then
-    TUIC_LISTEN_PORT=8443
+    TUIC_LISTEN_PORT=$TUIC_DEFAULT_PORT
   fi
   if ! [[ "$POLL_INTERVAL" =~ ^[0-9]+$ ]] || (( POLL_INTERVAL < 5 )); then
     POLL_INTERVAL=15

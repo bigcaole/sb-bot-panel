@@ -4960,8 +4960,8 @@ async def start_node_ops_config_wizard(
         "controller_url, auth_token, node_code\n\n"
         "示例：\n"
         "poll_interval=10\n"
-        "tuic_domain=jp1.cwzs.de\n"
-        "tuic_listen_port=8443\n"
+        "tuic_domain=node1.example.com\n"
+        "tuic_listen_port=24443\n"
         "acme_email=-   （使用 - 清空可选字段）\n\n"
         "发送 /cancel 取消。",
     )
@@ -5731,7 +5731,7 @@ async def start_nodes_create_wizard(
     logger.info("button_click user=%s data=%s", user, callback_data)
 
     context.user_data[NODES_WIZARD_KEY] = {}
-    await query.edit_message_text("新增节点\n\n请输入节点代码（例如 JP1）：")
+    await query.edit_message_text("新增节点\n\n请输入节点代码（例如 N1）：")
     return NODE_CREATE_NODE_CODE
 
 
@@ -6181,7 +6181,7 @@ async def start_user_nodes_manual_input(
 
     context.user_data[USER_NODES_WIZARD_KEY] = {}
     await query.edit_message_text(
-        "节点分配\n\n请输入用户代码（例如 u1001），发送 /cancel 取消："
+        "节点分配\n\n请输入用户代码（例如 u0001），发送 /cancel 取消："
     )
     return USER_NODES_INPUT
 
@@ -6194,7 +6194,7 @@ async def user_nodes_input_user_code(
 
     raw_value = update.message.text.strip()
     if not re.match(r"^u\d+$", raw_value):
-        await update.message.reply_text("用户代码格式无效，请输入类似 u1001 的代码：")
+        await update.message.reply_text("用户代码格式无效，请输入类似 u0001 的代码：")
         return USER_NODES_INPUT
 
     context.user_data[USER_NODES_WIZARD_KEY] = {"user_code": raw_value}
@@ -6511,7 +6511,7 @@ async def start_node_edit_tuic_sni(
     node_code = callback_data.split(":", maxsplit=2)[2]
     context.user_data[NODE_EDIT_KEY] = {"node_code": node_code, "field": "tuic_sni"}
     await query.edit_message_text(
-        "请输入新的TUIC证书域名（例如 jp1.cwzs.de），发送 - 清空，发送 /cancel 取消。"
+        "请输入新的TUIC证书域名（例如 node1.example.com），发送 - 清空，发送 /cancel 取消。"
     )
     return NODE_EDIT_TUIC_SNI
 

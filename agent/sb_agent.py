@@ -24,6 +24,7 @@ TUIC_TC_STATE_PATH = "/etc/sb-agent/tuic_tc_state.json"
 TUIC_UFW_STATE_PATH = "/etc/sb-agent/tuic_ufw_state.json"
 
 DEFAULT_POLL_INTERVAL = 15
+DEFAULT_TUIC_LISTEN_PORT = 24443
 DEFAULT_RUN_COMMAND_TIMEOUT = 30
 
 try:
@@ -125,13 +126,13 @@ def load_config() -> AgentConfig:
     if poll_interval < 5:
         poll_interval = 5
 
-    tuic_listen_port_raw = raw.get("tuic_listen_port", 8443)
+    tuic_listen_port_raw = raw.get("tuic_listen_port", DEFAULT_TUIC_LISTEN_PORT)
     try:
         tuic_listen_port = int(tuic_listen_port_raw)
     except (TypeError, ValueError):
-        tuic_listen_port = 8443
+        tuic_listen_port = DEFAULT_TUIC_LISTEN_PORT
     if tuic_listen_port < 1 or tuic_listen_port > 65535:
-        tuic_listen_port = 8443
+        tuic_listen_port = DEFAULT_TUIC_LISTEN_PORT
 
     return AgentConfig(
         controller_url=controller_url,

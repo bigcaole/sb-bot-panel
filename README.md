@@ -2,7 +2,7 @@
 
 本项目现在包含节点侧一键部署方案：`sing-box + sb-agent + UFW + systemd + ACME 证书检查`，并提供中文数字菜单，体验接近 x-ui/s-ui。
 
-详细手册（零基础可用）：`/Users/cwzs/Documents/sb-bot-panel/docs/零基础部署-测试-使用-排障手册.md`
+详细手册（零基础可用）：`docs/零基础部署-测试-使用-排障手册.md`
 
 ## 目录新增
 
@@ -101,11 +101,11 @@ git clone <你的仓库地址> sb-bot-panel && cd sb-bot-panel && sudo bash scri
 安装过程为中文交互，会询问并写入 `/etc/sb-agent/config.json`：
 
 1. `controller_url`（支持省略协议；例如可直接填 `panel.example.com:8080`）
-2. `node_code`（例如 `JP1`）
+2. `node_code`（例如 `N1`）
 3. `auth_token`
 4. `tuic_domain`（留空则不启用 TUIC）
 5. `acme_email`（启用 TUIC 时必填）
-6. `tuic_listen_port`（默认 `8443`）
+6. `tuic_listen_port`（默认 `24443`，建议高位 UDP 端口）
 7. `poll_interval`（默认 `15` 秒）
 
 ## 节点服务器菜单管理
@@ -242,7 +242,7 @@ REALITY 密钥策略：
 ### 4) 端口未放行
 
 - `ufw allow 443/tcp`
-- `ufw allow 8443/udp`（或你的 TUIC 端口）
+- `ufw allow 24443/udp`（或你的 TUIC 端口）
 - `ufw status`
 
 ## 管理服务器：一键安装（controller + bot）
@@ -350,7 +350,7 @@ sudo bash scripts/admin/bot_regression_check.sh
   - `LOG_ARCHIVE_WINDOW_HOURS`（默认 24）
   - `LOG_ARCHIVE_RETENTION_COUNT`（默认 30）
   - `LOG_ARCHIVE_DIR`（默认 `/var/backups/sb-controller/logs`）
-- 已知长期技术债（含 VLESS 按用户限速未解决）见：`/Users/cwzs/Documents/sb-bot-panel/docs/待办与技术债.md`
+- 已知长期技术债（含 VLESS 按用户限速未解决）见：`docs/待办与技术债.md`
 
 ## Bot 远程管理（节点服务器）
 
@@ -509,7 +509,7 @@ scp root@旧IP:/var/backups/sb-migrate/sb-migrate-xxxx.tar.gz root@新IP:/root/
 
 ## .env 配置项（管理服务器）
 
-参考：`/Users/cwzs/Documents/sb-bot-panel/.env.example`
+参考：`.env.example`
 
 - `CONTROLLER_URL=http://127.0.0.1:8080`
 - `CONTROLLER_PUBLIC_URL=http://your-public-ip:8080`（可选，对外地址）

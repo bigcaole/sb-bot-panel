@@ -9,6 +9,8 @@ from fastapi import HTTPException
 
 from controller.db import get_connection
 
+DEFAULT_TUIC_PORT = 24443
+
 
 def ensure_user_exists(user_code: str) -> None:
     with get_connection() as conn:
@@ -156,7 +158,7 @@ def build_subscription_links_text(user_code: str) -> str:
                 lines.append("# {0}: REALITY params missing, skipped vless link".format(node_code))
 
         # B 模式：优先使用 user_nodes.tuic_port（端口池分配），可支持按用户端口能力（例如限速策略）。
-        # A 模式：当 user_nodes.tuic_port 缺失时，回退 nodes.tuic_listen_port（默认 8443）。
+        # A 模式：当 user_nodes.tuic_port 缺失时，回退 nodes.tuic_listen_port（默认 24443）。
         if supports_tuic == 1:
             try:
                 assigned_port = int(row["tuic_port"] or 0)
@@ -166,9 +168,9 @@ def build_subscription_links_text(user_code: str) -> str:
                 tuic_port = assigned_port
             else:
                 try:
-                    tuic_port = int(row["tuic_listen_port"] or 8443)
+                    tuic_port = int(row["tuic_listen_port"] or DEFAULT_TUIC_PORT)
                 except (TypeError, ValueError):
-                    tuic_port = 8443
+                    tuic_port = DEFAULT_TUIC_PORT
             name = quote("{0}-T".format(node_code), safe="")
             tuic_link = "tuic://{0}:{0}@{1}:{2}?alpn=h3".format(
                 user_row["tuic_secret"], host, tuic_port
