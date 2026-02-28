@@ -1058,7 +1058,14 @@ main() {
         ;;
       12)
         if [[ -f "$SMOKE_SCRIPT" ]]; then
-          bash "$SMOKE_SCRIPT" --require-api
+          local require_split
+          read -r -p "是否要求 token 拆分通过（ADMIN/NODE 分离）？[y/N]: " require_split
+          require_split="${require_split:-N}"
+          if [[ "$require_split" =~ ^[Yy]$ ]]; then
+            bash "$SMOKE_SCRIPT" --require-api --require-token-split
+          else
+            bash "$SMOKE_SCRIPT" --require-api
+          fi
         else
           err "未找到验收脚本: $SMOKE_SCRIPT"
         fi

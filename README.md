@@ -444,6 +444,8 @@ sb-admin
 
 ```bash
 bash /root/sb-bot-panel/scripts/admin/smoke_test.sh --require-api
+# 严格要求通过 token 拆分验收（推荐）
+bash /root/sb-bot-panel/scripts/admin/smoke_test.sh --require-api --require-token-split
 ```
 
 说明补充：
@@ -480,8 +482,11 @@ bash /root/sb-bot-panel/scripts/ai_context_export.sh
 
 说明：
 
-- 默认会读取 `.env` 中的 `CONTROLLER_PORT` / `AUTH_TOKEN`
+- 默认会读取 `.env` 中的 `CONTROLLER_PORT` 与鉴权 token（`ADMIN_AUTH_TOKEN` / `NODE_AUTH_TOKEN` / `AUTH_TOKEN`）
+- 管理 token 选择优先级：`ADMIN_AUTH_TOKEN -> AUTH_TOKEN -> NODE_AUTH_TOKEN`
+- 节点 token 选择优先级：`NODE_AUTH_TOKEN -> AUTH_TOKEN -> ADMIN_AUTH_TOKEN`
 - 检查项：Python 语法、`tests/` 单元测试、controller API 鉴权冒烟
+- token 拆分检查：默认告警；启用 `--require-token-split`（或环境变量 `SMOKE_REQUIRE_TOKEN_SPLIT=1`）时，若仍为兼容模式会直接判失败
 - 访问收敛检查：会读取 `/admin/node_access/status`，默认仅告警；若设置 `SMOKE_REQUIRE_NODE_LOCK=1`，当存在“启用但未锁定来源IP”的节点会直接判失败
 - 退出码：`0=通过`，`10=代码检查失败`，`20=API检查失败`，`30=代码+API均失败`
 

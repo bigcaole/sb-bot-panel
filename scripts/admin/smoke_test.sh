@@ -15,6 +15,7 @@ FAIL_API=0
 SMOKE_ACTOR="smoke-test"
 AI_CONTEXT_SCRIPT="${PROJECT_DIR}/scripts/admin/ai_context_export.sh"
 AI_CONTEXT_ON_FAIL="${SMOKE_EXPORT_AI_CONTEXT_ON_FAIL:-1}"
+REQUIRE_TOKEN_SPLIT="${SMOKE_REQUIRE_TOKEN_SPLIT:-0}"
 
 msg() { echo -e "\033[1;32m[信息]\033[0m $*"; }
 warn() { echo -e "\033[1;33m[警告]\033[0m $*"; }
@@ -115,11 +116,13 @@ usage() {
   bash scripts/admin/smoke_test.sh --require-api
   bash scripts/admin/smoke_test.sh --skip-api
   bash scripts/admin/smoke_test.sh --api-base-url http://127.0.0.1:8080
+  bash scripts/admin/smoke_test.sh --require-token-split
 
 说明：
   - 默认执行：Python 语法检查 + unittest + API 冒烟（auto）
   - auto 模式下：若 API 不可达，仅给警告，不判失败
   - require-api 模式下：API 不可达会直接失败
+  - require-token-split 模式下：要求管理/节点 token 必须拆分，否则判失败
   - 验收失败时默认自动导出 AI 诊断包（可用环境变量 SMOKE_EXPORT_AI_CONTEXT_ON_FAIL=0 关闭）
 EOF
 }
@@ -142,6 +145,10 @@ parse_args() {
         fi
         API_BASE_URL="${2%/}"
         shift 2
+        ;;
+      --require-token-split)
+        REQUIRE_TOKEN_SPLIT="1"
+        shift
         ;;
       -h|--help)
         usage
@@ -238,7 +245,9 @@ run_api_checks() {
   local controller_port="${CONTROLLER_PORT:-8080}"
   local api_url="${API_BASE_URL:-http://127.0.0.1:${controller_port}}"
   local auth_token_raw="${ADMIN_AUTH_TOKEN:-${AUTH_TOKEN:-${NODE_AUTH_TOKEN:-}}}"
+  local node_token_raw="${NODE_AUTH_TOKEN:-${AUTH_TOKEN:-${ADMIN_AUTH_TOKEN:-}}}"
   local auth_token
+  local node_token
   auth_token="$(pick_working_auth_token "$api_url" "$auth_token_raw")" || {
     record_warn "检测到管理 token 多值模式，但未探测到可用 token，已回退使用第一个 token。"
   }
@@ -250,6 +259,9 @@ run_api_checks() {
   if [[ -n "$auth_token_raw" && "$auth_token_raw" == *","* ]]; then
     record_warn "检测到管理 token 多值模式，验收会自动优先选取可用 token。"
   fi
+  node_token="$(first_auth_token "$node_token_raw")"
+  node_token="${node_token#"${node_token%%[![:space:]]*}"}"
+  node_token="${node_token%"${node_token##*[![:space:]]}"}"
   local require_node_lock="${SMOKE_REQUIRE_NODE_LOCK:-0}"
   local code
   local node_access_status
@@ -257,6 +269,10 @@ run_api_checks() {
   local enabled_nodes
   local unlocked_enabled_nodes
   local whitelist_missing_count
+  local first_node_code=""
+  local admin_auth_source=""
+  local node_auth_source=""
+  local auth_token_split_active=0
 
   msg "3/3 运行 API 冒烟检查（${api_url}）..."
 
@@ -285,11 +301,53 @@ run_api_checks() {
     if [[ "$code" != "200" ]]; then
       FAIL_API=1
       record_fail "鉴权校验异常：带 token 访问 /nodes 期望 200，实际 ${code}"
+    else
+      first_node_code="$("$PYTHON_BIN" - <<'PY'
+import json
+from pathlib import Path
+
+try:
+    payload = json.loads(Path("/tmp/sb_smoke_resp.txt").read_text(encoding="utf-8"))
+except Exception:
+    payload = []
+if isinstance(payload, list) and payload:
+    item = payload[0] if isinstance(payload[0], dict) else {}
+    print(str(item.get("node_code", "")).strip())
+PY
+      )"
     fi
     code="$(http_code "${api_url}/admin/security/status" -H "Authorization: Bearer ${auth_token}")"
     if [[ "$code" != "200" ]]; then
       FAIL_API=1
       record_fail "管理接口校验异常：带 token 访问 /admin/security/status 期望 200，实际 ${code}"
+    else
+      local sec_fields
+      sec_fields="$("$PYTHON_BIN" - <<'PY'
+import json
+from pathlib import Path
+
+payload = json.loads(Path("/tmp/sb_smoke_resp.txt").read_text(encoding="utf-8"))
+admin_source = str(payload.get("admin_auth_source", "")).strip()
+node_source = str(payload.get("node_auth_source", "")).strip()
+split_active = 1 if bool(payload.get("auth_token_split_active")) else 0
+print(f"{admin_source},{node_source},{split_active}")
+PY
+      )"
+      IFS=',' read -r admin_auth_source node_auth_source auth_token_split_active <<<"$sec_fields"
+      if [[ "$admin_auth_source" != "admin_auth_token" ]]; then
+        record_warn "管理鉴权来源为 ${admin_auth_source:-unknown}（建议使用 ADMIN_AUTH_TOKEN）"
+      fi
+      if [[ "$node_auth_source" != "node_auth_token" ]]; then
+        record_warn "节点鉴权来源为 ${node_auth_source:-unknown}（建议使用 NODE_AUTH_TOKEN）"
+      fi
+      if [[ "${auth_token_split_active}" != "1" ]]; then
+        if [[ "${REQUIRE_TOKEN_SPLIT}" == "1" ]]; then
+          FAIL_API=1
+          record_fail "token 拆分检查失败：当前仍是兼容模式（auth_token_split_active=false）"
+        else
+          record_warn "token 拆分未启用（兼容模式）；建议拆分 ADMIN_AUTH_TOKEN 与 NODE_AUTH_TOKEN"
+        fi
+      fi
     fi
     code="$(http_code "${api_url}/admin/overview" -H "Authorization: Bearer ${auth_token}")"
     if [[ "$code" != "200" ]]; then
@@ -315,6 +373,28 @@ run_api_checks() {
     if [[ "$code" != "200" ]]; then
       FAIL_API=1
       record_fail "数据库完整性接口校验异常：带 token 访问 /admin/db/integrity 期望 200，实际 ${code}"
+    fi
+    if [[ -n "$first_node_code" ]]; then
+      code="$(http_code "${api_url}/nodes/${first_node_code}/tasks/next" -X POST -H "Authorization: Bearer ${auth_token}")"
+      if [[ "$code" == "200" ]]; then
+        FAIL_API=1
+        record_fail "鉴权隔离异常：管理 token 访问节点任务接口被允许（/nodes/${first_node_code}/tasks/next=200）"
+      elif [[ "$code" != "401" && "$code" != "403" ]]; then
+        record_warn "管理 token 访问节点任务接口返回非常规状态（HTTP=${code}）"
+      fi
+    fi
+    if [[ -n "$node_token" ]]; then
+      code="$(http_code "${api_url}/admin/security/status" -H "Authorization: Bearer ${node_token}")"
+      if [[ "$code" == "200" ]]; then
+        if [[ "${auth_token_split_active}" == "1" ]]; then
+          FAIL_API=1
+          record_fail "鉴权隔离异常：节点 token 可访问管理接口（/admin/security/status=200）"
+        else
+          record_warn "节点 token 仍可访问管理接口（兼容模式未拆分）"
+        fi
+      elif [[ "$code" != "401" && "$code" != "403" ]]; then
+        record_warn "节点 token 访问管理接口返回非常规状态（HTTP=${code}）"
+      fi
     fi
   else
     code="$(http_code "${api_url}/nodes")"
