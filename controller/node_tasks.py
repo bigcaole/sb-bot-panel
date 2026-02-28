@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional, Union
 
 from fastapi import HTTPException
 
+from controller.redaction import mask_sensitive_text
 
 ALLOWED_NODE_TASK_TYPES = {
     "restart_singbox",
@@ -34,13 +35,6 @@ SENSITIVE_PAYLOAD_KEYWORDS = (
     "private_key",
     "api_key",
     "apikey",
-)
-SENSITIVE_RESULT_PATTERNS = (
-    re.compile(
-        r'(?i)("?(?:auth[_-]?token|token|password|secret|api[_-]?key|private[_-]?key)"?\s*[:=]\s*"?)([^",\s]+)("?)'
-    ),
-    re.compile(r"(?i)(authorization\s*:\s*bearer\s+)([A-Za-z0-9._\-~+/=]{6,})()"),
-    re.compile(r"(?i)(\bbearer\s+)([A-Za-z0-9._\-~+/=]{12,})()"),
 )
 
 
@@ -189,10 +183,7 @@ def sanitize_task_result_for_display(result_text: Any) -> str:
     text = str(result_text or "")
     if not text:
         return ""
-    masked = text
-    for pattern in SENSITIVE_RESULT_PATTERNS:
-        masked = pattern.sub(r"\1***\3", masked)
-    return masked
+    return mask_sensitive_text(text)
 
 
 def build_task_row_dict(row: sqlite3.Row, redact_sensitive: bool = False) -> Dict[str, Any]:
