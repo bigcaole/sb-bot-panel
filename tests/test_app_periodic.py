@@ -5,6 +5,23 @@ from controller import app as app_module
 
 
 class AppPeriodicTaskTestCase(unittest.TestCase):
+    def test_skip_when_interval_disabled(self) -> None:
+        called = {"count": 0}
+
+        def _runner() -> None:
+            called["count"] += 1
+
+        lock = Lock()
+        updated = app_module._maybe_run_periodic_task(
+            now_ts=100,
+            interval_seconds=0,
+            last_at=30,
+            task_lock=lock,
+            task_runner=_runner,
+        )
+        self.assertEqual(30, updated)
+        self.assertEqual(0, called["count"])
+
     def test_skip_when_interval_not_reached(self) -> None:
         called = {"count": 0}
 

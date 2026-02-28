@@ -65,6 +65,8 @@ def _maybe_run_periodic_task(
     task_runner,
     task_name: str = "periodic_task",
 ) -> int:
+    if int(interval_seconds) <= 0:
+        return int(last_at)
     if now_ts - int(last_at) < int(interval_seconds):
         return int(last_at)
     if not task_lock.acquire(blocking=False):
