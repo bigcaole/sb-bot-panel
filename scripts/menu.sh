@@ -5,6 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 INSTALL_SCRIPT="$ROOT_DIR/scripts/install.sh"
 LOCAL_CERT_CHECK_SCRIPT="$ROOT_DIR/scripts/sb_cert_check.sh"
+OPS_SNAPSHOT_SCRIPT="$ROOT_DIR/scripts/ops_snapshot.sh"
 SYSTEM_CERT_CHECK_SCRIPT="/usr/local/bin/sb-cert-check.sh"
 
 AGENT_SERVICE="sb-agent"
@@ -878,9 +879,10 @@ show_menu() {
   echo "18) 恢复 SSH 密码登录（应急）"
   echo ""
   echo "【系统级操作（谨慎）】"
-  echo "19) 更新同步（保留原配置，自动 git pull）"
-  echo "20) 卸载"
-  echo "21) 退出"
+  echo "19) 节点运维快照（导出关键状态）"
+  echo "20) 更新同步（保留原配置，自动 git pull）"
+  echo "21) 卸载"
+  echo "22) 退出"
   echo "========================================"
 }
 
@@ -888,7 +890,7 @@ main() {
   require_root
   while true; do
     show_menu
-    read -r -p "请选择操作 [1-21]: " choice
+    read -r -p "请选择操作 [1-22]: " choice
     case "$choice" in
       1)
         run_reconfigure
@@ -966,6 +968,14 @@ main() {
         pause
         ;;
       19)
+        if [[ -f "$OPS_SNAPSHOT_SCRIPT" ]]; then
+          bash "$OPS_SNAPSHOT_SCRIPT"
+        else
+          err "未找到节点运维快照脚本: $OPS_SNAPSHOT_SCRIPT"
+        fi
+        pause
+        ;;
+      20)
         if confirm_action "确认执行更新同步？" "N"; then
           run_install
         else
@@ -973,16 +983,16 @@ main() {
         fi
         pause
         ;;
-      20)
+      21)
         uninstall_all
         pause
         ;;
-      21)
+      22)
         msg "已退出。"
         exit 0
         ;;
       *)
-        warn "无效选项，请输入 1-21。"
+        warn "无效选项，请输入 1-22。"
         pause
         ;;
     esac
