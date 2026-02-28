@@ -177,6 +177,20 @@ class SecurityTestCase(unittest.TestCase):
             security.build_rate_limit_path_key("/admin/security/status"),
         )
 
+    def test_get_rate_limit_auth_bucket(self) -> None:
+        security.AUTH_TOKEN = ""
+        security.ADMIN_AUTH_TOKEN = "admin-token"
+        security.NODE_AUTH_TOKEN = "node-token"
+        self.assertEqual("auth", security.get_rate_limit_auth_bucket("/nodes", "Bearer admin-token"))
+        self.assertEqual("anon", security.get_rate_limit_auth_bucket("/nodes", "Bearer node-token"))
+        self.assertEqual("auth", security.get_rate_limit_auth_bucket("/nodes/JP1/sync", "Bearer node-token"))
+        self.assertEqual("anon", security.get_rate_limit_auth_bucket("/nodes/JP1/sync", "Bearer admin-token"))
+
+        security.ADMIN_AUTH_TOKEN = ""
+        security.NODE_AUTH_TOKEN = ""
+        security.AUTH_TOKEN = ""
+        self.assertEqual("open", security.get_rate_limit_auth_bucket("/nodes", None))
+
     def test_is_rate_limit_target_path(self) -> None:
         self.assertTrue(security.is_rate_limit_target_path("/nodes"))
         self.assertTrue(security.is_rate_limit_target_path("/users"))

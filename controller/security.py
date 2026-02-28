@@ -303,12 +303,26 @@ def build_rate_limit_path_key(path: str) -> str:
     return "/" + "/".join(normalized_segments)
 
 
-def get_rate_limit_identity(request: Request) -> str:
+def get_rate_limit_auth_bucket(path: str, authorization: Optional[str]) -> str:
+    normalized_path = str(path or "").strip() or "/"
+    if is_node_agent_auth_path(normalized_path):
+        if has_any_node_auth_token():
+            return "auth" if verify_node_authorization(authorization) is None else "anon"
+        return "open"
+    if is_admin_api_path(normalized_path):
+        if has_any_admin_auth_token():
+            return "auth" if verify_admin_authorization(authorization) is None else "anon"
+        return "open"
+    return "open"
+
+
+def get_rate_limit_identity(request: Request, auth_bucket: str = "anon") -> str:
     request_ip = get_request_ip(request)
     if not request_ip:
         request_ip = "unknown"
     path_key = build_rate_limit_path_key(str(request.url.path or "/"))
-    return "{0}:{1}".format(request_ip, path_key)
+    bucket_value = str(auth_bucket or "").strip() or "anon"
+    return "{0}:{1}:{2}".format(request_ip, path_key, bucket_value)
 
 
 def is_rate_limit_target_path(path: str) -> bool:

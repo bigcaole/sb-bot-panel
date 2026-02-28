@@ -775,6 +775,36 @@ class ControllerSmokeTestCase(unittest.TestCase):
             security_module._RATE_LIMIT_STATE.clear()
             security_module._RATE_LIMIT_LAST_CLEANUP_AT = 0
 
+    def test_rate_limit_separates_authorized_and_unauthorized_buckets(self) -> None:
+        old_app_enabled = app_module.API_RATE_LIMIT_ENABLED
+        old_sec_enabled = security_module.API_RATE_LIMIT_ENABLED
+        old_window = security_module.API_RATE_LIMIT_WINDOW_SECONDS
+        old_max = security_module.API_RATE_LIMIT_MAX_REQUESTS
+        try:
+            app_module.API_RATE_LIMIT_ENABLED = True
+            security_module.API_RATE_LIMIT_ENABLED = True
+            security_module.API_RATE_LIMIT_WINDOW_SECONDS = 60
+            security_module.API_RATE_LIMIT_MAX_REQUESTS = 2
+            security_module._RATE_LIMIT_STATE.clear()
+            security_module._RATE_LIMIT_LAST_CLEANUP_AT = 0
+            with TestClient(app_module.app) as client:
+                first_unauth = client.get("/nodes")
+                self.assertEqual(401, first_unauth.status_code)
+                second_unauth = client.get("/nodes")
+                self.assertEqual(401, second_unauth.status_code)
+                third_unauth = client.get("/nodes")
+                self.assertEqual(429, third_unauth.status_code)
+
+                auth_resp = client.get("/nodes", headers=self._auth_header())
+                self.assertEqual(200, auth_resp.status_code)
+        finally:
+            app_module.API_RATE_LIMIT_ENABLED = old_app_enabled
+            security_module.API_RATE_LIMIT_ENABLED = old_sec_enabled
+            security_module.API_RATE_LIMIT_WINDOW_SECONDS = old_window
+            security_module.API_RATE_LIMIT_MAX_REQUESTS = old_max
+            security_module._RATE_LIMIT_STATE.clear()
+            security_module._RATE_LIMIT_LAST_CLEANUP_AT = 0
+
     def test_admin_overview_cache_reuses_payload_within_ttl(self) -> None:
         original_builder = admin_router_module.build_admin_overview_payload
         call_counter = {"count": 0}

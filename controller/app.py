@@ -35,6 +35,7 @@ from controller.security import (
     AUTH_TOKEN,
     build_unauthorized_audit_key,
     check_and_consume_rate_limit,
+    get_rate_limit_auth_bucket,
     get_rate_limit_identity,
     has_any_admin_auth_token,
     has_any_node_auth_token,
@@ -159,8 +160,10 @@ async def auth_middleware(request: Request, call_next):
                 status_code=403,
                 content={"ok": False, "error": "source_not_allowed"},
             )
+    authorization = request.headers.get("Authorization")
     if API_RATE_LIMIT_ENABLED and is_rate_limit_target_path(request.url.path):
-        identity = get_rate_limit_identity(request)
+        auth_bucket = get_rate_limit_auth_bucket(request_path, authorization)
+        identity = get_rate_limit_identity(request, auth_bucket=auth_bucket)
         limited, retry_after = check_and_consume_rate_limit(identity, now_ts)
         if limited:
             return JSONResponse(
@@ -169,7 +172,6 @@ async def auth_middleware(request: Request, call_next):
                 headers={"Retry-After": str(retry_after)},
             )
 
-    authorization = request.headers.get("Authorization")
     if is_node_agent_auth_path(request_path):
         auth_error = verify_node_authorization(authorization)
         if (not has_any_node_auth_token()) and auth_error is None:
@@ -221,7 +223,7 @@ async def rate_limit_middleware(request: Request, call_next):
         return await call_next(request)
 
     now_ts = int(time.time())
-    identity = get_rate_limit_identity(request)
+    identity = get_rate_limit_identity(request, auth_bucket="open")
     limited, retry_after = check_and_consume_rate_limit(identity, now_ts)
     if limited:
         return JSONResponse(
