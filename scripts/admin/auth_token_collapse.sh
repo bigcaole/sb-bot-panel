@@ -187,6 +187,7 @@ main() {
       *)
         err "未知参数：$arg"
         err "用法：bash scripts/admin/auth_token_collapse.sh [--yes]"
+        err "说明：同时收敛 AUTH_TOKEN / ADMIN_AUTH_TOKEN / NODE_AUTH_TOKEN 的多值过渡状态"
         exit 1
         ;;
     esac
@@ -198,22 +199,40 @@ main() {
     exit 1
   fi
 
-  local auth_raw controller_port primary_token
+  local auth_raw admin_raw node_raw controller_port
+  local primary_auth_token primary_admin_token primary_node_token api_token
+  local has_multi_auth=0 has_multi_admin=0 has_multi_node=0
   auth_raw="$(get_env_value AUTH_TOKEN)"
+  admin_raw="$(get_env_value ADMIN_AUTH_TOKEN)"
+  node_raw="$(get_env_value NODE_AUTH_TOKEN)"
   controller_port="$(get_env_value CONTROLLER_PORT)"
   controller_port="${controller_port:-8080}"
-  primary_token="$(parse_primary_token "$auth_raw")"
+  primary_auth_token="$(parse_primary_token "$auth_raw")"
+  primary_admin_token="$(parse_primary_token "$admin_raw")"
+  primary_node_token="$(parse_primary_token "$node_raw")"
 
-  if [[ -z "$primary_token" ]]; then
-    warn "AUTH_TOKEN 为空，当前无需收敛。"
-    exit 0
+  if [[ "$auth_raw" == *","* ]]; then
+    has_multi_auth=1
+  fi
+  if [[ "$admin_raw" == *","* ]]; then
+    has_multi_admin=1
+  fi
+  if [[ "$node_raw" == *","* ]]; then
+    has_multi_node=1
+  fi
+  if [[ -n "$primary_admin_token" ]]; then
+    api_token="$primary_admin_token"
+  elif [[ -n "$primary_auth_token" ]]; then
+    api_token="$primary_auth_token"
+  else
+    api_token="$primary_node_token"
   fi
 
-  if [[ "$auth_raw" != *","* ]]; then
-    msg "AUTH_TOKEN 已是单值，无需收敛。"
+  if (( has_multi_auth == 0 && has_multi_admin == 0 && has_multi_node == 0 )); then
+    msg "AUTH/ADMIN/NODE token 均为单值，无需收敛。"
     if wait_for_controller_ready "$controller_port" 15; then
-      sync_node_tokens_after_collapse "$controller_port" "$primary_token"
-      post_ops_audit_event "$controller_port" "$primary_token" "ops.auth_token_collapse.noop" '{"mode":"single_token_noop"}'
+      sync_node_tokens_after_collapse "$controller_port" "$api_token"
+      post_ops_audit_event "$controller_port" "$api_token" "ops.auth_token_collapse.noop" '{"mode":"single_token_noop"}'
     else
       warn "controller 未就绪，已跳过节点 token 对齐同步。"
     fi
@@ -221,8 +240,11 @@ main() {
   fi
 
   if [[ "$AUTO_YES" -ne 1 ]]; then
-    echo "当前 AUTH_TOKEN 为多值过渡模式。"
-    echo "即将收敛为首个 token（其余旧 token 会移除）。"
+    echo "检测到多值 token 过渡模式："
+    (( has_multi_auth == 1 )) && echo "  - AUTH_TOKEN"
+    (( has_multi_admin == 1 )) && echo "  - ADMIN_AUTH_TOKEN"
+    (( has_multi_node == 1 )) && echo "  - NODE_AUTH_TOKEN"
+    echo "即将收敛为各自首个 token（其余旧 token 会移除）。"
     read -r -p "确认继续？[y/N]: " confirm
     confirm="${confirm:-N}"
     if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
@@ -234,16 +256,35 @@ main() {
   local backup_file
   backup_file="${ENV_FILE}.bak-$(date +%Y%m%d-%H%M%S)"
   cp "$ENV_FILE" "$backup_file"
-  set_env_value "AUTH_TOKEN" "$primary_token"
+  if (( has_multi_auth == 1 )); then
+    set_env_value "AUTH_TOKEN" "$primary_auth_token"
+  fi
+  if (( has_multi_admin == 1 )); then
+    set_env_value "ADMIN_AUTH_TOKEN" "$primary_admin_token"
+  fi
+  if (( has_multi_node == 1 )); then
+    set_env_value "NODE_AUTH_TOKEN" "$primary_node_token"
+  fi
 
-  msg "已更新 AUTH_TOKEN 为单值，并备份旧 .env：$backup_file"
+  msg "已完成 token 收敛，并备份旧 .env：$backup_file"
   systemctl restart sb-controller
   systemctl restart sb-bot
 
+  local detail_json
+  if command -v jq >/dev/null 2>&1; then
+    detail_json="$(jq -nc \
+      --argjson auth "$([[ "${has_multi_auth}" == "1" ]] && echo true || echo false)" \
+      --argjson admin "$([[ "${has_multi_admin}" == "1" ]] && echo true || echo false)" \
+      --argjson node "$([[ "${has_multi_node}" == "1" ]] && echo true || echo false)" \
+      '{mode:"collapsed", collapsed_auth:$auth, collapsed_admin:$admin, collapsed_node:$node}')"
+  else
+    detail_json='{"mode":"collapsed"}'
+  fi
+
   if wait_for_controller_ready "$controller_port" 30; then
     msg "收敛完成：controller 已就绪（127.0.0.1:${controller_port}）。"
-    sync_node_tokens_after_collapse "$controller_port" "$primary_token"
-    post_ops_audit_event "$controller_port" "$primary_token" "ops.auth_token_collapse.apply" '{"mode":"collapsed"}'
+    sync_node_tokens_after_collapse "$controller_port" "$api_token"
+    post_ops_audit_event "$controller_port" "$api_token" "ops.auth_token_collapse.apply" "$detail_json"
   else
     err "controller 启动超时，请检查日志：journalctl -u sb-controller -n 120 --no-pager"
     exit 1

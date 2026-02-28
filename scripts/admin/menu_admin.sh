@@ -837,7 +837,7 @@ show_menu() {
 13. 数据库一致性校验（迁移前建议）
 14. 节点同步（默认参数 / Token / 时间）
 15. 安全加固向导（token轮换 + 8080收敛）
-16. Token 工具（收敛 AUTH_TOKEN / 拆分迁移）
+16. Token 工具（收敛 token / 拆分迁移）
 17. 手动安全清理（过期封禁 + 审计日志）
 18. SSH 安全状态总览（只读）
 19. SSH 一键安全修复（半自动）
@@ -1094,7 +1094,7 @@ main() {
         ;;
       16)
         echo "请选择 token 操作："
-        echo "  1) 收敛 AUTH_TOKEN（新旧双token -> 单token）"
+        echo "  1) 收敛 token（AUTH/ADMIN/NODE 多值 -> 单值）"
         echo "  2) 拆分迁移（AUTH_TOKEN -> ADMIN/NODE 拆分过渡）"
         read -r -p "请输入 [1/2]（默认 1）: " token_action
         token_action="${token_action:-1}"
