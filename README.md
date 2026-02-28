@@ -458,6 +458,7 @@ bash /root/sb-bot-panel/scripts/admin/ops_snapshot.sh
 ```
 
 默认输出目录：`/var/backups/sb-controller/ops-snapshots/`
+也可在 Telegram bot 中进入 `管理服务器 -> 证书与备份 -> 运维快照` 一键生成（返回 `/tmp/...` 路径与审计记录）。
 
 AI 诊断包导出（管理服务器，可直接粘贴给任意 AI）：
 

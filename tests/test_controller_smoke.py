@@ -40,6 +40,7 @@ class ControllerSmokeTestCase(unittest.TestCase):
             "routers_admin.SECURITY_AUTO_BLOCK_MAX_PER_INTERVAL": admin_router_module.SECURITY_AUTO_BLOCK_MAX_PER_INTERVAL,
             "routers_admin.SECURITY_BLOCK_PROTECTED_IPS_ITEMS": admin_router_module.SECURITY_BLOCK_PROTECTED_IPS_ITEMS,
             "routers_admin.export_admin_ai_context_snapshot": admin_router_module.export_admin_ai_context_snapshot,
+            "routers_admin.export_admin_ops_snapshot": admin_router_module.export_admin_ops_snapshot,
             "routers_nodes.NODE_TASK_MAX_PENDING_PER_NODE": nodes_router_module.NODE_TASK_MAX_PENDING_PER_NODE,
         }
 
@@ -65,7 +66,12 @@ class ControllerSmokeTestCase(unittest.TestCase):
             output_path.write_text("# smoke export\n", encoding="utf-8")
             return True, ""
 
+        def _fake_ops_snapshot_export(output_path: Path):
+            output_path.write_text("sb-bot-panel 运维快照\n", encoding="utf-8")
+            return True, ""
+
         admin_router_module.export_admin_ai_context_snapshot = _fake_ai_context_export
+        admin_router_module.export_admin_ops_snapshot = _fake_ops_snapshot_export
         nodes_router_module.NODE_TASK_MAX_PENDING_PER_NODE = 2
 
         db_module.init_db()
@@ -172,6 +178,9 @@ class ControllerSmokeTestCase(unittest.TestCase):
         admin_router_module.export_admin_ai_context_snapshot = self._old_values[
             "routers_admin.export_admin_ai_context_snapshot"
         ]
+        admin_router_module.export_admin_ops_snapshot = self._old_values[
+            "routers_admin.export_admin_ops_snapshot"
+        ]
         nodes_router_module.NODE_TASK_MAX_PENDING_PER_NODE = self._old_values[
             "routers_nodes.NODE_TASK_MAX_PENDING_PER_NODE"
         ]
@@ -277,6 +286,19 @@ class ControllerSmokeTestCase(unittest.TestCase):
             self.assertTrue(bool(ai_export_payload.get("ok")))
             self.assertIn("/tmp/sb-admin-ai-context-manual-", str(ai_export_payload.get("path", "")))
             self.assertGreater(int(ai_export_payload.get("size_bytes", 0) or 0), 0)
+
+            ops_snapshot_resp = client.post(
+                "/admin/diagnostics/ops_snapshot",
+                headers=self._auth_header(),
+            )
+            self.assertEqual(200, ops_snapshot_resp.status_code)
+            ops_snapshot_payload = ops_snapshot_resp.json()
+            self.assertTrue(bool(ops_snapshot_payload.get("ok")))
+            self.assertIn(
+                "/tmp/sb-admin-ops-snapshot-manual-",
+                str(ops_snapshot_payload.get("path", "")),
+            )
+            self.assertGreater(int(ops_snapshot_payload.get("size_bytes", 0) or 0), 0)
             self.assertIn("security_block_cleanup_interval_seconds", admin_sec.json())
             self.assertIn("audit_log_retention_days", admin_sec.json())
             self.assertIn("audit_log_cleanup_interval_seconds", admin_sec.json())
