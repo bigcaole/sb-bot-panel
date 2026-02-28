@@ -292,6 +292,7 @@ SUBMENUS = {
         "buttons": [
             ("🛡 安全事件(1h)", "action:maintain_security_events"),
             ("🧩 订阅安全预设", "action:maintain_sub_policy"),
+            ("🛑 紧急停用用户", "action:backup_stop"),
             ("🔄 节点默认参数同步", "action:maintain_sync_node_defaults"),
             ("🔁 同步节点Token", "action:maintain_sync_node_tokens"),
             ("🕒 同步节点时间", "action:maintain_sync_node_time"),
