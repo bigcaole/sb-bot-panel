@@ -308,10 +308,10 @@ SUBMENUS = {
             ("🧩 订阅安全预设", "action:maintain_sub_policy"),
             ("🛑 紧急停用用户", "action:backup_stop"),
             ("🔄 节点默认参数同步", "action:maintain_sync_node_defaults"),
-            ("🔁 同步节点Token", "action:maintain_sync_node_tokens"),
+            ("🔁 同步节点鉴权Token", "action:maintain_sync_node_tokens"),
             ("🕒 同步节点时间", "action:maintain_sync_node_time"),
             ("🧱 访问安全", "action:maintain_acl_status"),
-            ("🔑 收敛AUTH_TOKEN", "action:maintain_token_collapse"),
+            ("🔑 Token收敛(单值)", "action:maintain_token_collapse"),
             ("⬅️ 返回管理服务器", "menu:maintain"),
         ],
     },
@@ -494,6 +494,8 @@ MAINTAIN_ALLOWED_ENV_KEYS = [
     "CONTROLLER_URL",
     "CONTROLLER_PUBLIC_URL",
     "PANEL_BASE_URL",
+    "ADMIN_AUTH_TOKEN",
+    "NODE_AUTH_TOKEN",
     "AUTH_TOKEN",
     "BOT_TOKEN",
     "ADMIN_CHAT_IDS",
@@ -780,7 +782,7 @@ def build_maintain_token_collapse_confirm_keyboard() -> InlineKeyboardMarkup:
         [
             [
                 InlineKeyboardButton(
-                    "确认收敛为单token",
+                    "确认收敛为单值token",
                     callback_data="maintain:token_collapse:confirm",
                 ),
                 InlineKeyboardButton("取消", callback_data="menu:maintain"),
@@ -1890,7 +1892,7 @@ def localize_controller_error(error_message: str) -> str:
     if error_message.startswith("node source ip not allowed for"):
         return "节点来源IP不在白名单中"
     mapping = {
-        "unauthorized": "未授权（请检查 ADMIN_AUTH_TOKEN/AUTH_TOKEN）",
+        "unauthorized": "未授权（请检查 ADMIN_AUTH_TOKEN/NODE_AUTH_TOKEN/AUTH_TOKEN）",
         "subscription signature required": "订阅签名缺失",
         "subscription signature expired": "订阅签名已过期",
         "invalid subscription signature": "订阅签名无效",
@@ -4111,7 +4113,8 @@ async def run_admin_sync_node_tokens_action(query) -> None:
         f"包含禁用节点：{'是' if include_disabled else '否'}",
         f"强制新建任务：{'是' if force_new else '否'}",
         "",
-        "说明：已为节点下发 config_set(auth_token=主 token) 任务，节点在下一次轮询时会应用。",
+        "说明：已为节点下发 config_set(auth_token=节点鉴权主token) 任务，节点在下一次轮询时会应用。",
+        "来源优先级：NODE_AUTH_TOKEN -> AUTH_TOKEN（兼容回退）",
     ]
     if isinstance(failures, list) and failures:
         lines.append("")
@@ -4168,7 +4171,7 @@ async def run_admin_sync_node_defaults_action(query) -> None:
         has_token = bool(str(payload_obj.get("auth_token", "")).strip())
         lines.append(f"- controller_url：{controller_url or '未下发（管理端未配置 CONTROLLER_PUBLIC_URL）'}")
         lines.append(f"- poll_interval：{poll_interval or '-'}")
-        lines.append(f"- auth_token：{'已下发主 token' if has_token else '未下发'}")
+        lines.append(f"- auth_token：{'已下发节点鉴权主token' if has_token else '未下发'}")
     else:
         lines.append("- （空）")
     lines.append("")
@@ -4525,6 +4528,9 @@ async def run_admin_node_access_status_action(query, back_menu_callback: str) ->
         lines.append("全局安全状态：读取失败（{0}）".format(localize_controller_error(security_error)))
     elif isinstance(security_result, dict):
         auth_enabled = "已启用" if bool(security_result.get("auth_enabled")) else "未启用"
+        split_mode = "已拆分" if bool(security_result.get("auth_token_split_active")) else "未拆分/兼容模式"
+        admin_source = str(security_result.get("admin_auth_source", "")).strip() or "-"
+        node_source = str(security_result.get("node_auth_source", "")).strip() or "-"
         sign_enabled = "已启用" if bool(security_result.get("sub_link_sign_enabled")) else "未启用"
         sign_required = (
             "已强制" if bool(security_result.get("sub_link_require_signature")) else "兼容模式"
@@ -4534,6 +4540,9 @@ async def run_admin_node_access_status_action(query, back_menu_callback: str) ->
         )
         lines.append("全局安全状态：")
         lines.append(f"- 接口鉴权：{auth_enabled}")
+        lines.append(f"- Token拆分：{split_mode}")
+        lines.append(f"- 管理鉴权来源：{admin_source}")
+        lines.append(f"- 节点鉴权来源：{node_source}")
         lines.append(
             "- controller白名单数量：{0}".format(
                 int(security_result.get("controller_port_whitelist_count", 0) or 0)
@@ -5098,7 +5107,7 @@ async def start_node_ops_config_wizard(
         f"目标节点：{node_code}\n"
         "请输入要修改的参数（每行一个 KEY=VALUE）：\n\n"
         "可修改键：poll_interval, tuic_domain, tuic_listen_port, acme_email,\n"
-        "controller_url, auth_token, node_code\n\n"
+        "controller_url, auth_token(节点鉴权), node_code\n\n"
         "示例：\n"
         "poll_interval=10\n"
         "tuic_domain=node1.example.com\n"
@@ -5202,7 +5211,7 @@ def mask_sensitive_env_value(key: str, value: str) -> str:
         if len(value) <= 10:
             return "***"
         return value[:6] + "***" + value[-4:]
-    if key == "AUTH_TOKEN":
+    if key in {"AUTH_TOKEN", "ADMIN_AUTH_TOKEN", "NODE_AUTH_TOKEN"}:
         if not value:
             return "(空=关闭鉴权)"
         if len(value) <= 8:
@@ -5228,6 +5237,8 @@ async def start_maintain_config_wizard(
         "CONTROLLER_URL",
         "CONTROLLER_PUBLIC_URL",
         "PANEL_BASE_URL",
+        "ADMIN_AUTH_TOKEN",
+        "NODE_AUTH_TOKEN",
         "AUTH_TOKEN",
         "BOT_TOKEN",
         "ADMIN_CHAT_IDS",
@@ -8188,7 +8199,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             )
             return
         await query.edit_message_text(
-            "准备收敛 AUTH_TOKEN（新,旧 -> 新）。\n"
+            "准备收敛 token（AUTH/ADMIN/NODE 的新,旧 -> 新）。\n"
             "影响：controller/bot 会重启；若节点仍使用旧 token，会暂时无法同步。\n"
             "请确认节点已更新到新 token 后再执行。",
             reply_markup=build_maintain_token_collapse_confirm_keyboard(),
@@ -8199,9 +8210,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         collapse_cmd = "bash {0} --yes".format(shlex.quote(ADMIN_TOKEN_COLLAPSE_SCRIPT))
         log_path = launch_background_job(collapse_cmd, "maintain-token-collapse")
         await query.edit_message_text(
-            "AUTH_TOKEN 收敛任务已启动（后台执行）。\n"
+            "token 收敛任务已启动（后台执行）。\n"
             f"日志文件：{log_path}\n\n"
-            "执行完成后可在“安全事件(1h)”或“状态查看”中确认 token 数量是否变为 1。",
+            "执行完成后可在“安全事件(1h)”或“访问安全”中确认 token 拆分与数量状态。",
             reply_markup=build_back_keyboard("menu:maintain"),
         )
         return
