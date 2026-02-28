@@ -84,7 +84,7 @@ curl -fsSL "http://127.0.0.1:${CONTROLLER_PORT:-8080}/health"
 
 - `scripts/admin/*` 只在 `管理服务器` 执行
 - `scripts/install.sh` / `scripts/menu.sh` 只在 `节点服务器` 执行
-- 节点不会自动“发现管理端”，必须在节点安装向导里填写 `controller_url + auth_token + node_code`
+- 节点不会自动“发现管理端”，必须在节点安装向导里填写 `controller_url + 节点鉴权 token + node_code`
 
 ---
 
@@ -108,7 +108,7 @@ git clone <你的仓库地址> sb-bot-panel && cd sb-bot-panel && sudo bash scri
 
 1. `controller_url`（支持省略协议；例如可直接填 `panel.example.com:8080`）
 2. `node_code`（例如 `N1`）
-3. `auth_token`
+3. `auth_token`（建议填写 `NODE_AUTH_TOKEN`）
 4. `tuic_domain`（留空则不启用 TUIC）
 5. `acme_email`（启用 TUIC 时必填）
 6. `tuic_listen_port`（默认 `24443`，建议高位 UDP 端口）
@@ -302,7 +302,7 @@ sudo bash scripts/admin/install_admin.sh --configure-quick
 
 说明：执行安装/配置向导时，会自动写入完整 `.env` 字段（包括 `BOT_MENU_TTL`、`BOT_NODE_MONITOR_INTERVAL`、`BOT_NODE_OFFLINE_THRESHOLD`、`BOT_NODE_TIME_SYNC_INTERVAL`、`BOT_LOG_VIEW_COOLDOWN`、`BOT_LOG_VIEW_MAX_PAGES`），无需手工补字段。
 并且 URL 字段支持省略协议（`http://` / `https://`），脚本会自动补全。
-配置完成后，脚本会自动调用 `POST /admin/nodes/sync_agent_defaults`，下发节点默认参数（`auth_token`、`poll_interval`、可选 `controller_url`），降低管理端与节点端参数不一致风险。
+配置完成后，脚本会自动调用 `POST /admin/nodes/sync_agent_defaults`，下发节点默认参数（`auth_token`=节点鉴权主 token、`poll_interval`、可选 `controller_url`），降低管理端与节点端参数不一致风险。
 快速配置模式下，若未设置 `SECURITY_BLOCK_PROTECTED_IPS`，脚本会自动填入当前 SSH 来源 IP 作为封禁保护白名单，减少误封风险。
 
 ### 管理服务器 HTTPS 证书（申请+自动续期）
@@ -434,18 +434,9 @@ sb-admin
 2) 节点 Token 同步（`/admin/auth/sync_node_tokens`）  
 用于节点参数或 token 快速对齐。  
 管理端排障时，可使用 `GET /admin/nodes/{node_code}/sync_preview` 预览该节点下发内容（不受 `agent_ip` 限制，且不刷新 `last_seen_at`）。  
-执行 `安全加固向导` 并轮换 token 后（优先 `ADMIN_AUTH_TOKEN` / `NODE_AUTH_TOKEN`，可选兼容 `AUTH_TOKEN`），脚本也会自动触发一次节点 token 同步（默认包含禁用节点并强制新建），降低节点鉴权不同步风险。
+执行 `安全加固向导` 并轮换 token 后，脚本会自动触发一次节点 token 同步（默认包含禁用节点并强制新建），降低节点鉴权不同步风险。  
 同样地，执行 `Token 收敛` 后也会自动触发一次节点 token 同步任务，进一步降低节点掉线风险。  
-`Token 收敛` 会同时处理 `AUTH_TOKEN` / `ADMIN_AUTH_TOKEN` / `NODE_AUTH_TOKEN` 的多值过渡状态。  
-当三者本身均为单值（No-Op）时，脚本也会尝试执行一次节点 token 对齐同步。  
-`Token 收敛` 脚本失败时默认自动导出 AI 诊断包到 `/tmp/sb-token-collapse-ai-context-on-fail-*.md`（可用 `TOKEN_COLLAPSE_EXPORT_AI_CONTEXT_ON_FAIL=0` 关闭）。
-若历史环境仍处于兼容模式（仅 `AUTH_TOKEN`），可执行拆分迁移脚本一键切换到 `ADMIN_AUTH_TOKEN` + `NODE_AUTH_TOKEN`：
-
-```bash
-bash /root/sb-bot-panel/scripts/admin/auth_token_split_migrate.sh --yes
-```
-
-拆分迁移脚本会自动重启服务并触发节点 token 同步；失败时默认导出诊断包到 `/tmp/sb-token-split-ai-context-on-fail-*.md`。
+Token 优先级、拆分迁移、收敛规则与严格验收，统一见下文 `Token 模型与生命周期（管理/节点）` 章节。
 执行 `安全加固向导` 时，脚本会提示并可自动把“当前 SSH 来源 IP”加入 `CONTROLLER_PORT_WHITELIST` 与 `SECURITY_BLOCK_PROTECTED_IPS`，减少误封与误锁风险。
 
 统一验收命令（管理服务器）：
@@ -491,9 +482,8 @@ bash /root/sb-bot-panel/scripts/ai_context_export.sh
 说明：
 
 - 默认会读取 `.env` 中的 `CONTROLLER_PORT` 与鉴权 token（`ADMIN_AUTH_TOKEN` / `NODE_AUTH_TOKEN` / `AUTH_TOKEN`）
-- 管理 token 选择优先级：`ADMIN_AUTH_TOKEN -> AUTH_TOKEN -> NODE_AUTH_TOKEN`
-- 节点 token 选择优先级：`NODE_AUTH_TOKEN -> AUTH_TOKEN -> ADMIN_AUTH_TOKEN`
 - 检查项：Python 语法、`tests/` 单元测试、controller API 鉴权冒烟
+- token 选择优先级、拆分判定规则见下文 `Token 模型与生命周期（管理/节点）`
 - token 拆分检查：默认告警；启用 `--require-token-split`（或环境变量 `SMOKE_REQUIRE_TOKEN_SPLIT=1`）时，若仍为兼容模式会直接判失败
 - 访问收敛检查：会读取 `/admin/node_access/status`，默认仅告警；若设置 `SMOKE_REQUIRE_NODE_LOCK=1`，当存在“启用但未锁定来源IP”的节点会直接判失败
 - 退出码：`0=通过`，`10=代码检查失败`，`20=API检查失败`，`30=代码+API均失败`
@@ -589,10 +579,11 @@ scp root@旧IP:/var/backups/sb-migrate/sb-migrate-xxxx.tar.gz root@新IP:/root/
 - `CONTROLLER_PORT=8080`
 - `CONTROLLER_PORT_WHITELIST=`（可选；逗号分隔 IP/CIDR，用于限制 8080 访问来源）
 - `SECURITY_BLOCK_PROTECTED_IPS=`（可选；逗号分隔 IP/CIDR，manual/auto 封禁会跳过这些来源；无效项会在安全状态中告警）
-- `ADMIN_AUTH_TOKEN=随机长串`（可空；管理接口 token，支持 `new_token,old_token` 过渡轮换）
-- `NODE_AUTH_TOKEN=随机长串`（可空；节点接口 token，支持 `new_token,old_token` 过渡轮换）
-- `AUTH_TOKEN=随机长串`（兼容兜底：当 ADMIN/NODE 未设置时使用；支持 `new_token,old_token`）
+- `ADMIN_AUTH_TOKEN=随机长串`（管理接口 token）
+- `NODE_AUTH_TOKEN=随机长串`（节点接口 token）
+- `AUTH_TOKEN=随机长串`（兼容兜底；建议留空）
   - 安装脚本默认会自动生成并写入 `ADMIN_AUTH_TOKEN` 与 `NODE_AUTH_TOKEN`（默认拆分）
+  - token 轮换/拆分迁移/收敛规则见下文 `Token 模型与生命周期（管理/节点）`
 - `SUB_LINK_SIGN_KEY=`（可选；设置后可生成带签名订阅链接）
 - `SUB_LINK_REQUIRE_SIGNATURE=0`（可选；1=强制订阅必须带签名）
 - `SUB_LINK_DEFAULT_TTL_SECONDS=604800`（可选；签名默认有效期）
@@ -633,6 +624,59 @@ scp root@旧IP:/var/backups/sb-migrate/sb-migrate-xxxx.tar.gz root@新IP:/root/
 - `NODE_TASK_RUNNING_TIMEOUT=120`（节点任务超时秒数）
 - `NODE_TASK_RETENTION_SECONDS=604800`（节点任务历史保留秒数）
 
+## Token 模型与生命周期（管理/节点）
+
+### 1) 三个字段与优先级
+
+- 管理接口鉴权优先级：`ADMIN_AUTH_TOKEN -> AUTH_TOKEN -> NODE_AUTH_TOKEN`
+- 节点接口鉴权优先级：`NODE_AUTH_TOKEN -> AUTH_TOKEN -> ADMIN_AUTH_TOKEN`
+- 仅当 `ADMIN_AUTH_TOKEN` 与 `NODE_AUTH_TOKEN` 都已设置为单值，且不再依赖 `AUTH_TOKEN` 回退时，才算“已拆分完成”。
+
+### 2) 新装默认（推荐）
+
+- 安装/配置脚本默认会生成并写入：`ADMIN_AUTH_TOKEN`、`NODE_AUTH_TOKEN`
+- `AUTH_TOKEN` 建议保持空（仅用于历史兼容过渡）
+
+### 3) 过渡轮换（不中断）
+
+- 支持多值过渡：`new_token,old_token`
+- 管理 token 轮换示例：`ADMIN_AUTH_TOKEN=new_admin,old_admin`
+- 节点 token 轮换示例：`NODE_AUTH_TOKEN=new_node,old_node`
+- 完成节点同步后再收敛到单值
+
+### 4) 从旧版 `AUTH_TOKEN` 一键拆分迁移
+
+```bash
+bash /root/sb-bot-panel/scripts/admin/auth_token_split_migrate.sh --yes
+```
+
+- 自动将兼容模式迁移到 `ADMIN_AUTH_TOKEN + NODE_AUTH_TOKEN`
+- 自动重启服务并触发节点 token 同步
+- 失败时默认导出诊断包：`/tmp/sb-token-split-ai-context-on-fail-*.md`
+
+### 5) token 收敛（结束过渡）
+
+```bash
+bash /root/sb-bot-panel/scripts/admin/auth_token_collapse.sh --yes
+```
+
+- 同时处理 `AUTH_TOKEN` / `ADMIN_AUTH_TOKEN` / `NODE_AUTH_TOKEN` 的多值过渡
+- 即使已是单值（No-Op），也会尝试执行一次节点 token 对齐同步
+- 失败时默认导出诊断包：`/tmp/sb-token-collapse-ai-context-on-fail-*.md`
+
+### 6) 严格验收（推荐）
+
+```bash
+# 常规验收
+bash /root/sb-bot-panel/scripts/admin/smoke_test.sh --require-api
+
+# 严格要求已完成 token 拆分
+bash /root/sb-bot-panel/scripts/admin/smoke_test.sh --require-api --require-token-split
+```
+
+- `--require-token-split` 下，若仍处于兼容模式会直接失败
+- 验收脚本会自动选择可用管理/节点 token 并给出来源告警
+
 ## 节点在线监控（Bot）
 
 已支持节点在线状态监控：
@@ -669,10 +713,7 @@ scp root@旧IP:/var/backups/sb-migrate/sb-migrate-xxxx.tar.gz root@新IP:/root/
   - `VIEW_ADMIN_CHAT_IDS`：只读
   - `OPS_ADMIN_CHAT_IDS`：运维写操作
   - `SUPER_ADMIN_CHAT_IDS`：高危操作（删除/迁移导入/远程运维）
-- Controller API 支持可选 Bearer 鉴权（全局中间件）：
-  - 管理接口优先使用 `ADMIN_AUTH_TOKEN`，节点接口优先使用 `NODE_AUTH_TOKEN`
-  - 若对应 token 为空，则回退到 `AUTH_TOKEN`（兼容旧配置）
-  - 全部为空时：不校验，保持兼容行为
+- Controller API 支持可选 Bearer 鉴权（全局中间件），详细优先级与迁移策略见上文 `Token 模型与生命周期（管理/节点）`。
 - API 文档入口默认关闭：
   - `API_DOCS_ENABLED=0` 时，`/docs`、`/redoc`、`/openapi.json` 返回 404
   - 仅在排障场景临时开启：`API_DOCS_ENABLED=1`
@@ -711,9 +752,10 @@ scp root@旧IP:/var/backups/sb-migrate/sb-migrate-xxxx.tar.gz root@新IP:/root/
 
 ### 鉴权 Token 开关与验证
 
-1. 启用管理鉴权：设置非空 `ADMIN_AUTH_TOKEN`（或兼容使用 `AUTH_TOKEN`），重启 `sb-controller`
-2. 启用节点鉴权：设置非空 `NODE_AUTH_TOKEN`（或兼容使用 `AUTH_TOKEN`），重启 `sb-controller`
+1. 启用管理鉴权：设置非空 `ADMIN_AUTH_TOKEN`，重启 `sb-controller`
+2. 启用节点鉴权：设置非空 `NODE_AUTH_TOKEN`，重启 `sb-controller`
 3. 关闭鉴权：将 `ADMIN_AUTH_TOKEN/NODE_AUTH_TOKEN/AUTH_TOKEN` 全部留空后重启
+4. 历史环境从兼容模式迁移，建议按上文 `Token 模型与生命周期（管理/节点）` 先拆分、再收敛
 
 验证命令（启用鉴权时）：
 
@@ -721,7 +763,7 @@ scp root@旧IP:/var/backups/sb-migrate/sb-migrate-xxxx.tar.gz root@新IP:/root/
 # 不带 token，应返回 401
 curl -i -X POST http://127.0.0.1:8080/admin/backup
 
-# 带 token，应返回 200
+# 带管理 token，应返回 200
 curl -i -X POST http://127.0.0.1:8080/admin/backup \
-  -H "Authorization: Bearer your_auth_token"
+  -H "Authorization: Bearer your_admin_token"
 ```
