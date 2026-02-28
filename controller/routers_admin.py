@@ -94,6 +94,16 @@ WEAK_AUTH_TOKEN_EXAMPLES = {
     "admin",
     "123456",
 }
+AUDIT_DETAIL_MASK_PATTERNS = (
+    re.compile(
+        r'(?i)("?(?:auth[_-]?token|token|password|secret|api[_-]?key|private[_-]?key|authorization)"?\s*[:=]\s*")([^"]*)(")'
+    ),
+    re.compile(
+        r'(?i)("?(?:auth[_-]?token|token|password|secret|api[_-]?key|private[_-]?key|authorization)"?\s*[:=]\s*)([^",\s]+)()'
+    ),
+    re.compile(r"(?i)(authorization\s*:\s*bearer\s+)([A-Za-z0-9._\-~+/=]{6,})()"),
+    re.compile(r"(?i)(\bbearer\s+)([A-Za-z0-9._\-~+/=]{12,})()"),
+)
 
 
 def _normalize_controller_url(raw_url: str) -> str:
@@ -134,6 +144,13 @@ def _collect_auth_token_risks(tokens: List[str]) -> List[Dict[str, Union[int, Li
         if issues:
             risks.append({"index": index, "issues": issues})
     return risks
+
+
+def _mask_sensitive_audit_detail(detail_text: str) -> str:
+    masked = str(detail_text or "")
+    for pattern in AUDIT_DETAIL_MASK_PATTERNS:
+        masked = pattern.sub(r"\1***\3", masked)
+    return masked
 
 
 def _enqueue_task_for_nodes(
@@ -2561,7 +2578,12 @@ def list_admin_audit_logs(
             """.format(where_sql),
             tuple(params),
         ).fetchall()
-    return [dict(row) for row in rows]
+    response_rows: List[Dict[str, Union[int, str]]] = []
+    for row in rows:
+        item = dict(row)
+        item["detail"] = _mask_sensitive_audit_detail(str(item.get("detail") or ""))
+        response_rows.append(item)
+    return response_rows
 
 
 @router.post(

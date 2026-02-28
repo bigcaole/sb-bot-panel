@@ -424,6 +424,32 @@ class ControllerSmokeTestCase(unittest.TestCase):
             )
             self.assertEqual(400, invalid_prefix_resp.status_code)
 
+            sensitive_audit_resp = client.post(
+                "/admin/audit/event",
+                headers=self._auth_header(),
+                json={
+                    "action": "ops.security.rotate",
+                    "resource_type": "security",
+                    "resource_id": "token",
+                    "detail": {
+                        "auth_token": "super-secret-token-123",
+                        "authorization": "Bearer super-secret-bearer-token",
+                    },
+                },
+            )
+            self.assertEqual(200, sensitive_audit_resp.status_code)
+            sensitive_rows_resp = client.get(
+                "/admin/audit?limit=20&action=ops.security.rotate",
+                headers=self._auth_header(),
+            )
+            self.assertEqual(200, sensitive_rows_resp.status_code)
+            sensitive_rows = sensitive_rows_resp.json()
+            self.assertGreaterEqual(len(sensitive_rows), 1)
+            detail_text = str(sensitive_rows[0].get("detail", ""))
+            self.assertIn("***", detail_text)
+            self.assertNotIn("super-secret-token-123", detail_text)
+            self.assertNotIn("super-secret-bearer-token", detail_text)
+
             sync_tokens_resp = client.post(
                 "/admin/auth/sync_node_tokens",
                 headers=self._auth_header(),
