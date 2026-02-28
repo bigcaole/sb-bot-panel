@@ -6036,7 +6036,7 @@ async def nodes_create_confirm(
                 readiness_lines.append("[OK] REALITY 参数完整（可生成 vless+reality）")
             elif is_online:
                 readiness_lines.append(
-                    "[WARN] REALITY 参数待上报（节点在线时会自动生成并上报，通常 1 个轮询周期内完成）"
+                    "[INFO] REALITY 参数待上报（节点在线时会自动生成并上报，通常 1 个轮询周期内完成）"
                 )
             else:
                 readiness_lines.append(
@@ -6048,7 +6048,13 @@ async def nodes_create_confirm(
             if has_tuic_sni:
                 readiness_lines.append("[OK] TUIC 证书域名已设置")
             else:
-                readiness_lines.append("[WARN] TUIC 证书域名未设置（将回退 host）")
+                host_value = str(node_detail.get("host") or "").strip()
+                if host_value and is_valid_ip_address(host_value):
+                    readiness_lines.append(
+                        "[INFO] TUIC 证书域名未设置（当前回退 host=IP；建议后续改为域名）"
+                    )
+                else:
+                    readiness_lines.append("[INFO] TUIC 证书域名未设置（当前将回退 host）")
     elif node_detail_error:
         readiness_lines.append(f"[WARN] 就绪诊断读取失败：{localize_controller_error(node_detail_error)}")
 
