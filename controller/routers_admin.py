@@ -107,6 +107,10 @@ WEAK_AUTH_TOKEN_EXAMPLES = {
     "admin",
     "123456",
 }
+ADMIN_AUTH_DESCRIPTION = (
+    "管理接口鉴权：优先 ADMIN_AUTH_TOKEN；兼容回退 AUTH_TOKEN（最后回退 NODE_AUTH_TOKEN）。"
+    "配置了 token 时需要请求头 Authorization: Bearer <token>。"
+)
 _ADMIN_OVERVIEW_CACHE_TTL_SECONDS = int(ADMIN_OVERVIEW_CACHE_TTL_SECONDS)
 _ADMIN_OVERVIEW_CACHE_EXPIRE_AT = 0
 _ADMIN_OVERVIEW_CACHE_PAYLOAD: Optional[Dict[str, Union[int, Dict, List]]] = None
@@ -291,8 +295,8 @@ def _enqueue_config_set_for_nodes(
     "/admin/auth/sync_node_tokens",
     summary="Enqueue config_set(auth_token) for nodes",
     description=(
-        "AUTH_TOKEN 为空时不校验；非空时需要请求头 Authorization: Bearer <AUTH_TOKEN>。"
-        "使用当前主 token（AUTH_TOKEN 第一个）为节点下发 config_set(auth_token) 任务。"
+        ADMIN_AUTH_DESCRIPTION +
+        "使用当前节点鉴权主 token（优先 NODE_AUTH_TOKEN，第一个非空项）为节点下发 config_set(auth_token) 任务。"
     ),
     response_model=None,
 )
@@ -328,8 +332,8 @@ def sync_node_auth_tokens(
     "/admin/nodes/sync_agent_defaults",
     summary="Enqueue default agent config sync for nodes",
     description=(
-        "AUTH_TOKEN 为空时不校验；非空时需要请求头 Authorization: Bearer <AUTH_TOKEN>。"
-        "默认下发 auth_token + poll_interval，并在配置了 CONTROLLER_PUBLIC_URL 时额外下发 controller_url。"
+        ADMIN_AUTH_DESCRIPTION +
+        "默认下发 auth_token(节点鉴权主 token) + poll_interval，并在配置了 CONTROLLER_PUBLIC_URL 时额外下发 controller_url。"
     ),
     response_model=None,
 )
@@ -373,7 +377,7 @@ def sync_node_agent_defaults(
     "/admin/nodes/sync_time",
     summary="Enqueue node time-sync task",
     description=(
-        "AUTH_TOKEN 为空时不校验；非空时需要请求头 Authorization: Bearer <AUTH_TOKEN>。"
+        ADMIN_AUTH_DESCRIPTION +
         "下发 sync_time 任务，节点会把系统时间校准到管理服务器当前时间。"
     ),
     response_model=None,
@@ -411,7 +415,7 @@ def sync_node_time(
     "/admin/nodes/{node_code}/sync_preview",
     summary="Preview node sync payload (admin)",
     description=(
-        "AUTH_TOKEN 为空时不校验；非空时需要请求头 Authorization: Bearer <AUTH_TOKEN>。"
+        ADMIN_AUTH_DESCRIPTION +
         "用于管理端排查节点下发内容，不受 nodes.agent_ip 限制。"
     ),
     response_model=None,
@@ -1551,7 +1555,7 @@ def get_node_task_idempotency_snapshot(
     "/admin/node_tasks/idempotency",
     summary="Node task idempotency snapshot",
     description=(
-        "AUTH_TOKEN 为空时不校验；非空时需要请求头 Authorization: Bearer <AUTH_TOKEN>。"
+        ADMIN_AUTH_DESCRIPTION +
         "统计任务创建与去重命中情况，用于观察任务下发幂等性。"
     ),
     response_model=None,
@@ -1603,7 +1607,7 @@ def cleanup_archives_by_count(
     "/admin/emergency/disable_users",
     summary="Emergency stop: disable all active users",
     description=(
-        "AUTH_TOKEN 为空时不校验；非空时需要请求头 Authorization: Bearer <AUTH_TOKEN>。"
+        ADMIN_AUTH_DESCRIPTION +
         "默认 dry_run=1 仅预览影响范围；dry_run=0 才会实际禁用全部 active 用户。"
     ),
     response_model=None,
@@ -1693,7 +1697,7 @@ def emergency_disable_active_users(
 @router.post(
     "/admin/backup",
     summary="Create controller backup",
-    description="AUTH_TOKEN 为空时不校验；非空时需要请求头 Authorization: Bearer <AUTH_TOKEN>。",
+    description=ADMIN_AUTH_DESCRIPTION,
     response_model=None,
 )
 def create_backup(
@@ -1755,7 +1759,7 @@ def create_backup(
 @router.post(
     "/admin/diagnostics/ai_context_export",
     summary="Export AI diagnostic context package",
-    description="AUTH_TOKEN 为空时不校验；非空时需要请求头 Authorization: Bearer <AUTH_TOKEN>。",
+    description=ADMIN_AUTH_DESCRIPTION,
     response_model=None,
 )
 def export_ai_context_package(
@@ -1813,7 +1817,7 @@ def export_ai_context_package(
 @router.post(
     "/admin/diagnostics/ops_snapshot",
     summary="Export admin operations snapshot",
-    description="AUTH_TOKEN 为空时不校验；非空时需要请求头 Authorization: Bearer <AUTH_TOKEN>。",
+    description=ADMIN_AUTH_DESCRIPTION,
     response_model=None,
 )
 def export_ops_snapshot_package(
@@ -1872,7 +1876,7 @@ def export_ops_snapshot_package(
     "/admin/db/export",
     summary="Create logical DB export snapshot",
     description=(
-        "AUTH_TOKEN 为空时不校验；非空时需要请求头 Authorization: Bearer <AUTH_TOKEN>。"
+        ADMIN_AUTH_DESCRIPTION +
         "用于后续跨数据库迁移前的一致性校验。"
     ),
     response_model=None,
@@ -1933,7 +1937,7 @@ def create_db_export(
     "/admin/db/verify_export",
     summary="Verify logical DB export snapshot",
     description=(
-        "AUTH_TOKEN 为空时不校验；非空时需要请求头 Authorization: Bearer <AUTH_TOKEN>。"
+        ADMIN_AUTH_DESCRIPTION +
         "可校验快照格式与校验和，并可选与当前 SQLite 数据做一致性比对。"
     ),
     response_model=None,
@@ -2012,7 +2016,7 @@ def verify_db_export(
     "/admin/db/integrity",
     summary="Check SQLite integrity status",
     description=(
-        "AUTH_TOKEN 为空时不校验；非空时需要请求头 Authorization: Bearer <AUTH_TOKEN>。"
+        ADMIN_AUTH_DESCRIPTION +
         "可用于迁移前后快速确认 DB 完整性。"
     ),
     response_model=None,
@@ -2030,7 +2034,7 @@ def get_db_integrity(
 @router.post(
     "/admin/migrate/export",
     summary="Create migration export package",
-    description="AUTH_TOKEN 为空时不校验；非空时需要请求头 Authorization: Bearer <AUTH_TOKEN>。",
+    description=ADMIN_AUTH_DESCRIPTION,
     response_model=None,
 )
 def create_migrate_export(
@@ -2114,7 +2118,7 @@ def create_migrate_export(
     "/admin/traffic/ranking",
     summary="Estimated traffic ranking (non-metered)",
     description=(
-        "AUTH_TOKEN 为空时不校验；非空时需要请求头 Authorization: Bearer <AUTH_TOKEN>。"
+        ADMIN_AUTH_DESCRIPTION +
         "按用户限速配置与绑定节点数量给出估算排行（非真实流量计费数据）。"
     ),
     response_model=None,
@@ -2222,7 +2226,7 @@ def get_admin_traffic_ranking(
 @router.get(
     "/admin/node_access/status",
     summary="Node access control status",
-    description="AUTH_TOKEN 为空时不校验；非空时需要请求头 Authorization: Bearer <AUTH_TOKEN>。",
+    description=ADMIN_AUTH_DESCRIPTION,
     response_model=None,
 )
 def get_node_access_status(
@@ -2315,7 +2319,7 @@ def get_node_access_status(
     "/admin/overview",
     summary="Admin overview status",
     description=(
-        "AUTH_TOKEN 为空时不校验；非空时需要请求头 Authorization: Bearer <AUTH_TOKEN>。"
+        ADMIN_AUTH_DESCRIPTION +
         "返回控制面概览（用户/节点/任务队列/节点心跳/安全配置）。"
     ),
     response_model=None,
@@ -2333,7 +2337,7 @@ def get_admin_overview(
     "/admin/security/events",
     summary="Security event statistics",
     description=(
-        "AUTH_TOKEN 为空时不校验；非空时需要请求头 Authorization: Bearer <AUTH_TOKEN>。"
+        ADMIN_AUTH_DESCRIPTION +
         "支持按时间窗口统计未授权访问。"
     ),
     response_model=None,
@@ -2363,7 +2367,7 @@ def get_admin_security_events(
 @router.get(
     "/admin/security/status",
     summary="Security configuration status",
-    description="AUTH_TOKEN 为空时不校验；非空时需要请求头 Authorization: Bearer <AUTH_TOKEN>。",
+    description=ADMIN_AUTH_DESCRIPTION,
     response_model=None,
 )
 def get_admin_security_status(
@@ -2378,7 +2382,7 @@ def get_admin_security_status(
 @router.post(
     "/admin/security/block_ip",
     summary="Block source IP on controller port",
-    description="AUTH_TOKEN 为空时不校验；非空时需要请求头 Authorization: Bearer <AUTH_TOKEN>。",
+    description=ADMIN_AUTH_DESCRIPTION,
     response_model=None,
 )
 def block_security_source_ip(
@@ -2455,7 +2459,7 @@ def block_security_source_ip(
 @router.post(
     "/admin/security/unblock_ip",
     summary="Unblock source IP on controller port",
-    description="AUTH_TOKEN 为空时不校验；非空时需要请求头 Authorization: Bearer <AUTH_TOKEN>。",
+    description=ADMIN_AUTH_DESCRIPTION,
     response_model=None,
 )
 def unblock_security_source_ip(
@@ -2499,7 +2503,7 @@ def unblock_security_source_ip(
     "/admin/security/maintenance_cleanup",
     summary="Run manual security maintenance cleanup",
     description=(
-        "AUTH_TOKEN 为空时不校验；非空时需要请求头 Authorization: Bearer <AUTH_TOKEN>。"
+        ADMIN_AUTH_DESCRIPTION +
         "执行过期封禁清理与审计日志保留清理。"
     ),
     response_model=None,
@@ -2551,7 +2555,7 @@ def run_admin_security_maintenance_cleanup(
     "/admin/security/auto_block/run",
     summary="Run security auto block check once",
     description=(
-        "AUTH_TOKEN 为空时不校验；非空时需要请求头 Authorization: Bearer <AUTH_TOKEN>。"
+        ADMIN_AUTH_DESCRIPTION +
         "按安全事件阈值执行一次自动封禁检查。"
     ),
     response_model=None,
@@ -2606,7 +2610,7 @@ def run_admin_security_auto_block_once(
 @router.get(
     "/admin/security/blocked_ips",
     summary="List blocked source IPs",
-    description="AUTH_TOKEN 为空时不校验；非空时需要请求头 Authorization: Bearer <AUTH_TOKEN>。",
+    description=ADMIN_AUTH_DESCRIPTION,
     response_model=None,
 )
 def list_security_blocked_ips(
@@ -2659,7 +2663,7 @@ def list_security_blocked_ips(
 @router.get(
     "/admin/audit",
     summary="List audit logs",
-    description="AUTH_TOKEN 为空时不校验；非空时需要请求头 Authorization: Bearer <AUTH_TOKEN>。",
+    description=ADMIN_AUTH_DESCRIPTION,
     response_model=None,
 )
 def list_admin_audit_logs(
@@ -2743,7 +2747,7 @@ def list_admin_audit_logs(
     "/admin/audit/event",
     summary="Write custom admin audit event",
     description=(
-        "AUTH_TOKEN 为空时不校验；非空时需要请求头 Authorization: Bearer <AUTH_TOKEN>。"
+        ADMIN_AUTH_DESCRIPTION +
         "用于 bot 或运维脚本写入自定义审计事件（action 需以 bot. 开头）。"
     ),
     response_model=None,
@@ -2788,7 +2792,10 @@ def write_admin_audit_event(
 @router.get(
     "/admin/sub/sign/{user_code}",
     summary="Generate signed subscription URLs",
-    description="AUTH_TOKEN 为空时不校验；非空时需要 Bearer。可用于 bot 生成带签名订阅链接。",
+    description=(
+        ADMIN_AUTH_DESCRIPTION
+        + "可用于 bot 生成带签名订阅链接。"
+    ),
     response_model=None,
 )
 def get_signed_sub_urls(
