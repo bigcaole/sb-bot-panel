@@ -55,6 +55,7 @@ _UNAUTH_AUDIT_LAST_CLEANUP_AT = 0
 RATE_LIMIT_STATIC_SEGMENTS: Set[str] = {
     "create",
     "set_speed",
+    "set_limit_mode",
     "set_status",
     "assign_node",
     "unassign_node",
@@ -157,6 +158,7 @@ def is_rate_limit_target_path(path: str) -> bool:
         return True
     if normalized.startswith("/users/") and (
         normalized.endswith("/set_speed")
+        or normalized.endswith("/set_limit_mode")
         or normalized.endswith("/set_status")
         or normalized.endswith("/assign_node")
         or normalized.endswith("/unassign_node")

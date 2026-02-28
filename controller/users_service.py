@@ -7,7 +7,13 @@ from fastapi import HTTPException, Request
 
 from controller.audit import get_request_actor, get_source_ip_for_audit, write_audit_log
 from controller.db import get_connection
-from controller.schemas import AssignNodeRequest, CreateUserRequest, SetUserSpeedRequest, SetUserStatusRequest
+from controller.schemas import (
+    AssignNodeRequest,
+    CreateUserRequest,
+    SetUserLimitModeRequest,
+    SetUserSpeedRequest,
+    SetUserStatusRequest,
+)
 
 
 def create_user_service(payload: CreateUserRequest, request: Request) -> Dict[str, Union[int, str]]:
@@ -145,6 +151,39 @@ def set_user_status_service(
         conn.commit()
 
     return {"ok": True, "user_code": user_code, "status": status_value}
+
+
+def set_user_limit_mode_service(
+    user_code: str, payload: SetUserLimitModeRequest, request: Request
+) -> Dict[str, Union[bool, str]]:
+    mode_value = str(payload.limit_mode or "").strip().lower()
+    if mode_value not in ("tc", "off"):
+        raise HTTPException(status_code=400, detail="limit_mode must be tc or off")
+
+    with get_connection() as conn:
+        user_row = conn.execute(
+            "SELECT user_code FROM users WHERE user_code = ?",
+            (user_code,),
+        ).fetchone()
+        if user_row is None:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        conn.execute(
+            "UPDATE users SET limit_mode = ? WHERE user_code = ?",
+            (mode_value, user_code),
+        )
+        write_audit_log(
+            conn,
+            action="user.set_limit_mode",
+            resource_type="user",
+            resource_id=user_code,
+            detail={"limit_mode": mode_value},
+            actor=get_request_actor(request),
+            source_ip=get_source_ip_for_audit(request),
+        )
+        conn.commit()
+
+    return {"ok": True, "user_code": user_code, "limit_mode": mode_value}
 
 
 def delete_user_service(user_code: str, request: Request) -> Dict[str, Union[bool, str]]:

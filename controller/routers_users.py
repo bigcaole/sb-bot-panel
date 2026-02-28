@@ -2,7 +2,13 @@ from typing import Dict, List, Union
 
 from fastapi import APIRouter, Request
 
-from controller.schemas import AssignNodeRequest, CreateUserRequest, SetUserSpeedRequest, SetUserStatusRequest
+from controller.schemas import (
+    AssignNodeRequest,
+    CreateUserRequest,
+    SetUserLimitModeRequest,
+    SetUserSpeedRequest,
+    SetUserStatusRequest,
+)
 from controller.users_service import (
     assign_node_service,
     create_user_service,
@@ -10,6 +16,7 @@ from controller.users_service import (
     get_user_service,
     list_user_nodes_service,
     list_users_service,
+    set_user_limit_mode_service,
     set_user_speed_service,
     set_user_status_service,
     unassign_node_service,
@@ -36,6 +43,13 @@ def set_user_status(
     user_code: str, payload: SetUserStatusRequest, request: Request
 ) -> Dict[str, Union[bool, str]]:
     return set_user_status_service(user_code, payload, request)
+
+
+@router.post("/users/{user_code}/set_limit_mode")
+def set_user_limit_mode(
+    user_code: str, payload: SetUserLimitModeRequest, request: Request
+) -> Dict[str, Union[bool, str]]:
+    return set_user_limit_mode_service(user_code, payload, request)
 
 
 @router.delete("/users/{user_code}")

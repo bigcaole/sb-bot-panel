@@ -40,6 +40,10 @@ class SetUserStatusRequest(BaseModel):
     status: str = Field(min_length=1)
 
 
+class SetUserLimitModeRequest(BaseModel):
+    limit_mode: str = Field(min_length=1, max_length=20)
+
+
 class CreateNodeTaskRequest(BaseModel):
     task_type: str = Field(min_length=1)
     payload: Optional[Dict[str, Any]] = None

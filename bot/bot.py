@@ -402,6 +402,7 @@ PRIVILEGED_CALLBACK_PREFIXES = {
     "userdelete:": ROLE_SUPER,
     "usertoggle:": ROLE_OPERATOR,
     "userspeed:": ROLE_OPERATOR,
+    "usermode:": ROLE_OPERATOR,
     "usernodes:": ROLE_OPERATOR,
     "node:toggle:": ROLE_OPERATOR,
     "node:monitor_toggle:": ROLE_OPERATOR,
@@ -448,6 +449,7 @@ MUTATION_CALLBACK_PREFIXES = (
     "userdelete:apply:",
     "usertoggle:apply:",
     "userspeed:apply:",
+    "usermode:apply:",
     "usernodes:assign_apply:",
     "usernodes:unassign_apply:",
     "node:toggle:",
@@ -1359,6 +1361,44 @@ def build_user_speed_confirm_keyboard(user_code: str) -> InlineKeyboardMarkup:
             [
                 InlineKeyboardButton("确认修改", callback_data=f"userspeed:apply:{user_code}"),
                 InlineKeyboardButton("取消", callback_data="menu:user"),
+            ]
+        ]
+    )
+
+
+def build_user_limit_mode_picker_keyboard(users: list) -> InlineKeyboardMarkup:
+    rows = []
+    for user in users:
+        user_code = str(user.get("user_code", ""))
+        display_name = str(user.get("display_name") or "").strip()
+        raw_mode = str(user.get("limit_mode") or "tc").strip().lower() or "tc"
+        mode_text = "tc" if raw_mode == "tc" else "off"
+        button_text = (
+            f"{display_name}（{user_code}）| {mode_text}"
+            if display_name
+            else f"{user_code} | {mode_text}"
+        )
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    button_text,
+                    callback_data=f"usermode:pick:{user_code}",
+                )
+            ]
+        )
+    rows.append([InlineKeyboardButton("返回", callback_data="menu:speed")])
+    return InlineKeyboardMarkup(rows)
+
+
+def build_user_limit_mode_confirm_keyboard(user_code: str, target_mode: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "确认切换",
+                    callback_data=f"usermode:apply:{user_code}:{target_mode}",
+                ),
+                InlineKeyboardButton("取消", callback_data="menu:speed"),
             ]
         ]
     )
@@ -2972,6 +3012,22 @@ def format_user_nodes_manage_text(
     return text
 
 
+def normalize_limit_mode(raw_value: str) -> str:
+    value = str(raw_value or "").strip().lower()
+    if value == "tc":
+        return "tc"
+    if value == "off":
+        return "off"
+    return "tc"
+
+
+def format_limit_mode_label(mode: str) -> str:
+    normalized = normalize_limit_mode(mode)
+    if normalized == "tc":
+        return "tc（启用）"
+    return "off（关闭）"
+
+
 def format_sub_links_info_text(
     user_code: str, links_url: str = "", base64_url: str = "", signed: bool = False, expire_at: int = 0
 ) -> str:
@@ -3005,7 +3061,7 @@ def format_query_user_detail_text(user: dict, user_nodes: list) -> str:
     )
     grace_days = user.get("grace_days", "-")
     speed_mbps = int(user.get("speed_mbps", 0) or 0)
-    limit_mode = str(user.get("limit_mode", "-"))
+    limit_mode = format_limit_mode_label(str(user.get("limit_mode", "tc")))
     speed_text = "不限速（0 Mbps）" if speed_mbps == 0 else f"{speed_mbps} Mbps"
 
     lines = [
@@ -3072,6 +3128,28 @@ async def render_user_speed_picker(query) -> None:
     await query.edit_message_text(
         "请选择要修改限速的用户：",
         reply_markup=build_user_speed_picker_keyboard(users),
+    )
+
+
+async def render_user_limit_mode_picker(query) -> None:
+    users, error_message, _ = await controller_request("GET", "/users")
+    if error_message:
+        await query.edit_message_text(
+            f"获取用户列表失败：{localize_controller_error(error_message)}",
+            reply_markup=build_submenu("speed"),
+        )
+        return
+
+    if not users:
+        await query.edit_message_text(
+            "暂无用户，请先创建用户",
+            reply_markup=build_back_keyboard("menu:speed"),
+        )
+        return
+
+    await query.edit_message_text(
+        "请选择要切换限速模式的用户：",
+        reply_markup=build_user_limit_mode_picker_keyboard(users),
     )
 
 
@@ -6611,9 +6689,86 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
 
     if callback_data == "action:speed_switch":
+        await render_user_limit_mode_picker(query)
+        return
+
+    if callback_data.startswith("usermode:pick:"):
+        parts = callback_data.split(":", maxsplit=2)
+        if len(parts) != 3:
+            await query.edit_message_text("请求无效，请重试。", reply_markup=build_submenu("speed"))
+            return
+        user_code = parts[2]
+        user_data, error_message, status_code = await controller_request("GET", f"/users/{user_code}")
+        if error_message:
+            localized = localize_controller_error(error_message)
+            if status_code == 404 and localized == "用户不存在":
+                await query.edit_message_text("用户不存在", reply_markup=build_submenu("speed"))
+                return
+            await query.edit_message_text(
+                f"获取用户信息失败：{localized}",
+                reply_markup=build_submenu("speed"),
+            )
+            return
+        user_nodes, nodes_error, nodes_status = await controller_request(
+            "GET", f"/users/{user_code}/nodes"
+        )
+        if nodes_error:
+            localized = localize_controller_error(nodes_error)
+            if nodes_status == 404 and localized == "用户不存在":
+                await query.edit_message_text("用户不存在", reply_markup=build_submenu("speed"))
+                return
+            await query.edit_message_text(
+                f"获取用户节点失败：{localized}",
+                reply_markup=build_submenu("speed"),
+            )
+            return
+        display_name = str(user_data.get("display_name") or "").strip()
+        user_label = f"{display_name}（{user_code}）" if display_name else user_code
+        current_mode = normalize_limit_mode(str(user_data.get("limit_mode", "tc")))
+        target_mode = "off" if current_mode == "tc" else "tc"
+        current_mode_label = format_limit_mode_label(current_mode)
+        target_mode_label = format_limit_mode_label(target_mode)
+        bound_count = len(user_nodes) if isinstance(user_nodes, list) else 0
         await query.edit_message_text(
-            "【切换限速模式】尚未实现（需要 controller 支持 limit_mode 切换接口）。",
-            reply_markup=build_back_keyboard("menu:speed"),
+            "请确认切换限速模式：\n\n"
+            f"用户：{user_label}\n"
+            f"当前模式：{current_mode_label}\n"
+            f"目标模式：{target_mode_label}\n"
+            f"影响节点数：{bound_count}\n"
+            "说明：off 模式将停止该用户的节点侧限速生效（speed_mbps 视为 0）。\n"
+            "确认后节点会在下一轮轮询收敛。",
+            reply_markup=build_user_limit_mode_confirm_keyboard(user_code, target_mode),
+        )
+        return
+
+    if callback_data.startswith("usermode:apply:"):
+        parts = callback_data.split(":", maxsplit=3)
+        if len(parts) != 4:
+            await query.edit_message_text("请求无效，请重试。", reply_markup=build_submenu("speed"))
+            return
+        user_code = parts[2]
+        target_mode = normalize_limit_mode(parts[3])
+        _, error_message, status_code = await controller_request(
+            "POST",
+            f"/users/{user_code}/set_limit_mode",
+            payload={"limit_mode": target_mode},
+        )
+        if error_message:
+            localized = localize_controller_error(error_message)
+            if status_code == 404 and localized == "用户不存在":
+                await query.edit_message_text("用户不存在", reply_markup=build_submenu("speed"))
+                return
+            await query.edit_message_text(
+                f"切换限速模式失败：{localized}",
+                reply_markup=build_submenu("speed"),
+            )
+            return
+        bindings, _, _ = await controller_request("GET", f"/users/{user_code}/nodes")
+        bound_count = len(bindings) if isinstance(bindings, list) else 0
+        await query.edit_message_text(
+            f"切换限速模式成功：{user_code} -> {format_limit_mode_label(target_mode)}\n"
+            f"影响节点数：{bound_count}",
+            reply_markup=build_submenu("speed"),
         )
         return
 

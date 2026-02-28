@@ -73,6 +73,10 @@ class SecurityTestCase(unittest.TestCase):
             security.build_rate_limit_path_key("/users/u1001/set_speed"),
         )
         self.assertEqual(
+            "/users/*/set_limit_mode",
+            security.build_rate_limit_path_key("/users/u1001/set_limit_mode"),
+        )
+        self.assertEqual(
             "/admin/security/status",
             security.build_rate_limit_path_key("/admin/security/status"),
         )

@@ -186,6 +186,26 @@ class ControllerSmokeTestCase(unittest.TestCase):
             self.assertEqual(200, users_resp.status_code)
             self.assertEqual("u1001", users_resp.json()[0]["user_code"])
 
+            set_mode_resp = client.post(
+                "/users/u1001/set_limit_mode",
+                headers=self._auth_header(),
+                json={"limit_mode": "off"},
+            )
+            self.assertEqual(200, set_mode_resp.status_code)
+            set_mode_payload = set_mode_resp.json()
+            self.assertTrue(bool(set_mode_payload.get("ok")))
+            self.assertEqual("off", str(set_mode_payload.get("limit_mode", "")))
+
+            mode_user_resp = client.get("/users/u1001", headers=self._auth_header())
+            self.assertEqual(200, mode_user_resp.status_code)
+            self.assertEqual("off", str(mode_user_resp.json().get("limit_mode", "")))
+
+            sync_after_mode = client.get("/nodes/JP1/sync", headers=self._auth_header())
+            self.assertEqual(200, sync_after_mode.status_code)
+            sync_users = sync_after_mode.json().get("users", [])
+            self.assertEqual(1, len(sync_users))
+            self.assertEqual(0, int(sync_users[0].get("speed_mbps", -1)))
+
             admin_sec = client.get("/admin/security/status", headers=self._auth_header())
             self.assertEqual(200, admin_sec.status_code)
             self.assertTrue(bool(admin_sec.json().get("auth_enabled")))

@@ -440,6 +440,7 @@ def get_node_sync_service(node_code: str, request: Request) -> Dict[str, Union[D
                     u.status,
                     u.expire_at,
                     u.speed_mbps,
+                    u.limit_mode,
                     u.vless_uuid,
                     u.tuic_secret,
                     un.tuic_port,
@@ -458,8 +459,17 @@ def get_node_sync_service(node_code: str, request: Request) -> Dict[str, Union[D
 
     node_data = dict(node_row)
     node_data["last_seen_at"] = generated_at
+    user_items = []
+    for row in user_rows:
+        item = dict(row)
+        limit_mode = str(item.get("limit_mode") or "tc").strip().lower() or "tc"
+        item["limit_mode"] = limit_mode
+        if limit_mode != "tc":
+            item["speed_mbps"] = 0
+        user_items.append(item)
+
     return {
         "node": node_data,
-        "users": [dict(row) for row in user_rows],
+        "users": user_items,
         "generated_at": generated_at,
     }

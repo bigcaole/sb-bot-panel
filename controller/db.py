@@ -92,6 +92,7 @@ def init_db() -> None:
         conn.execute("UPDATE nodes SET supports_reality = 1 WHERE supports_reality IS NULL")
         conn.execute("UPDATE nodes SET supports_tuic = 1 WHERE supports_tuic IS NULL")
         conn.execute("UPDATE nodes SET monitor_enabled = 0 WHERE monitor_enabled IS NULL")
+        conn.execute("UPDATE users SET limit_mode = 'tc' WHERE limit_mode IS NULL OR TRIM(limit_mode) = ''")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS user_nodes(
