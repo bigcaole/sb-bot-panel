@@ -583,6 +583,7 @@ scp root@旧IP:/var/backups/sb-migrate/sb-migrate-xxxx.tar.gz root@新IP:/root/
 - `API_RATE_LIMIT_WINDOW_SECONDS=60`（可选；限流窗口）
 - `API_RATE_LIMIT_MAX_REQUESTS=120`（可选；单个 IP+路径窗口内请求上限）
 - `SECURITY_EVENTS_EXCLUDE_LOCAL=1`（可选；安全统计默认过滤本机测试来源）
+- `API_DOCS_ENABLED=0`（可选；是否启用 `/docs` `/redoc` `/openapi.json`，生产建议保持 0）
 - `UNAUTHORIZED_AUDIT_SAMPLE_SECONDS=30`（可选；未授权审计采样窗口，防止被扫描时审计日志爆涨）
 - `SECURITY_BLOCK_CLEANUP_INTERVAL_SECONDS=60`（可选；到期封禁自动清理周期）
 - `AUDIT_LOG_RETENTION_DAYS=30`（可选；审计日志保留天数）
@@ -649,7 +650,10 @@ scp root@旧IP:/var/backups/sb-migrate/sb-migrate-xxxx.tar.gz root@新IP:/root/
   - `SUPER_ADMIN_CHAT_IDS`：高危操作（删除/迁移导入/远程运维）
 - Controller API 支持可选 Bearer 鉴权（全局中间件）：
   - `AUTH_TOKEN` 为空：不校验，保持兼容行为
-  - `AUTH_TOKEN` 非空：除 `/health`、`/sub/*`、`/docs`、`/openapi.json`、`/redoc` 外其余接口都必须带 `Authorization: Bearer <AUTH_TOKEN>`
+  - `AUTH_TOKEN` 非空：除 `/health`、`/sub/*` 外其余接口都必须带 `Authorization: Bearer <AUTH_TOKEN>`
+- API 文档入口默认关闭：
+  - `API_DOCS_ENABLED=0` 时，`/docs`、`/redoc`、`/openapi.json` 返回 404
+  - 仅在排障场景临时开启：`API_DOCS_ENABLED=1`
 - 支持订阅签名：
   - 配置 `SUB_LINK_SIGN_KEY` 后，可通过 `/admin/sub/sign/{user_code}` 生成带签名 URL
   - 开启 `SUB_LINK_REQUIRE_SIGNATURE=1` 后，`/sub/*` 必须携带 `exp` + `sig`

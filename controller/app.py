@@ -20,6 +20,7 @@ from controller.routers_nodes import router as nodes_router
 from controller.routers_sub import router as sub_router
 from controller.routers_users import router as users_router
 from controller.settings import (
+    API_DOCS_ENABLED,
     AUDIT_LOG_CLEANUP_BATCH_SIZE,
     AUDIT_LOG_CLEANUP_INTERVAL_SECONDS,
     AUDIT_LOG_RETENTION_DAYS,
@@ -40,7 +41,10 @@ from controller.security import (
 )
 
 
-app = FastAPI()
+if API_DOCS_ENABLED:
+    app = FastAPI()
+else:
+    app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 _SECURITY_BLOCK_CLEANUP_LAST_AT = 0
 _AUDIT_LOG_CLEANUP_LAST_AT = 0
 _SECURITY_AUTO_BLOCK_LAST_AT = 0

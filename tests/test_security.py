@@ -6,6 +6,7 @@ from controller import security
 class SecurityTestCase(unittest.TestCase):
     def setUp(self) -> None:
         self._old_auth_token = security.AUTH_TOKEN
+        self._old_api_docs_enabled = security.API_DOCS_ENABLED
         self._old_window = security.API_RATE_LIMIT_WINDOW_SECONDS
         self._old_max = security.API_RATE_LIMIT_MAX_REQUESTS
         self._old_unauth_sample = security.UNAUTHORIZED_AUDIT_SAMPLE_SECONDS
@@ -16,6 +17,7 @@ class SecurityTestCase(unittest.TestCase):
 
     def tearDown(self) -> None:
         security.AUTH_TOKEN = self._old_auth_token
+        security.API_DOCS_ENABLED = self._old_api_docs_enabled
         security.API_RATE_LIMIT_WINDOW_SECONDS = self._old_window
         security.API_RATE_LIMIT_MAX_REQUESTS = self._old_max
         security.UNAUTHORIZED_AUDIT_SAMPLE_SECONDS = self._old_unauth_sample
@@ -25,11 +27,18 @@ class SecurityTestCase(unittest.TestCase):
         security._UNAUTH_AUDIT_LAST_CLEANUP_AT = 0
 
     def test_is_auth_exempt_path(self) -> None:
+        security.API_DOCS_ENABLED = True
         self.assertTrue(security.is_auth_exempt_path("/health"))
         self.assertTrue(security.is_auth_exempt_path("/docs"))
         self.assertTrue(security.is_auth_exempt_path("/favicon.ico"))
         self.assertTrue(security.is_auth_exempt_path("/sub/links/u1001"))
         self.assertFalse(security.is_auth_exempt_path("/nodes"))
+
+    def test_is_auth_exempt_path_when_docs_disabled(self) -> None:
+        security.API_DOCS_ENABLED = False
+        self.assertFalse(security.is_auth_exempt_path("/docs"))
+        self.assertFalse(security.is_auth_exempt_path("/openapi.json"))
+        self.assertFalse(security.is_auth_exempt_path("/redoc"))
 
     def test_verify_admin_authorization_optional_when_no_token(self) -> None:
         security.AUTH_TOKEN = ""

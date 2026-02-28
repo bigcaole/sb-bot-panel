@@ -8,6 +8,8 @@ from typing import Dict, Optional, Set, Tuple
 from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
 
+from controller.settings import API_DOCS_ENABLED
+
 
 def _get_int_env(name: str, default: int) -> int:
     raw = os.getenv(name, str(default)).strip()
@@ -102,9 +104,11 @@ def verify_admin_authorization(authorization: Optional[str]) -> Optional[JSONRes
 
 def is_auth_exempt_path(path: str) -> bool:
     normalized = str(path or "").strip() or "/"
-    if normalized in ("/health", "/openapi.json", "/docs", "/redoc", "/favicon.ico", "/robots.txt"):
+    if normalized in ("/health", "/favicon.ico", "/robots.txt"):
         return True
-    if normalized.startswith("/docs/") or normalized.startswith("/redoc/"):
+    if API_DOCS_ENABLED and normalized in ("/openapi.json", "/docs", "/redoc"):
+        return True
+    if API_DOCS_ENABLED and (normalized.startswith("/docs/") or normalized.startswith("/redoc/")):
         return True
     # 订阅链接需给客户端直接拉取，保持匿名可访问。
     if normalized.startswith("/sub/"):

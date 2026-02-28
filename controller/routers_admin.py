@@ -45,6 +45,7 @@ from controller.security import (
     verify_admin_authorization,
 )
 from controller.settings import (
+    API_DOCS_ENABLED,
     AGENT_DEFAULT_POLL_INTERVAL,
     AUDIT_LOG_CLEANUP_BATCH_SIZE,
     AUDIT_LOG_CLEANUP_INTERVAL_SECONDS,
@@ -467,6 +468,8 @@ def build_security_status_payload() -> Dict[str, Union[bool, int, List[str]]]:
         warnings.append("已启用 XFF 信任，但 TRUSTED_PROXY_IPS 为空")
     if not API_RATE_LIMIT_ENABLED:
         warnings.append("轻量限流未启用")
+    if API_DOCS_ENABLED:
+        warnings.append("API 文档入口已启用（建议仅排障临时开启）")
     if not SECURITY_EVENTS_EXCLUDE_LOCAL:
         warnings.append("安全事件统计包含本机来源（可能放大测试噪声）")
     if UNAUTHORIZED_AUDIT_SAMPLE_SECONDS <= 0:
@@ -495,6 +498,7 @@ def build_security_status_payload() -> Dict[str, Union[bool, int, List[str]]]:
         "api_rate_limit_enabled": API_RATE_LIMIT_ENABLED,
         "api_rate_limit_window_seconds": API_RATE_LIMIT_WINDOW_SECONDS,
         "api_rate_limit_max_requests": API_RATE_LIMIT_MAX_REQUESTS,
+        "api_docs_enabled": bool(API_DOCS_ENABLED),
         "unauthorized_audit_sample_seconds": UNAUTHORIZED_AUDIT_SAMPLE_SECONDS,
         "unauthorized_audit_sampling_enabled": bool(UNAUTHORIZED_AUDIT_SAMPLE_SECONDS > 0),
         "audit_log_retention_days": AUDIT_LOG_RETENTION_DAYS,
