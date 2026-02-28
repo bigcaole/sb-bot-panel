@@ -409,7 +409,7 @@ PY
         else
           record_warn "节点 token 仍可访问管理接口（兼容模式未拆分）"
         fi
-      elif [[ "$code" != "401" && "$code" != "403" ]]; then
+      elif [[ "$code" != "401" && "$code" != "403" && "$code" != "429" ]]; then
         record_warn "节点 token 访问管理接口返回非常规状态（HTTP=${code}）"
       fi
     fi
