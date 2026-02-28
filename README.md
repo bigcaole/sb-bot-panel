@@ -16,7 +16,75 @@
 - `scripts/sb_cert_check.sh`
   - 证书状态检查脚本（供菜单与 timer 调用）。
 
-## 节点一键安装（Debian/Ubuntu）
+## 新手部署总览（先看这里）
+
+下面只给你“最短可用路径”，并明确每条命令在哪台服务器执行。
+
+### 第 0 步：准备两台机器
+
+- `管理服务器`：运行 `controller + bot`（可选 Caddy HTTPS）
+- `节点服务器`：运行 `sing-box + sb-agent`
+
+### 第 1 步：在管理服务器执行（先做）
+
+执行位置：`管理服务器` 终端
+
+```bash
+cd /root
+git clone <你的仓库地址> sb-bot-panel
+cd /root/sb-bot-panel
+sudo bash scripts/admin/menu_admin.sh
+```
+
+进入菜单后先选：`20) 安装/更新`
+
+安装成功后可用以下命令随时打开管理菜单：
+
+```bash
+sb-admin
+```
+
+### 第 2 步：在节点服务器执行（每台节点都要做一次）
+
+执行位置：`节点服务器` 终端
+
+```bash
+cd /root
+git clone <你的仓库地址> sb-bot-panel
+cd /root/sb-bot-panel
+sudo bash scripts/install.sh
+```
+
+安装成功后可用以下命令随时打开节点菜单：
+
+```bash
+sb-node
+```
+
+### 第 3 步：最短联通验证
+
+执行位置：`管理服务器` 终端
+
+```bash
+cd /root/sb-bot-panel
+set -a; . ./.env; set +a
+curl -fsSL "http://127.0.0.1:${CONTROLLER_PORT:-8080}/health"
+```
+
+若输出 `{"ok":true}`，表示管理端已启动。  
+节点是否连通可在 bot 的“管理服务器 -> 状态查看”里看节点在线状态。
+
+### 常见误区（务必看）
+
+- `scripts/admin/*` 只在 `管理服务器` 执行
+- `scripts/install.sh` / `scripts/menu.sh` 只在 `节点服务器` 执行
+- 节点不会自动“发现管理端”，必须在节点安装向导里填写 `controller_url + auth_token + node_code`
+
+---
+
+## 节点服务器：一键安装（Debian/Ubuntu）
+
+执行位置：`节点服务器` 终端
 
 ### 方式 A：仓库内执行（推荐）
 
@@ -40,7 +108,7 @@ git clone <你的仓库地址> sb-bot-panel && cd sb-bot-panel && sudo bash scri
 6. `tuic_listen_port`（默认 `8443`）
 7. `poll_interval`（默认 `15` 秒）
 
-## 中文菜单管理
+## 节点服务器菜单管理
 
 ```bash
 sudo bash /path/to/sb-bot-panel/scripts/menu.sh
@@ -177,7 +245,9 @@ REALITY 密钥策略：
 - `ufw allow 8443/udp`（或你的 TUIC 端口）
 - `ufw status`
 
-## 管理服务器一键安装（controller + bot）
+## 管理服务器：一键安装（controller + bot）
+
+执行位置：`管理服务器` 终端
 
 管理服务器侧新增脚本目录：`scripts/admin/`，用于一键安装、配置、服务管理和迁移。
 
