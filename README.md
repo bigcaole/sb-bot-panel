@@ -583,6 +583,8 @@ scp root@旧IP:/var/backups/sb-migrate/sb-migrate-xxxx.tar.gz root@新IP:/root/
 - `API_RATE_LIMIT_ENABLED=1`（可选；controller 轻量限流开关，默认开启）
 - `API_RATE_LIMIT_WINDOW_SECONDS=60`（可选；限流窗口）
 - `API_RATE_LIMIT_MAX_REQUESTS=120`（可选；单个 IP+路径窗口内请求上限）
+- `ADMIN_OVERVIEW_CACHE_TTL_SECONDS=5`（可选；`/admin/overview` 缓存秒数，0=关闭缓存）
+- `ADMIN_SECURITY_STATUS_CACHE_TTL_SECONDS=5`（可选；`/admin/security/status` 缓存秒数，0=关闭缓存）
 - `RATE_LIMIT_STATE_MAX_KEYS=20000`（可选；轻量限流内存状态键数上限，防止极端扫描导致内存持续增长）
 - `SECURITY_EVENTS_EXCLUDE_LOCAL=1`（可选；安全统计默认过滤本机测试来源）
 - `API_DOCS_ENABLED=0`（可选；是否启用 `/docs` `/redoc` `/openapi.json`，生产建议保持 0）

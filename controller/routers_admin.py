@@ -51,6 +51,8 @@ from controller.security import (
 from controller.settings import (
     API_DOCS_ENABLED,
     AGENT_DEFAULT_POLL_INTERVAL,
+    ADMIN_OVERVIEW_CACHE_TTL_SECONDS,
+    ADMIN_SECURITY_STATUS_CACHE_TTL_SECONDS,
     AUDIT_LOG_CLEANUP_BATCH_SIZE,
     AUDIT_LOG_CLEANUP_INTERVAL_SECONDS,
     AUDIT_LOG_RETENTION_DAYS,
@@ -97,11 +99,11 @@ WEAK_AUTH_TOKEN_EXAMPLES = {
     "admin",
     "123456",
 }
-_ADMIN_OVERVIEW_CACHE_TTL_SECONDS = 5
+_ADMIN_OVERVIEW_CACHE_TTL_SECONDS = int(ADMIN_OVERVIEW_CACHE_TTL_SECONDS)
 _ADMIN_OVERVIEW_CACHE_EXPIRE_AT = 0
 _ADMIN_OVERVIEW_CACHE_PAYLOAD: Optional[Dict[str, Union[int, Dict, List]]] = None
 _ADMIN_OVERVIEW_CACHE_LOCK = Lock()
-_SECURITY_STATUS_CACHE_TTL_SECONDS = 5
+_SECURITY_STATUS_CACHE_TTL_SECONDS = int(ADMIN_SECURITY_STATUS_CACHE_TTL_SECONDS)
 _SECURITY_STATUS_CACHE_EXPIRE_AT = 0
 _SECURITY_STATUS_CACHE_PAYLOAD: Optional[Dict[str, Union[bool, int, List[str]]]] = None
 _SECURITY_STATUS_CACHE_LOCK = Lock()
@@ -584,6 +586,8 @@ def build_security_status_payload(
         "api_rate_limit_enabled": API_RATE_LIMIT_ENABLED,
         "api_rate_limit_window_seconds": API_RATE_LIMIT_WINDOW_SECONDS,
         "api_rate_limit_max_requests": API_RATE_LIMIT_MAX_REQUESTS,
+        "admin_overview_cache_ttl_seconds": int(_ADMIN_OVERVIEW_CACHE_TTL_SECONDS),
+        "admin_security_status_cache_ttl_seconds": int(_SECURITY_STATUS_CACHE_TTL_SECONDS),
         "api_docs_enabled": bool(API_DOCS_ENABLED),
         "unauthorized_audit_sample_seconds": UNAUTHORIZED_AUDIT_SAMPLE_SECONDS,
         "unauthorized_audit_sampling_enabled": bool(UNAUTHORIZED_AUDIT_SAMPLE_SECONDS > 0),
