@@ -107,6 +107,17 @@ _SECURITY_STATUS_CACHE_PAYLOAD: Optional[Dict[str, Union[bool, int, List[str]]]]
 _SECURITY_STATUS_CACHE_LOCK = Lock()
 
 
+def invalidate_admin_snapshots_cache() -> None:
+    global _ADMIN_OVERVIEW_CACHE_EXPIRE_AT
+    global _ADMIN_OVERVIEW_CACHE_PAYLOAD
+    global _SECURITY_STATUS_CACHE_EXPIRE_AT
+    global _SECURITY_STATUS_CACHE_PAYLOAD
+    _ADMIN_OVERVIEW_CACHE_EXPIRE_AT = 0
+    _ADMIN_OVERVIEW_CACHE_PAYLOAD = None
+    _SECURITY_STATUS_CACHE_EXPIRE_AT = 0
+    _SECURITY_STATUS_CACHE_PAYLOAD = None
+
+
 def _normalize_controller_url(raw_url: str) -> str:
     value = str(raw_url or "").strip().rstrip("/")
     if not value:
@@ -1017,6 +1028,8 @@ def cleanup_expired_ip_blocks_once(now_ts: int) -> Dict[str, Union[int, List[str
     with get_connection() as conn:
         result = cleanup_expired_ip_blocks(conn, now_ts=int(now_ts))
         conn.commit()
+    if int(result.get("released", 0) or 0) > 0:
+        invalidate_admin_snapshots_cache()
     return result
 
 
@@ -1197,7 +1210,7 @@ def run_security_auto_block_once(conn, now_ts: int) -> Dict[str, Union[int, List
         except HTTPException:
             failed_items.append(source_ip)
 
-    return {
+    result = {
         "enabled": True,
         "blocked_count": int(len(blocked_items)),
         "blocked_items": blocked_items,
@@ -1208,6 +1221,9 @@ def run_security_auto_block_once(conn, now_ts: int) -> Dict[str, Union[int, List
         "duration_seconds": int(SECURITY_AUTO_BLOCK_DURATION_SECONDS),
         "max_per_interval": int(max_blocks),
     }
+    if int(result.get("blocked_count", 0) or 0) > 0:
+        invalidate_admin_snapshots_cache()
+    return result
 
 
 def build_admin_overview_payload(now_ts: int) -> Dict[str, Union[int, Dict, List]]:
@@ -2382,6 +2398,7 @@ def block_security_source_ip(
             source_ip=request_ip,
         )
         conn.commit()
+    invalidate_admin_snapshots_cache()
     return {
         "ok": True,
         "source_ip": source_ip,
@@ -2427,6 +2444,7 @@ def unblock_security_source_ip(
             source_ip=request_ip,
         )
         conn.commit()
+    invalidate_admin_snapshots_cache()
     return {
         "ok": True,
         "source_ip": source_ip,
@@ -2470,6 +2488,7 @@ def run_admin_security_maintenance_cleanup(
             created_at=now_ts,
         )
         conn.commit()
+    invalidate_admin_snapshots_cache()
 
     return {
         "ok": True,
@@ -2524,6 +2543,7 @@ def run_admin_security_auto_block_once(
             created_at=now_ts,
         )
         conn.commit()
+    invalidate_admin_snapshots_cache()
 
     return {
         "ok": True,

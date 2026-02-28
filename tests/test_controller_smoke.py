@@ -698,6 +698,42 @@ class ControllerSmokeTestCase(unittest.TestCase):
             admin_router_module._SECURITY_STATUS_CACHE_EXPIRE_AT = 0
             admin_router_module._SECURITY_STATUS_CACHE_PAYLOAD = None
 
+    def test_security_status_cache_invalidated_after_block_mutation(self) -> None:
+        original_builder = admin_router_module.build_security_status_payload
+        call_counter = {"count": 0}
+
+        def wrapped_builder(conn=None, now_ts=None):
+            call_counter["count"] += 1
+            return original_builder(conn=conn, now_ts=now_ts)
+
+        admin_router_module._SECURITY_STATUS_CACHE_TTL_SECONDS = 30
+        admin_router_module._SECURITY_STATUS_CACHE_EXPIRE_AT = 0
+        admin_router_module._SECURITY_STATUS_CACHE_PAYLOAD = None
+        admin_router_module.build_security_status_payload = wrapped_builder
+        try:
+            with TestClient(app_module.app) as client:
+                first = client.get("/admin/security/status", headers=self._auth_header())
+                self.assertEqual(200, first.status_code)
+                second = client.get("/admin/security/status", headers=self._auth_header())
+                self.assertEqual(200, second.status_code)
+                cached_count = int(call_counter["count"])
+                self.assertGreaterEqual(cached_count, 1)
+
+                block_resp = client.post(
+                    "/admin/security/block_ip",
+                    headers=self._auth_header(),
+                    json={"source_ip": "198.51.100.77", "duration_seconds": 3600, "reason": "cache-test"},
+                )
+                self.assertEqual(200, block_resp.status_code)
+
+                third = client.get("/admin/security/status", headers=self._auth_header())
+                self.assertEqual(200, third.status_code)
+                self.assertGreater(int(call_counter["count"]), cached_count)
+        finally:
+            admin_router_module.build_security_status_payload = original_builder
+            admin_router_module._SECURITY_STATUS_CACHE_EXPIRE_AT = 0
+            admin_router_module._SECURITY_STATUS_CACHE_PAYLOAD = None
+
     def test_subscription_sign_and_access_smoke(self) -> None:
         with TestClient(app_module.app) as client:
             direct = client.get("/sub/links/u1001")
