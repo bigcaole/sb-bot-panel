@@ -5491,6 +5491,16 @@ async def create_user_confirm(
     speed_mbps = int(result.get("speed_mbps", 0))
     speed_text = "不限速（0 Mbps）" if speed_mbps == 0 else f"{speed_mbps} Mbps"
     tuic_port = result.get("tuic_port", "")
+    signed_data, signed_error, _ = await controller_request(
+        "GET", f"/admin/sub/sign/{user_code}"
+    )
+    links_url = "{0}/sub/links/{1}".format(PANEL_BASE_URL.rstrip("/"), user_code)
+    base64_url = "{0}/sub/base64/{1}".format(PANEL_BASE_URL.rstrip("/"), user_code)
+    signed_tip = "（默认链接）"
+    if not signed_error and isinstance(signed_data, dict):
+        links_url = str(signed_data.get("links_url") or links_url)
+        base64_url = str(signed_data.get("base64_url") or base64_url)
+        signed_tip = "（签名链接）" if bool(signed_data.get("signed")) else "（默认链接）"
 
     await edit_or_reply_with_auto_clear(
         query,
@@ -5500,7 +5510,8 @@ async def create_user_confirm(
         f"到期时间：{expire_text}\n"
         f"限速：{speed_text}\n"
         f"TUIC端口：{tuic_port}\n\n"
-        f"订阅链接：https://example.com/sub/{user_code}",
+        f"订阅链接{signed_tip}：\n{links_url}\n\n"
+        f"Base64订阅{signed_tip}：\n{base64_url}",
         reply_markup=build_submenu("user"),
     )
     context.user_data.pop(WIZARD_KEY, None)
