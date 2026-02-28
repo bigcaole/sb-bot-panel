@@ -1175,17 +1175,30 @@ def run_security_auto_block_once(conn, now_ts: int) -> Dict[str, Union[int, List
 
 def build_admin_overview_payload(now_ts: int) -> Dict[str, Union[int, Dict, List]]:
     with get_connection() as conn:
-        users_total = int(conn.execute("SELECT COUNT(*) AS c FROM users").fetchone()["c"] or 0)
-        users_active = int(
-            conn.execute("SELECT COUNT(*) AS c FROM users WHERE status = 'active'").fetchone()["c"] or 0
-        )
-        users_disabled = int(
-            conn.execute("SELECT COUNT(*) AS c FROM users WHERE status = 'disabled'").fetchone()["c"] or 0
-        )
-        nodes_total = int(conn.execute("SELECT COUNT(*) AS c FROM nodes").fetchone()["c"] or 0)
-        nodes_enabled = int(
-            conn.execute("SELECT COUNT(*) AS c FROM nodes WHERE enabled = 1").fetchone()["c"] or 0
-        )
+        users_row = conn.execute(
+            """
+            SELECT
+              COUNT(*) AS total,
+              SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) AS active_count,
+              SUM(CASE WHEN status = 'disabled' THEN 1 ELSE 0 END) AS disabled_count
+            FROM users
+            """
+        ).fetchone()
+        users_total = int(users_row["total"] or 0)
+        users_active = int(users_row["active_count"] or 0)
+        users_disabled = int(users_row["disabled_count"] or 0)
+
+        nodes_row = conn.execute(
+            """
+            SELECT
+              COUNT(*) AS total,
+              SUM(CASE WHEN enabled = 1 THEN 1 ELSE 0 END) AS enabled_count
+            FROM nodes
+            """
+        ).fetchone()
+        nodes_total = int(nodes_row["total"] or 0)
+        nodes_enabled = int(nodes_row["enabled_count"] or 0)
+
         bindings_total = int(
             conn.execute("SELECT COUNT(*) AS c FROM user_nodes").fetchone()["c"] or 0
         )
