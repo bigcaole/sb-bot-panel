@@ -581,6 +581,35 @@ class ControllerSmokeTestCase(unittest.TestCase):
             self.assertIn("enabled", auto_block_payload)
             self.assertIn("blocked_count", auto_block_payload)
 
+    def test_rate_limit_applies_before_auth_for_protected_paths(self) -> None:
+        old_app_enabled = app_module.API_RATE_LIMIT_ENABLED
+        old_sec_enabled = security_module.API_RATE_LIMIT_ENABLED
+        old_window = security_module.API_RATE_LIMIT_WINDOW_SECONDS
+        old_max = security_module.API_RATE_LIMIT_MAX_REQUESTS
+        try:
+            app_module.API_RATE_LIMIT_ENABLED = True
+            security_module.API_RATE_LIMIT_ENABLED = True
+            security_module.API_RATE_LIMIT_WINDOW_SECONDS = 60
+            security_module.API_RATE_LIMIT_MAX_REQUESTS = 2
+            security_module._RATE_LIMIT_STATE.clear()
+            security_module._RATE_LIMIT_LAST_CLEANUP_AT = 0
+            with TestClient(app_module.app) as client:
+                first_resp = client.get("/nodes")
+                self.assertEqual(401, first_resp.status_code)
+                second_resp = client.get("/nodes")
+                self.assertEqual(401, second_resp.status_code)
+                third_resp = client.get("/nodes")
+                self.assertEqual(429, third_resp.status_code)
+                third_payload = third_resp.json()
+                self.assertEqual("rate_limited", str(third_payload.get("error", "")))
+        finally:
+            app_module.API_RATE_LIMIT_ENABLED = old_app_enabled
+            security_module.API_RATE_LIMIT_ENABLED = old_sec_enabled
+            security_module.API_RATE_LIMIT_WINDOW_SECONDS = old_window
+            security_module.API_RATE_LIMIT_MAX_REQUESTS = old_max
+            security_module._RATE_LIMIT_STATE.clear()
+            security_module._RATE_LIMIT_LAST_CLEANUP_AT = 0
+
     def test_subscription_sign_and_access_smoke(self) -> None:
         with TestClient(app_module.app) as client:
             direct = client.get("/sub/links/u1001")

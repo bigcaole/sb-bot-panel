@@ -94,6 +94,13 @@ class SecurityTestCase(unittest.TestCase):
             security.build_rate_limit_path_key("/admin/security/status"),
         )
 
+    def test_is_rate_limit_target_path(self) -> None:
+        self.assertTrue(security.is_rate_limit_target_path("/nodes"))
+        self.assertTrue(security.is_rate_limit_target_path("/users"))
+        self.assertTrue(security.is_rate_limit_target_path("/admin/overview"))
+        self.assertFalse(security.is_rate_limit_target_path("/nodes/JP1/sync"))
+        self.assertFalse(security.is_rate_limit_target_path("/sub/links/u1001"))
+
     def test_should_write_unauthorized_audit_sampling_window(self) -> None:
         security.UNAUTHORIZED_AUDIT_SAMPLE_SECONDS = 30
         key = security.build_unauthorized_audit_key("1.2.3.4", "/nodes", "GET")

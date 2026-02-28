@@ -183,6 +183,8 @@ def is_rate_limit_target_path(path: str) -> bool:
     normalized = str(path or "").strip() or "/"
     if normalized.startswith("/admin/"):
         return True
+    if normalized in ("/nodes", "/users"):
+        return True
     if normalized == "/users/create":
         return True
     if normalized.startswith("/users/") and (

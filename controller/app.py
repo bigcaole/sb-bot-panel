@@ -119,6 +119,15 @@ async def auth_middleware(request: Request, call_next):
         return await call_next(request)
     if is_auth_exempt_path(request.url.path):
         return await call_next(request)
+    if API_RATE_LIMIT_ENABLED and is_rate_limit_target_path(request.url.path):
+        identity = get_rate_limit_identity(request)
+        limited, retry_after = check_and_consume_rate_limit(identity, now_ts)
+        if limited:
+            return JSONResponse(
+                status_code=429,
+                content={"ok": False, "error": "rate_limited", "retry_after": retry_after},
+                headers={"Retry-After": str(retry_after)},
+            )
 
     authorization = request.headers.get("Authorization")
     auth_error = verify_admin_authorization(authorization)
@@ -156,6 +165,10 @@ async def auth_middleware(request: Request, call_next):
 @app.middleware("http")
 async def rate_limit_middleware(request: Request, call_next):
     if not API_RATE_LIMIT_ENABLED:
+        return await call_next(request)
+    # AUTH_TOKEN 开启时，受保护路径的限流已在 auth_middleware 中处理，
+    # 这里跳过以避免重复计数。
+    if AUTH_TOKEN and not is_auth_exempt_path(request.url.path):
         return await call_next(request)
     if not is_rate_limit_target_path(request.url.path):
         return await call_next(request)
