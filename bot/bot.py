@@ -1587,6 +1587,11 @@ def build_node_edit_confirm_keyboard(field: str, node_code: str) -> InlineKeyboa
 def build_sub_links_info_keyboard(user_code: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
+            [InlineKeyboardButton("🩺 订阅内容预览", callback_data=f"sub:diag:{user_code}")],
+            [
+                InlineKeyboardButton("📎 明文链接", callback_data=f"sub:links:{user_code}"),
+                InlineKeyboardButton("📎 Base64链接", callback_data=f"sub:base64:{user_code}"),
+            ],
             [InlineKeyboardButton("返回用户节点管理", callback_data=f"usernodes:manage:{user_code}")],
             [InlineKeyboardButton("返回用户管理", callback_data="menu:user")],
         ]
@@ -1874,6 +1879,11 @@ def localize_controller_error(error_message: str) -> str:
         return "节点来源IP不在白名单中"
     mapping = {
         "unauthorized": "未授权（请检查 AUTH_TOKEN）",
+        "subscription signature required": "订阅签名缺失",
+        "subscription signature expired": "订阅签名已过期",
+        "invalid subscription signature": "订阅签名无效",
+        "user is disabled": "用户已禁用",
+        "user expired": "用户已过期",
         "User not found": "用户不存在",
         "Node not found": "节点不存在",
         "Task not found": "任务不存在",
@@ -2805,6 +2815,39 @@ async def controller_request(
         return None, "", response.status_code
 
 
+async def controller_request_text(
+    method: str, path: str, payload: dict = None
+) -> tuple:
+    url = f"{CONTROLLER_URL}{path}"
+    headers = {}
+    if CONTROLLER_AUTH_TOKEN:
+        headers["Authorization"] = f"Bearer {CONTROLLER_AUTH_TOKEN}"
+    headers["X-Actor"] = BOT_ACTOR_LABEL
+    headers["User-Agent"] = "sb-bot-panel-bot/1.0"
+
+    global _controller_http_client
+    if _controller_http_client is None or _controller_http_client.is_closed:
+        _controller_http_client = httpx.AsyncClient(
+            timeout=CONTROLLER_HTTP_TIMEOUT_SECONDS,
+            limits=httpx.Limits(max_connections=30, max_keepalive_connections=20),
+        )
+    try:
+        response = await _controller_http_client.request(method, url, json=payload, headers=headers)
+    except httpx.HTTPError as exc:
+        return "", f"无法连接控制器接口（{exc}）", 0
+
+    response_text = str(response.text or "")
+    if response.status_code >= 400:
+        try:
+            error_body = response.json()
+            error_message = str(error_body.get("detail", error_body))
+        except ValueError:
+            error_message = response_text or f"HTTP {response.status_code}"
+        return response_text, error_message, response.status_code
+
+    return response_text, "", response.status_code
+
+
 async def write_admin_audit_event_best_effort(
     action: str,
     resource_type: str,
@@ -3176,6 +3219,7 @@ def format_sub_links_info_text(
         f"{b64_url}\n\n"
         f"{signed_hint}"
         "如果REALITY参数未配置，将在明文订阅中提示并跳过vless链接。"
+        "\n可点击“🩺 订阅内容预览”直接查看明文订阅前几行。"
         f"{diagnosis_text}"
     )
 
@@ -3218,6 +3262,65 @@ def format_subscription_diagnosis_text(user: dict, user_nodes: list) -> str:
     elif enabled == 0:
         lines.append("- 提示：已绑定节点均禁用时，订阅会返回 # no available links。")
     return "\n".join(lines)
+
+
+def build_relative_path_from_url(raw_url: str, fallback_path: str) -> str:
+    value = str(raw_url or "").strip()
+    if not value:
+        return fallback_path
+    parsed = urlparse(value)
+    path = str(parsed.path or "").strip() or fallback_path
+    if parsed.query:
+        return f"{path}?{parsed.query}"
+    return path
+
+
+def mask_signature_in_path(path: str) -> str:
+    value = str(path or "").strip()
+    if not value:
+        return "-"
+    return re.sub(r"(sig=)[^&]+", r"\1***", value)
+
+
+def format_subscription_preview_excerpt(
+    raw_text: str, line_limit: int = 16, line_char_limit: int = 220
+) -> str:
+    content = str(raw_text or "").replace("\r\n", "\n").strip()
+    if not content:
+        return "(空)"
+    lines = content.splitlines()
+    preview = []
+    for line in lines[:line_limit]:
+        item = line if len(line) <= line_char_limit else line[:line_char_limit] + "…"
+        preview.append(item)
+    if len(lines) > line_limit:
+        preview.append("...（共 {0} 行，仅显示前 {1} 行）".format(len(lines), line_limit))
+    return "\n".join(preview)
+
+
+def format_sub_links_preview_text(
+    user_code: str,
+    request_path: str,
+    status_code: int,
+    error_message: str,
+    response_text: str,
+    diagnosis_text: str = "",
+) -> str:
+    ok = status_code > 0 and status_code < 400
+    status_text = "成功" if ok else "失败"
+    lines = [
+        "订阅内容预览（明文）",
+        f"用户：{user_code}",
+        f"请求：{mask_signature_in_path(request_path)}",
+        f"结果：{status_text} (HTTP {status_code or 0})",
+    ]
+    localized_error = localize_controller_error(str(error_message or "").strip())
+    if localized_error:
+        lines.append(f"错误：{localized_error}")
+    lines.extend(["", "内容片段：", format_subscription_preview_excerpt(response_text)])
+    if diagnosis_text:
+        lines.append(diagnosis_text)
+    return truncate_output("\n".join(lines), limit=3600)
 
 
 def format_query_user_detail_text(user: dict, user_nodes: list) -> str:
@@ -8094,6 +8197,51 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await render_node_detail(query, node_code, notice="待确认REALITY参数已失效，请重新配置。")
         else:
             await query.edit_message_text("请求无效，请重试。", reply_markup=build_submenu("nodes"))
+        return
+
+    if callback_data.startswith("sub:diag:"):
+        parts = callback_data.split(":", maxsplit=2)
+        if len(parts) != 3:
+            await query.edit_message_text("请求无效，请重试。", reply_markup=build_submenu("user"))
+            return
+        user_code = parts[2]
+        signed_data, signed_error, _ = await controller_request(
+            "GET", f"/admin/sub/sign/{user_code}"
+        )
+        if signed_error:
+            await query.edit_message_text(
+                f"读取订阅签名链接失败：{localize_controller_error(signed_error)}",
+                reply_markup=build_sub_links_info_keyboard(user_code),
+            )
+            return
+        if not isinstance(signed_data, dict):
+            await query.edit_message_text(
+                "读取订阅签名链接失败：响应格式异常。",
+                reply_markup=build_sub_links_info_keyboard(user_code),
+            )
+            return
+        links_path = build_relative_path_from_url(
+            str(signed_data.get("links_url") or ""), f"/sub/links/{user_code}"
+        )
+        preview_text, preview_error, preview_status = await controller_request_text(
+            "GET", links_path
+        )
+        user_data, _, _ = await controller_request("GET", f"/users/{user_code}")
+        user_nodes_data, _, _ = await controller_request("GET", f"/users/{user_code}/nodes")
+        diagnosis_text = ""
+        if isinstance(user_data, dict) and isinstance(user_nodes_data, list):
+            diagnosis_text = format_subscription_diagnosis_text(user_data, user_nodes_data)
+        await query.edit_message_text(
+            format_sub_links_preview_text(
+                user_code=user_code,
+                request_path=links_path,
+                status_code=int(preview_status or 0),
+                error_message=preview_error,
+                response_text=preview_text,
+                diagnosis_text=diagnosis_text,
+            ),
+            reply_markup=build_sub_links_info_keyboard(user_code),
+        )
         return
 
     if callback_data.startswith("sub:links:") or callback_data.startswith("sub:base64:"):
