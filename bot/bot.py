@@ -159,11 +159,12 @@ NODES_WIZARD_KEY = "nodes_create_wizard"
     NODE_CREATE_HOST,
     NODE_CREATE_AGENT_IP,
     NODE_CREATE_REALITY_SERVER_NAME,
+    NODE_CREATE_TUIC_SERVER_NAME,
     NODE_CREATE_TUIC_PORT_START,
     NODE_CREATE_TUIC_PORT_END,
     NODE_CREATE_NOTE,
     NODE_CREATE_CONFIRM,
-) = range(100, 109)
+) = range(100, 110)
 NODE_EDIT_KEY = "node_edit_wizard"
 (
     NODE_EDIT_HOST,
@@ -2475,11 +2476,13 @@ def format_nodes_create_summary(
     host: str,
     agent_ip: str,
     reality_server_name: str,
+    tuic_server_name: str,
     tuic_port_start: int,
     tuic_port_end: int,
     note: str,
 ) -> str:
     reality_text = reality_server_name if reality_server_name else "未设置"
+    tuic_sni_text = tuic_server_name if tuic_server_name else "未设置（将按主机自动推导）"
     note_text = note if note else "无"
     return (
         "请确认节点信息：\n"
@@ -2488,6 +2491,7 @@ def format_nodes_create_summary(
         f"主机：{host}\n"
         f"节点来源IP白名单：{agent_ip}\n"
         f"Reality域名：{reality_text}\n"
+        f"TUIC证书域名：{tuic_sni_text}\n"
         f"TUIC端口池：{tuic_port_start}-{tuic_port_end}\n"
         f"备注：{note_text}"
     )
@@ -5811,6 +5815,30 @@ async def nodes_create_reality_server_name(
     context.user_data.setdefault(NODES_WIZARD_KEY, {})[
         "reality_server_name"
     ] = reality_server_name
+    wizard_data = context.user_data.setdefault(NODES_WIZARD_KEY, {})
+    host_value = str(wizard_data.get("host", "") or "").strip()
+    if host_value and is_valid_ip_address(host_value):
+        await update.message.reply_text(
+            "请输入 TUIC 证书域名（可选，输入 - 跳过）。\n"
+            "提示：当前主机是 IP，建议填写你自有域名用于 TUIC 证书校验。"
+        )
+    else:
+        await update.message.reply_text(
+            "请输入 TUIC 证书域名（可选，输入 - 跳过）。\n"
+            "提示：留空将默认使用主机域名。"
+        )
+    return NODE_CREATE_TUIC_SERVER_NAME
+
+
+async def nodes_create_tuic_server_name(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    if not update.message or not update.message.text:
+        return NODE_CREATE_TUIC_SERVER_NAME
+
+    raw_value = update.message.text.strip()
+    tuic_server_name = "" if raw_value == "-" else raw_value
+    context.user_data.setdefault(NODES_WIZARD_KEY, {})["tuic_server_name"] = tuic_server_name
     await update.message.reply_text("请输入 TUIC 起始端口（1-65535）：")
     return NODE_CREATE_TUIC_PORT_START
 
@@ -5885,6 +5913,7 @@ async def nodes_create_note(
             wizard_data["host"],
             wizard_data["agent_ip"],
             wizard_data.get("reality_server_name", ""),
+            wizard_data.get("tuic_server_name", ""),
             wizard_data["tuic_port_start"],
             wizard_data["tuic_port_end"],
             wizard_data["note"],
@@ -5938,6 +5967,9 @@ async def nodes_create_confirm(
     reality_server_name = wizard_data.get("reality_server_name", "")
     if reality_server_name:
         payload["reality_server_name"] = reality_server_name
+    tuic_server_name = str(wizard_data.get("tuic_server_name", "") or "").strip()
+    if tuic_server_name:
+        payload["tuic_server_name"] = tuic_server_name
     result, error_message, _ = await controller_request(
         "POST", "/nodes/create", payload=payload
     )
@@ -8536,6 +8568,11 @@ def main() -> None:
             NODE_CREATE_REALITY_SERVER_NAME: [
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND, nodes_create_reality_server_name
+                )
+            ],
+            NODE_CREATE_TUIC_SERVER_NAME: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND, nodes_create_tuic_server_name
                 )
             ],
             NODE_CREATE_TUIC_PORT_START: [
