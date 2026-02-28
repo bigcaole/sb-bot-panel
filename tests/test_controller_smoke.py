@@ -323,6 +323,9 @@ class ControllerSmokeTestCase(unittest.TestCase):
             self.assertIn("admin_security_status_cache_ttl_seconds", admin_sec.json())
             self.assertIn("weak_auth_token_count", admin_sec.json())
             self.assertIn("weak_auth_token_risks", admin_sec.json())
+            self.assertIn("admin_auth_source", admin_sec.json())
+            self.assertIn("node_auth_source", admin_sec.json())
+            self.assertIn("auth_token_split_active", admin_sec.json())
 
             ai_export_resp = client.post(
                 "/admin/diagnostics/ai_context_export",

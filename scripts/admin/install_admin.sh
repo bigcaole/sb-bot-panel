@@ -43,6 +43,8 @@ ENABLE_HTTPS="0"
 HTTPS_DOMAIN=""
 HTTPS_ACME_EMAIL=""
 AUTH_TOKEN=""
+ADMIN_AUTH_TOKEN=""
+NODE_AUTH_TOKEN=""
 BOT_TOKEN=""
 ADMIN_CHAT_IDS=""
 VIEW_ADMIN_CHAT_IDS=""
@@ -87,6 +89,7 @@ SELF_CHECK_WARN=0
 SELF_CHECK_FAIL=0
 NODE_DEFAULT_SYNC_SUMMARY="未执行"
 INSTALL_SCRIPT_ACTOR="install-admin"
+AUTH_DISABLED_EXPLICIT=0
 
 msg() { echo -e "\033[1;32m[信息]\033[0m $*"; }
 warn() { echo -e "\033[1;33m[警告]\033[0m $*"; }
@@ -443,7 +446,8 @@ has_env_key() {
 }
 
 load_existing_env_defaults() {
-  local old_port old_port_whitelist old_url old_public_url old_panel_base old_enable_https old_https_domain old_https_email old_auth old_bot old_admin old_view_admin old_ops_admin old_super_admin old_migrate old_backup_retention old_migrate_retention old_log_archive_window old_log_archive_retention old_log_archive_dir old_menu_ttl old_monitor_interval old_offline_threshold old_time_sync_interval old_mutation_cooldown old_trust_xff old_trusted_proxy_ips old_task_timeout old_task_retention old_task_max_pending old_sub_link_sign_key old_sub_link_require old_sub_link_ttl old_rate_limit_enabled old_rate_limit_window old_rate_limit_max old_security_events_exclude_local old_security_block_protected_ips old_security_auto_block_enabled old_security_auto_block_interval old_security_auto_block_window old_security_auto_block_threshold old_security_auto_block_duration old_security_auto_block_max old_controller_http_timeout old_bot_actor_label
+  local old_port old_port_whitelist old_url old_public_url old_panel_base old_enable_https old_https_domain old_https_email old_auth old_admin_auth old_node_auth old_bot old_admin old_view_admin old_ops_admin old_super_admin old_migrate old_backup_retention old_migrate_retention old_log_archive_window old_log_archive_retention old_log_archive_dir old_menu_ttl old_monitor_interval old_offline_threshold old_time_sync_interval old_mutation_cooldown old_trust_xff old_trusted_proxy_ips old_task_timeout old_task_retention old_task_max_pending old_sub_link_sign_key old_sub_link_require old_sub_link_ttl old_rate_limit_enabled old_rate_limit_window old_rate_limit_max old_security_events_exclude_local old_security_block_protected_ips old_security_auto_block_enabled old_security_auto_block_interval old_security_auto_block_window old_security_auto_block_threshold old_security_auto_block_duration old_security_auto_block_max old_controller_http_timeout old_bot_actor_label
+  local has_auth_key has_admin_auth_key has_node_auth_key
   old_port="$(get_env_value "CONTROLLER_PORT")"
   old_port_whitelist="$(get_env_value "CONTROLLER_PORT_WHITELIST")"
   old_url="$(get_env_value "CONTROLLER_URL")"
@@ -453,6 +457,8 @@ load_existing_env_defaults() {
   old_https_domain="$(get_env_value "HTTPS_DOMAIN")"
   old_https_email="$(get_env_value "HTTPS_ACME_EMAIL")"
   old_auth="$(get_env_value "AUTH_TOKEN")"
+  old_admin_auth="$(get_env_value "ADMIN_AUTH_TOKEN")"
+  old_node_auth="$(get_env_value "NODE_AUTH_TOKEN")"
   old_bot="$(get_env_value "BOT_TOKEN")"
   old_admin="$(get_env_value "ADMIN_CHAT_IDS")"
   old_view_admin="$(get_env_value "VIEW_ADMIN_CHAT_IDS")"
@@ -501,10 +507,31 @@ load_existing_env_defaults() {
   ENABLE_HTTPS="${old_enable_https:-0}"
   HTTPS_DOMAIN="$(sanitize_domain_input "${old_https_domain:-}")"
   HTTPS_ACME_EMAIL="${old_https_email:-}"
+  has_auth_key=0
+  has_admin_auth_key=0
+  has_node_auth_key=0
   if has_env_key "AUTH_TOKEN"; then
+    has_auth_key=1
     AUTH_TOKEN="$old_auth"
   else
-    AUTH_TOKEN="$(generate_auth_token)"
+    AUTH_TOKEN=""
+  fi
+  if has_env_key "ADMIN_AUTH_TOKEN"; then
+    has_admin_auth_key=1
+    ADMIN_AUTH_TOKEN="$old_admin_auth"
+  else
+    ADMIN_AUTH_TOKEN=""
+  fi
+  if has_env_key "NODE_AUTH_TOKEN"; then
+    has_node_auth_key=1
+    NODE_AUTH_TOKEN="$old_node_auth"
+  else
+    NODE_AUTH_TOKEN=""
+  fi
+  if (( has_auth_key == 1 )) && [[ -z "$AUTH_TOKEN" ]] && [[ -z "$ADMIN_AUTH_TOKEN" ]] && [[ -z "$NODE_AUTH_TOKEN" ]]; then
+    AUTH_DISABLED_EXPLICIT=1
+  else
+    AUTH_DISABLED_EXPLICIT=0
   fi
   BOT_TOKEN="${old_bot:-$BOT_TOKEN_PLACEHOLDER}"
   ADMIN_CHAT_IDS="${old_admin:-}"
@@ -545,6 +572,39 @@ load_existing_env_defaults() {
   SECURITY_AUTO_BLOCK_MAX_PER_INTERVAL="${old_security_auto_block_max:-5}"
   CONTROLLER_HTTP_TIMEOUT="${old_controller_http_timeout:-10}"
   BOT_ACTOR_LABEL="${old_bot_actor_label:-sb-bot}"
+}
+
+ensure_split_auth_tokens() {
+  if [[ "$AUTH_DISABLED_EXPLICIT" == "1" ]]; then
+    AUTH_TOKEN=""
+    ADMIN_AUTH_TOKEN=""
+    NODE_AUTH_TOKEN=""
+    return
+  fi
+
+  # 兼容旧配置：已有 AUTH_TOKEN 且未显式配置拆分 token 时，先沿用旧值，避免升级中断。
+  if [[ -z "$ADMIN_AUTH_TOKEN" && -n "$AUTH_TOKEN" ]]; then
+    ADMIN_AUTH_TOKEN="$AUTH_TOKEN"
+  fi
+  if [[ -z "$NODE_AUTH_TOKEN" && -n "$AUTH_TOKEN" ]]; then
+    NODE_AUTH_TOKEN="$AUTH_TOKEN"
+  fi
+
+  # 全新部署：默认生成拆分 token（admin/node 分离）。
+  if [[ -z "$ADMIN_AUTH_TOKEN" ]]; then
+    ADMIN_AUTH_TOKEN="$(generate_auth_token)"
+  fi
+  if [[ -z "$NODE_AUTH_TOKEN" ]]; then
+    NODE_AUTH_TOKEN="$(generate_auth_token)"
+  fi
+  if [[ "$ADMIN_AUTH_TOKEN" == "$NODE_AUTH_TOKEN" ]]; then
+    NODE_AUTH_TOKEN="$(generate_auth_token)"
+  fi
+
+  # 兼容旧脚本：保留 AUTH_TOKEN（默认镜像 admin token）。
+  if [[ -z "$AUTH_TOKEN" ]]; then
+    AUTH_TOKEN="$ADMIN_AUTH_TOKEN"
+  fi
 }
 
 normalize_loaded_values() {
@@ -643,6 +703,7 @@ normalize_loaded_values() {
   if ! [[ "$BOT_MUTATION_COOLDOWN" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
     BOT_MUTATION_COOLDOWN="1"
   fi
+  ensure_split_auth_tokens
   CONTROLLER_URL="$(normalize_input_url "$CONTROLLER_URL" "http")"
   if [[ -n "$CONTROLLER_PUBLIC_URL" ]]; then
     local public_scheme
@@ -683,7 +744,8 @@ prompt_env_config() {
   echo "  - ENABLE_HTTPS / HTTPS_DOMAIN：启用 Caddy 自动证书（申请+续期）"
   echo "  - HTTPS_ACME_EMAIL：证书账号邮箱（可选，建议填写）"
   echo "  - CONTROLLER_URL：bot 调用 controller 的地址（通常 127.0.0.1）"
-  echo "  - AUTH_TOKEN：可选；用于保护 controller 接口（除 /health、/sub/*、文档页），默认自动生成随机串（输入 - 可关闭）"
+  echo "  - ADMIN_AUTH_TOKEN/NODE_AUTH_TOKEN：默认自动生成并拆分（管理/节点分离）"
+  echo "  - AUTH_TOKEN：兼容字段（默认镜像 ADMIN_AUTH_TOKEN；输入 - 可同时关闭全部鉴权）"
   echo "  - BOT_TOKEN：建议填写；留空将使用占位值并跳过启动 sb-bot"
   echo "  - ADMIN_CHAT_IDS：可选；用于限制谁可操作 bot"
   echo "  - VIEW/OPS/SUPER_ADMIN_CHAT_IDS：可选；细分只读/运维/超级管理员权限"
@@ -787,9 +849,13 @@ prompt_env_config() {
 
   read -r -p "AUTH_TOKEN（可选；保护 controller 接口；输入 - 可清空关闭鉴权） [${AUTH_TOKEN}]: " input_auth
   if [[ "$input_auth" == "-" ]]; then
+    AUTH_DISABLED_EXPLICIT=1
     AUTH_TOKEN=""
+    ADMIN_AUTH_TOKEN=""
+    NODE_AUTH_TOKEN=""
   else
     AUTH_TOKEN="${input_auth:-$AUTH_TOKEN}"
+    AUTH_DISABLED_EXPLICIT=0
   fi
 
   read -r -p "BOT_TOKEN（建议填写；Telegram 机器人 token，直接回车使用默认占位） [${BOT_TOKEN}]: " input_bot
@@ -971,9 +1037,13 @@ prompt_env_config_quick() {
 
   read -r -p "AUTH_TOKEN（接口鉴权 token，回车使用当前值） [${AUTH_TOKEN}]: " input_auth
   if [[ "$input_auth" == "-" ]]; then
+    AUTH_DISABLED_EXPLICIT=1
     AUTH_TOKEN=""
+    ADMIN_AUTH_TOKEN=""
+    NODE_AUTH_TOKEN=""
   else
     AUTH_TOKEN="${input_auth:-$AUTH_TOKEN}"
+    AUTH_DISABLED_EXPLICIT=0
   fi
 
   if [[ -z "${SECURITY_BLOCK_PROTECTED_IPS:-}" ]]; then
@@ -1025,6 +1095,12 @@ SECURITY_BLOCK_PROTECTED_IPS=${SECURITY_BLOCK_PROTECTED_IPS}
 
 # 轻量鉴权 token（可用逗号分隔做轮换过渡）
 AUTH_TOKEN=${AUTH_TOKEN}
+
+# 管理接口鉴权 token（可用逗号分隔做轮换过渡；优先于 AUTH_TOKEN）
+ADMIN_AUTH_TOKEN=${ADMIN_AUTH_TOKEN}
+
+# 节点接口鉴权 token（可用逗号分隔做轮换过渡；优先于 AUTH_TOKEN）
+NODE_AUTH_TOKEN=${NODE_AUTH_TOKEN}
 
 # Telegram Bot token（必填）
 BOT_TOKEN=${BOT_TOKEN}
@@ -1494,6 +1570,8 @@ run_self_checks() {
   check_env_key "CONTROLLER_PORT"
   check_env_key "CONTROLLER_URL"
   check_env_key "PANEL_BASE_URL"
+  check_env_key "ADMIN_AUTH_TOKEN"
+  check_env_key "NODE_AUTH_TOKEN"
   if is_bot_token_configured "$BOT_TOKEN"; then
     check_ok ".env 参数存在：BOT_TOKEN"
   else
@@ -1541,6 +1619,21 @@ run_self_checks() {
     check_warn "AUTH_TOKEN 强度较弱，建议更新为 16 位以上随机串"
   else
     check_ok "AUTH_TOKEN 已设置且强度正常"
+  fi
+  if [[ -z "$ADMIN_AUTH_TOKEN" ]]; then
+    check_warn "ADMIN_AUTH_TOKEN 为空（管理接口将回退到 AUTH_TOKEN）"
+  else
+    check_ok "ADMIN_AUTH_TOKEN 已设置"
+  fi
+  if [[ -z "$NODE_AUTH_TOKEN" ]]; then
+    check_warn "NODE_AUTH_TOKEN 为空（节点接口将回退到 AUTH_TOKEN）"
+  else
+    check_ok "NODE_AUTH_TOKEN 已设置"
+  fi
+  if [[ -n "$ADMIN_AUTH_TOKEN" && -n "$NODE_AUTH_TOKEN" && "$ADMIN_AUTH_TOKEN" == "$NODE_AUTH_TOKEN" ]]; then
+    check_warn "ADMIN_AUTH_TOKEN 与 NODE_AUTH_TOKEN 相同（未形成鉴权隔离）"
+  else
+    check_ok "ADMIN/NODE token 已拆分"
   fi
 
   if systemctl is-enabled sb-controller >/dev/null 2>&1; then
@@ -1676,6 +1769,9 @@ show_summary() {
   echo "API_RATE_LIMIT_ENABLED: ${API_RATE_LIMIT_ENABLED}"
   echo "API_RATE_LIMIT_WINDOW_SECONDS: ${API_RATE_LIMIT_WINDOW_SECONDS}"
   echo "API_RATE_LIMIT_MAX_REQUESTS: ${API_RATE_LIMIT_MAX_REQUESTS}"
+  echo "ADMIN_AUTH_TOKEN: $( [[ -n "$ADMIN_AUTH_TOKEN" ]] && echo 已配置 || echo 未配置 )"
+  echo "NODE_AUTH_TOKEN: $( [[ -n "$NODE_AUTH_TOKEN" ]] && echo 已配置 || echo 未配置 )"
+  echo "TOKEN拆分状态: $( [[ -n "$ADMIN_AUTH_TOKEN" && -n "$NODE_AUTH_TOKEN" && "$ADMIN_AUTH_TOKEN" != "$NODE_AUTH_TOKEN" ]] && echo 已拆分 || echo 未拆分/兼容模式 )"
   echo "ADMIN_OVERVIEW_CACHE_TTL_SECONDS: ${ADMIN_OVERVIEW_CACHE_TTL_SECONDS}"
   echo "ADMIN_SECURITY_STATUS_CACHE_TTL_SECONDS: ${ADMIN_SECURITY_STATUS_CACHE_TTL_SECONDS}"
   echo "SECURITY_EVENTS_EXCLUDE_LOCAL: ${SECURITY_EVENTS_EXCLUDE_LOCAL}"

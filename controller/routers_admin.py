@@ -48,7 +48,10 @@ from controller.security import (
     TRUST_X_FORWARDED_FOR,
     UNAUTHORIZED_AUDIT_SAMPLE_SECONDS,
     get_admin_auth_tokens,
+    get_admin_auth_token_source,
+    get_node_auth_token_source,
     get_node_auth_tokens,
+    is_auth_token_split_active,
     verify_admin_authorization,
 )
 from controller.settings import (
@@ -522,6 +525,9 @@ def build_security_status_payload(
 ) -> Dict[str, Union[bool, int, List[str]]]:
     admin_auth_tokens = get_admin_auth_tokens()
     node_auth_tokens = get_node_auth_tokens()
+    admin_auth_source = get_admin_auth_token_source()
+    node_auth_source = get_node_auth_token_source()
+    auth_split_active = is_auth_token_split_active()
     auth_tokens = list(admin_auth_tokens)
     for item in node_auth_tokens:
         value = str(item or "").strip()
@@ -555,6 +561,16 @@ def build_security_status_payload(
         warnings.append("ADMIN_AUTH_TOKEN 未设置：管理接口未启用鉴权")
     if not node_auth_tokens:
         warnings.append("NODE_AUTH_TOKEN 未设置：节点接口未启用鉴权")
+    if admin_auth_source == "auth_token":
+        warnings.append("管理鉴权仍在使用 AUTH_TOKEN 兼容模式（建议显式设置 ADMIN_AUTH_TOKEN）")
+    if node_auth_source == "auth_token":
+        warnings.append("节点鉴权仍在使用 AUTH_TOKEN 兼容模式（建议显式设置 NODE_AUTH_TOKEN）")
+    if (
+        admin_auth_tokens
+        and node_auth_tokens
+        and set(admin_auth_tokens) == set(node_auth_tokens)
+    ):
+        warnings.append("ADMIN_AUTH_TOKEN 与 NODE_AUTH_TOKEN 当前等值（建议拆分不同 token）")
     if len(admin_auth_tokens) > 1:
         warnings.append("ADMIN_AUTH_TOKEN 处于多 token 过渡模式（建议迁移完成后移除旧 token）")
     if len(node_auth_tokens) > 1:
@@ -591,8 +607,11 @@ def build_security_status_payload(
         "auth_token_count": len(auth_tokens),
         "admin_auth_enabled": bool(admin_auth_tokens),
         "admin_auth_token_count": len(admin_auth_tokens),
+        "admin_auth_source": admin_auth_source,
         "node_auth_enabled": bool(node_auth_tokens),
         "node_auth_token_count": len(node_auth_tokens),
+        "node_auth_source": node_auth_source,
+        "auth_token_split_active": bool(auth_split_active),
         "weak_auth_token_count": len(weak_token_risks),
         "weak_auth_token_risks": weak_token_risks,
         "controller_port_whitelist": CONTROLLER_PORT_WHITELIST_ITEMS,

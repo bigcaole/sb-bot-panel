@@ -94,6 +94,20 @@ class SecurityTestCase(unittest.TestCase):
         self.assertFalse(security.is_node_agent_auth_path("/nodes/JP1/tasks/create"))
         self.assertFalse(security.is_node_agent_auth_path("/admin/nodes/JP1/sync_preview"))
 
+    def test_auth_token_source_and_split_state(self) -> None:
+        security.AUTH_TOKEN = "legacy-token"
+        security.ADMIN_AUTH_TOKEN = ""
+        security.NODE_AUTH_TOKEN = ""
+        self.assertEqual("auth_token", security.get_admin_auth_token_source())
+        self.assertEqual("auth_token", security.get_node_auth_token_source())
+        self.assertFalse(security.is_auth_token_split_active())
+
+        security.ADMIN_AUTH_TOKEN = "admin-token"
+        security.NODE_AUTH_TOKEN = "node-token"
+        self.assertEqual("admin_auth_token", security.get_admin_auth_token_source())
+        self.assertEqual("node_auth_token", security.get_node_auth_token_source())
+        self.assertTrue(security.is_auth_token_split_active())
+
     def test_check_and_consume_rate_limit_window(self) -> None:
         security.API_RATE_LIMIT_WINDOW_SECONDS = 10
         security.API_RATE_LIMIT_MAX_REQUESTS = 2

@@ -579,6 +579,7 @@ scp root@旧IP:/var/backups/sb-migrate/sb-migrate-xxxx.tar.gz root@新IP:/root/
 - `ADMIN_AUTH_TOKEN=随机长串`（可空；管理接口 token，支持 `new_token,old_token` 过渡轮换）
 - `NODE_AUTH_TOKEN=随机长串`（可空；节点接口 token，支持 `new_token,old_token` 过渡轮换）
 - `AUTH_TOKEN=随机长串`（兼容兜底：当 ADMIN/NODE 未设置时使用；支持 `new_token,old_token`）
+  - 安装脚本默认会自动生成并写入 `ADMIN_AUTH_TOKEN` 与 `NODE_AUTH_TOKEN`（默认拆分）
 - `SUB_LINK_SIGN_KEY=`（可选；设置后可生成带签名订阅链接）
 - `SUB_LINK_REQUIRE_SIGNATURE=0`（可选；1=强制订阅必须带签名）
 - `SUB_LINK_DEFAULT_TTL_SECONDS=604800`（可选；签名默认有效期）
@@ -670,6 +671,7 @@ scp root@旧IP:/var/backups/sb-migrate/sb-migrate-xxxx.tar.gz root@新IP:/root/
 - 节点任务接口的管理侧返回已对敏感字段做脱敏（如 `auth_token`、`Authorization: Bearer ...` 显示为 `***`），避免误泄露；节点拉取任务时仍使用真实值。
 - 安全状态检查：
   - `GET /admin/security/status` 可查看当前鉴权、订阅签名、XFF 信任、限流等配置状态与告警提示
+  - 额外包含 `admin_auth_source/node_auth_source/auth_token_split_active`，可快速判断是否仍在兼容模式
   - 包含 `weak_auth_token_count/weak_auth_token_risks`（不泄露 token 内容）用于提示弱 token 风险
   - `GET /admin/security/events?window_seconds=3600&top=5` 可按窗口查看未授权来源统计（适合观察加固后的实时效果）
   - 可选参数：`include_local=1`（临时包含本机测试来源）

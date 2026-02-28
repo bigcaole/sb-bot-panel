@@ -141,6 +141,34 @@ def get_node_auth_tokens() -> list:
     return _split_auth_tokens(effective)
 
 
+def get_admin_auth_token_source() -> str:
+    if _split_auth_tokens(ADMIN_AUTH_TOKEN):
+        return "admin_auth_token"
+    if _split_auth_tokens(AUTH_TOKEN):
+        return "auth_token"
+    if _split_auth_tokens(NODE_AUTH_TOKEN):
+        return "node_auth_token_fallback"
+    return "none"
+
+
+def get_node_auth_token_source() -> str:
+    if _split_auth_tokens(NODE_AUTH_TOKEN):
+        return "node_auth_token"
+    if _split_auth_tokens(AUTH_TOKEN):
+        return "auth_token"
+    if _split_auth_tokens(ADMIN_AUTH_TOKEN):
+        return "admin_auth_token_fallback"
+    return "none"
+
+
+def is_auth_token_split_active() -> bool:
+    admin_tokens = get_admin_auth_tokens()
+    node_tokens = get_node_auth_tokens()
+    if not admin_tokens or not node_tokens:
+        return False
+    return set(admin_tokens) != set(node_tokens)
+
+
 def get_auth_tokens() -> list:
     # Backward-compatible alias for existing call sites/tests.
     return get_admin_auth_tokens()
