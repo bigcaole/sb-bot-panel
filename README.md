@@ -580,7 +580,7 @@ scp root@旧IP:/var/backups/sb-migrate/sb-migrate-xxxx.tar.gz root@新IP:/root/
 - `SUB_LINK_SIGN_KEY=`（可选；设置后可生成带签名订阅链接）
 - `SUB_LINK_REQUIRE_SIGNATURE=0`（可选；1=强制订阅必须带签名）
 - `SUB_LINK_DEFAULT_TTL_SECONDS=604800`（可选；签名默认有效期）
-- `API_RATE_LIMIT_ENABLED=0`（可选；controller 轻量限流开关）
+- `API_RATE_LIMIT_ENABLED=1`（可选；controller 轻量限流开关，默认开启）
 - `API_RATE_LIMIT_WINDOW_SECONDS=60`（可选；限流窗口）
 - `API_RATE_LIMIT_MAX_REQUESTS=120`（可选；单个 IP+路径窗口内请求上限）
 - `RATE_LIMIT_STATE_MAX_KEYS=20000`（可选；轻量限流内存状态键数上限，防止极端扫描导致内存持续增长）
@@ -660,7 +660,7 @@ scp root@旧IP:/var/backups/sb-migrate/sb-migrate-xxxx.tar.gz root@新IP:/root/
 - 支持订阅签名：
   - 配置 `SUB_LINK_SIGN_KEY` 后，可通过 `/admin/sub/sign/{user_code}` 生成带签名 URL
   - 开启 `SUB_LINK_REQUIRE_SIGNATURE=1` 后，`/sub/*` 必须携带 `exp` + `sig`
-- 支持轻量限流（默认关闭）：
+- 支持轻量限流（默认开启）：
   - `API_RATE_LIMIT_ENABLED=1` 后，会对高风险管理路径按 IP+路径限流，超限返回 429
 - 节点任务接口的管理侧返回已对敏感字段做脱敏（如 `auth_token`、`Authorization: Bearer ...` 显示为 `***`），避免误泄露；节点拉取任务时仍使用真实值。
 - 安全状态检查：

@@ -67,7 +67,7 @@ NODE_TASK_MAX_PENDING_PER_NODE="50"
 SUB_LINK_SIGN_KEY=""
 SUB_LINK_REQUIRE_SIGNATURE="0"
 SUB_LINK_DEFAULT_TTL_SECONDS="604800"
-API_RATE_LIMIT_ENABLED="0"
+API_RATE_LIMIT_ENABLED="1"
 API_RATE_LIMIT_WINDOW_SECONDS="60"
 API_RATE_LIMIT_MAX_REQUESTS="120"
 SECURITY_EVENTS_EXCLUDE_LOCAL="1"
@@ -526,7 +526,7 @@ load_existing_env_defaults() {
   SUB_LINK_SIGN_KEY="${old_sub_link_sign_key:-}"
   SUB_LINK_REQUIRE_SIGNATURE="${old_sub_link_require:-0}"
   SUB_LINK_DEFAULT_TTL_SECONDS="${old_sub_link_ttl:-604800}"
-  API_RATE_LIMIT_ENABLED="${old_rate_limit_enabled:-0}"
+  API_RATE_LIMIT_ENABLED="${old_rate_limit_enabled:-1}"
   API_RATE_LIMIT_WINDOW_SECONDS="${old_rate_limit_window:-60}"
   API_RATE_LIMIT_MAX_REQUESTS="${old_rate_limit_max:-120}"
   SECURITY_EVENTS_EXCLUDE_LOCAL="${old_security_events_exclude_local:-1}"
@@ -571,7 +571,7 @@ normalize_loaded_values() {
     SUB_LINK_DEFAULT_TTL_SECONDS="604800"
   fi
   if ! [[ "$API_RATE_LIMIT_ENABLED" =~ ^[01]$ ]]; then
-    API_RATE_LIMIT_ENABLED="0"
+    API_RATE_LIMIT_ENABLED="1"
   fi
   if ! [[ "$API_RATE_LIMIT_WINDOW_SECONDS" =~ ^[0-9]+$ ]] || (( API_RATE_LIMIT_WINDOW_SECONDS < 1 )); then
     API_RATE_LIMIT_WINDOW_SECONDS="60"
