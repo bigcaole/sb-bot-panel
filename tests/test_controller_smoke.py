@@ -54,6 +54,13 @@ class ControllerSmokeTestCase(unittest.TestCase):
             "routers_admin._SECURITY_STATUS_CACHE_TTL_SECONDS": admin_router_module._SECURITY_STATUS_CACHE_TTL_SECONDS,
             "routers_admin._SECURITY_STATUS_CACHE_EXPIRE_AT": admin_router_module._SECURITY_STATUS_CACHE_EXPIRE_AT,
             "routers_admin._SECURITY_STATUS_CACHE_PAYLOAD": admin_router_module._SECURITY_STATUS_CACHE_PAYLOAD,
+            "routers_admin._SECURITY_EVENTS_CACHE_TTL_SECONDS": admin_router_module._SECURITY_EVENTS_CACHE_TTL_SECONDS,
+            "routers_admin._SECURITY_EVENTS_CACHE_EXPIRE_AT_BY_KEY": dict(
+                admin_router_module._SECURITY_EVENTS_CACHE_EXPIRE_AT_BY_KEY
+            ),
+            "routers_admin._SECURITY_EVENTS_CACHE_PAYLOAD_BY_KEY": dict(
+                admin_router_module._SECURITY_EVENTS_CACHE_PAYLOAD_BY_KEY
+            ),
             "routers_admin.export_admin_ai_context_snapshot": admin_router_module.export_admin_ai_context_snapshot,
             "routers_admin.export_admin_ops_snapshot": admin_router_module.export_admin_ops_snapshot,
             "routers_nodes.NODE_TASK_MAX_PENDING_PER_NODE": nodes_router_module.NODE_TASK_MAX_PENDING_PER_NODE,
@@ -91,6 +98,9 @@ class ControllerSmokeTestCase(unittest.TestCase):
         admin_router_module._SECURITY_STATUS_CACHE_TTL_SECONDS = 30
         admin_router_module._SECURITY_STATUS_CACHE_EXPIRE_AT = 0
         admin_router_module._SECURITY_STATUS_CACHE_PAYLOAD = None
+        admin_router_module._SECURITY_EVENTS_CACHE_TTL_SECONDS = 30
+        admin_router_module._SECURITY_EVENTS_CACHE_EXPIRE_AT_BY_KEY = {}
+        admin_router_module._SECURITY_EVENTS_CACHE_PAYLOAD_BY_KEY = {}
         def _fake_ai_context_export(output_path: Path):
             output_path.write_text("# smoke export\n", encoding="utf-8")
             return True, ""
@@ -238,6 +248,15 @@ class ControllerSmokeTestCase(unittest.TestCase):
         admin_router_module._SECURITY_STATUS_CACHE_PAYLOAD = self._old_values[
             "routers_admin._SECURITY_STATUS_CACHE_PAYLOAD"
         ]
+        admin_router_module._SECURITY_EVENTS_CACHE_TTL_SECONDS = self._old_values[
+            "routers_admin._SECURITY_EVENTS_CACHE_TTL_SECONDS"
+        ]
+        admin_router_module._SECURITY_EVENTS_CACHE_EXPIRE_AT_BY_KEY = dict(
+            self._old_values["routers_admin._SECURITY_EVENTS_CACHE_EXPIRE_AT_BY_KEY"]
+        )
+        admin_router_module._SECURITY_EVENTS_CACHE_PAYLOAD_BY_KEY = dict(
+            self._old_values["routers_admin._SECURITY_EVENTS_CACHE_PAYLOAD_BY_KEY"]
+        )
         admin_router_module.export_admin_ai_context_snapshot = self._old_values[
             "routers_admin.export_admin_ai_context_snapshot"
         ]
@@ -342,6 +361,7 @@ class ControllerSmokeTestCase(unittest.TestCase):
             self.assertIn("api_docs_enabled", admin_sec.json())
             self.assertIn("admin_overview_cache_ttl_seconds", admin_sec.json())
             self.assertIn("admin_security_status_cache_ttl_seconds", admin_sec.json())
+            self.assertIn("admin_security_events_cache_ttl_seconds", admin_sec.json())
             self.assertIn("weak_auth_token_count", admin_sec.json())
             self.assertIn("weak_auth_token_risks", admin_sec.json())
             self.assertIn("admin_auth_source", admin_sec.json())
@@ -848,6 +868,101 @@ class ControllerSmokeTestCase(unittest.TestCase):
             admin_router_module.build_security_status_payload = original_builder
             admin_router_module._SECURITY_STATUS_CACHE_EXPIRE_AT = 0
             admin_router_module._SECURITY_STATUS_CACHE_PAYLOAD = None
+
+    def test_security_events_cache_reuses_payload_within_ttl(self) -> None:
+        original_builder = admin_router_module.build_unauthorized_events_snapshot
+        call_counter = {"count": 0}
+
+        def wrapped_builder(now_ts: int, window_seconds: int, top_limit: int, include_local=None, conn=None):
+            call_counter["count"] += 1
+            return original_builder(
+                now_ts=now_ts,
+                window_seconds=window_seconds,
+                top_limit=top_limit,
+                include_local=include_local,
+                conn=conn,
+            )
+
+        admin_router_module._SECURITY_EVENTS_CACHE_TTL_SECONDS = 30
+        admin_router_module._SECURITY_EVENTS_CACHE_EXPIRE_AT_BY_KEY = {}
+        admin_router_module._SECURITY_EVENTS_CACHE_PAYLOAD_BY_KEY = {}
+        admin_router_module.build_unauthorized_events_snapshot = wrapped_builder
+        try:
+            with TestClient(app_module.app) as client:
+                first = client.get(
+                    "/admin/security/events?window_seconds=3600&top=3",
+                    headers=self._auth_header(),
+                )
+                self.assertEqual(200, first.status_code)
+                second = client.get(
+                    "/admin/security/events?window_seconds=3600&top=3",
+                    headers=self._auth_header(),
+                )
+                self.assertEqual(200, second.status_code)
+                first_count = int(call_counter["count"])
+                self.assertGreaterEqual(first_count, 2)
+
+                third = client.get(
+                    "/admin/security/events?window_seconds=3600&top=3&include_local=1",
+                    headers=self._auth_header(),
+                )
+                self.assertEqual(200, third.status_code)
+                self.assertGreater(int(call_counter["count"]), first_count)
+        finally:
+            admin_router_module.build_unauthorized_events_snapshot = original_builder
+            admin_router_module._SECURITY_EVENTS_CACHE_EXPIRE_AT_BY_KEY = {}
+            admin_router_module._SECURITY_EVENTS_CACHE_PAYLOAD_BY_KEY = {}
+
+    def test_security_events_cache_invalidated_after_block_mutation(self) -> None:
+        original_builder = admin_router_module.build_unauthorized_events_snapshot
+        call_counter = {"count": 0}
+
+        def wrapped_builder(now_ts: int, window_seconds: int, top_limit: int, include_local=None, conn=None):
+            call_counter["count"] += 1
+            return original_builder(
+                now_ts=now_ts,
+                window_seconds=window_seconds,
+                top_limit=top_limit,
+                include_local=include_local,
+                conn=conn,
+            )
+
+        admin_router_module._SECURITY_EVENTS_CACHE_TTL_SECONDS = 30
+        admin_router_module._SECURITY_EVENTS_CACHE_EXPIRE_AT_BY_KEY = {}
+        admin_router_module._SECURITY_EVENTS_CACHE_PAYLOAD_BY_KEY = {}
+        admin_router_module.build_unauthorized_events_snapshot = wrapped_builder
+        try:
+            with TestClient(app_module.app) as client:
+                first = client.get(
+                    "/admin/security/events?window_seconds=3600&top=3",
+                    headers=self._auth_header(),
+                )
+                self.assertEqual(200, first.status_code)
+                second = client.get(
+                    "/admin/security/events?window_seconds=3600&top=3",
+                    headers=self._auth_header(),
+                )
+                self.assertEqual(200, second.status_code)
+                cached_count = int(call_counter["count"])
+                self.assertGreaterEqual(cached_count, 2)
+
+                block_resp = client.post(
+                    "/admin/security/block_ip",
+                    headers=self._auth_header(),
+                    json={"source_ip": "198.51.100.78", "duration_seconds": 3600, "reason": "cache-test"},
+                )
+                self.assertEqual(200, block_resp.status_code)
+
+                third = client.get(
+                    "/admin/security/events?window_seconds=3600&top=3",
+                    headers=self._auth_header(),
+                )
+                self.assertEqual(200, third.status_code)
+                self.assertGreater(int(call_counter["count"]), cached_count)
+        finally:
+            admin_router_module.build_unauthorized_events_snapshot = original_builder
+            admin_router_module._SECURITY_EVENTS_CACHE_EXPIRE_AT_BY_KEY = {}
+            admin_router_module._SECURITY_EVENTS_CACHE_PAYLOAD_BY_KEY = {}
 
     def test_subscription_sign_and_access_smoke(self) -> None:
         with TestClient(app_module.app) as client:

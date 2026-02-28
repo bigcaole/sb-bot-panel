@@ -60,6 +60,7 @@ from controller.settings import (
     ADMIN_OVERVIEW_CACHE_TTL_SECONDS,
     ADMIN_API_WHITELIST_ITEMS,
     ADMIN_API_WHITELIST_SOURCE,
+    ADMIN_SECURITY_EVENTS_CACHE_TTL_SECONDS,
     ADMIN_SECURITY_STATUS_CACHE_TTL_SECONDS,
     AUDIT_LOG_CLEANUP_BATCH_SIZE,
     AUDIT_LOG_CLEANUP_INTERVAL_SECONDS,
@@ -121,6 +122,12 @@ _SECURITY_STATUS_CACHE_TTL_SECONDS = int(ADMIN_SECURITY_STATUS_CACHE_TTL_SECONDS
 _SECURITY_STATUS_CACHE_EXPIRE_AT = 0
 _SECURITY_STATUS_CACHE_PAYLOAD: Optional[Dict[str, Union[bool, int, List[str]]]] = None
 _SECURITY_STATUS_CACHE_LOCK = Lock()
+_SECURITY_EVENTS_CACHE_TTL_SECONDS = int(ADMIN_SECURITY_EVENTS_CACHE_TTL_SECONDS)
+_SECURITY_EVENTS_CACHE_EXPIRE_AT_BY_KEY: Dict[str, int] = {}
+_SECURITY_EVENTS_CACHE_PAYLOAD_BY_KEY: Dict[
+    str, Dict[str, Union[int, bool, List[Dict[str, Union[int, str]]]]]
+] = {}
+_SECURITY_EVENTS_CACHE_LOCK = Lock()
 
 
 def invalidate_admin_snapshots_cache() -> None:
@@ -128,10 +135,14 @@ def invalidate_admin_snapshots_cache() -> None:
     global _ADMIN_OVERVIEW_CACHE_PAYLOAD
     global _SECURITY_STATUS_CACHE_EXPIRE_AT
     global _SECURITY_STATUS_CACHE_PAYLOAD
+    global _SECURITY_EVENTS_CACHE_EXPIRE_AT_BY_KEY
+    global _SECURITY_EVENTS_CACHE_PAYLOAD_BY_KEY
     _ADMIN_OVERVIEW_CACHE_EXPIRE_AT = 0
     _ADMIN_OVERVIEW_CACHE_PAYLOAD = None
     _SECURITY_STATUS_CACHE_EXPIRE_AT = 0
     _SECURITY_STATUS_CACHE_PAYLOAD = None
+    _SECURITY_EVENTS_CACHE_EXPIRE_AT_BY_KEY = {}
+    _SECURITY_EVENTS_CACHE_PAYLOAD_BY_KEY = {}
 
 
 def _normalize_controller_url(raw_url: str) -> str:
@@ -468,6 +479,31 @@ def build_unauthorized_events_snapshot(
     if top_limit > 20:
         top_limit = 20
 
+    return _build_unauthorized_events_snapshot_normalized(
+        now_ts=now_ts,
+        window_seconds=int(window_seconds),
+        top_limit=int(top_limit),
+        include_local=include_local,
+        conn=conn,
+    )
+
+
+def _build_unauthorized_events_snapshot_normalized(
+    now_ts: int,
+    window_seconds: int,
+    top_limit: int,
+    include_local: Optional[bool] = None,
+    conn: Optional[sqlite3.Connection] = None,
+) -> Dict[str, Union[int, List[Dict[str, Union[int, str]]]]]:
+    if window_seconds < 60:
+        window_seconds = 60
+    if window_seconds > 7 * 86400:
+        window_seconds = 7 * 86400
+    if top_limit < 1:
+        top_limit = 1
+    if top_limit > 20:
+        top_limit = 20
+
     include_local_effective = (
         bool(include_local) if include_local is not None else (not SECURITY_EVENTS_EXCLUDE_LOCAL)
     )
@@ -523,6 +559,85 @@ def build_unauthorized_events_snapshot(
         "unauthorized": int(unauthorized_count),
         "top_unauthorized_ips": top_items,
     }
+
+
+def get_unauthorized_events_snapshot_cached(
+    now_ts: int,
+    window_seconds: int,
+    top_limit: int,
+    include_local: Optional[bool] = None,
+) -> Dict[str, Union[int, bool, List[Dict[str, Union[int, str]]]]]:
+    global _SECURITY_EVENTS_CACHE_EXPIRE_AT_BY_KEY
+    global _SECURITY_EVENTS_CACHE_PAYLOAD_BY_KEY
+
+    normalized_window = int(window_seconds)
+    if normalized_window < 60:
+        normalized_window = 60
+    if normalized_window > 7 * 86400:
+        normalized_window = 7 * 86400
+
+    normalized_top = int(top_limit)
+    if normalized_top < 1:
+        normalized_top = 1
+    if normalized_top > 20:
+        normalized_top = 20
+
+    cache_ttl = int(_SECURITY_EVENTS_CACHE_TTL_SECONDS)
+    if cache_ttl <= 0:
+        return build_unauthorized_events_snapshot(
+            now_ts=now_ts,
+            window_seconds=normalized_window,
+            top_limit=normalized_top,
+            include_local=include_local,
+        )
+
+    include_local_marker = "auto"
+    if include_local is True:
+        include_local_marker = "1"
+    elif include_local is False:
+        include_local_marker = "0"
+    cache_key = "{0}:{1}:{2}".format(normalized_window, normalized_top, include_local_marker)
+
+    cached_expire_at = int(_SECURITY_EVENTS_CACHE_EXPIRE_AT_BY_KEY.get(cache_key, 0) or 0)
+    cached_payload = _SECURITY_EVENTS_CACHE_PAYLOAD_BY_KEY.get(cache_key)
+    if cached_payload is not None and now_ts < cached_expire_at:
+        return cached_payload
+
+    with _SECURITY_EVENTS_CACHE_LOCK:
+        cached_expire_at = int(_SECURITY_EVENTS_CACHE_EXPIRE_AT_BY_KEY.get(cache_key, 0) or 0)
+        cached_payload = _SECURITY_EVENTS_CACHE_PAYLOAD_BY_KEY.get(cache_key)
+        if cached_payload is not None and now_ts < cached_expire_at:
+            return cached_payload
+
+        fresh_payload = build_unauthorized_events_snapshot(
+            now_ts=now_ts,
+            window_seconds=normalized_window,
+            top_limit=normalized_top,
+            include_local=include_local,
+        )
+        _SECURITY_EVENTS_CACHE_PAYLOAD_BY_KEY[cache_key] = fresh_payload
+        _SECURITY_EVENTS_CACHE_EXPIRE_AT_BY_KEY[cache_key] = int(now_ts + cache_ttl)
+
+        # 参数组合数理论上很小，仍限制缓存项避免异常请求造成无界增长。
+        if len(_SECURITY_EVENTS_CACHE_PAYLOAD_BY_KEY) > 64:
+            expired_keys = [
+                key
+                for key, expire_at in _SECURITY_EVENTS_CACHE_EXPIRE_AT_BY_KEY.items()
+                if int(expire_at or 0) <= now_ts
+            ]
+            for key in expired_keys:
+                _SECURITY_EVENTS_CACHE_EXPIRE_AT_BY_KEY.pop(key, None)
+                _SECURITY_EVENTS_CACHE_PAYLOAD_BY_KEY.pop(key, None)
+            if len(_SECURITY_EVENTS_CACHE_PAYLOAD_BY_KEY) > 64:
+                sorted_keys = sorted(
+                    _SECURITY_EVENTS_CACHE_EXPIRE_AT_BY_KEY.keys(),
+                    key=lambda item: int(_SECURITY_EVENTS_CACHE_EXPIRE_AT_BY_KEY.get(item, 0) or 0),
+                )
+                for key in sorted_keys[: len(_SECURITY_EVENTS_CACHE_PAYLOAD_BY_KEY) - 64]:
+                    _SECURITY_EVENTS_CACHE_EXPIRE_AT_BY_KEY.pop(key, None)
+                    _SECURITY_EVENTS_CACHE_PAYLOAD_BY_KEY.pop(key, None)
+
+        return fresh_payload
 
 
 def build_security_status_payload(
@@ -651,6 +766,7 @@ def build_security_status_payload(
         "api_rate_limit_max_requests": API_RATE_LIMIT_MAX_REQUESTS,
         "admin_overview_cache_ttl_seconds": int(_ADMIN_OVERVIEW_CACHE_TTL_SECONDS),
         "admin_security_status_cache_ttl_seconds": int(_SECURITY_STATUS_CACHE_TTL_SECONDS),
+        "admin_security_events_cache_ttl_seconds": int(_SECURITY_EVENTS_CACHE_TTL_SECONDS),
         "api_docs_enabled": bool(API_DOCS_ENABLED),
         "unauthorized_audit_sample_seconds": UNAUTHORIZED_AUDIT_SAMPLE_SECONDS,
         "unauthorized_audit_sampling_enabled": bool(UNAUTHORIZED_AUDIT_SAMPLE_SECONDS > 0),
@@ -2377,7 +2493,7 @@ def get_admin_security_events(
         if int(include_local) not in (0, 1):
             raise HTTPException(status_code=400, detail="include_local must be 0 or 1")
         include_local_flag = bool(int(include_local))
-    return build_unauthorized_events_snapshot(
+    return get_unauthorized_events_snapshot_cached(
         now_ts=int(time.time()),
         window_seconds=int(window_seconds or 0),
         top_limit=int(top or 0),
