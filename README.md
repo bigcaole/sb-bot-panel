@@ -17,6 +17,10 @@
   - 证书状态检查脚本（供菜单与 timer 调用）。
 - `scripts/ops_snapshot.sh`
   - 节点运维快照导出脚本（汇总服务状态、联通检查、防火墙与配置摘要）。
+- `scripts/ai_context_export.sh`
+  - 节点 AI 诊断包导出脚本（固定格式，可直接粘贴给任意 AI）。
+- `scripts/admin/ai_context_export.sh`
+  - 管理端 AI 诊断包导出脚本（固定格式，可直接粘贴给任意 AI）。
 
 ## 新手部署总览（先看这里）
 
@@ -140,16 +144,18 @@ sudo bash /path/to/sb-bot-panel/scripts/menu.sh
 18. 恢复 SSH 密码登录（应急）
 【系统级操作（谨慎）】
 19. 节点运维快照（导出关键状态）
-20. 更新同步（保留原配置，自动 `git pull`，无交互）
-21. 卸载
-22. 退出
+20. AI诊断包导出（可粘贴给任意AI）
+21. 更新同步（保留原配置，自动 `git pull`，无交互）
+22. 卸载
+23. 退出
 
 说明：
 
-- 首次安装后，后续更新建议直接用菜单 `20`，不会重复询问端口/域名等参数。
+- 首次安装后，后续更新建议直接用菜单 `21`，不会重复询问端口/域名等参数。
 - 需要改参数时用菜单 `1`。
 - 安全建议：先用菜单 `14` 生成并部署公钥，再用菜单 `15` 做只读安全检查；可先执行菜单 `16` 做半自动修复，最后再执行菜单 `17` 启用仅密钥登录。
 - 排障建议先执行菜单 `19` 导出节点运维快照，再贴快照内容定位问题。
+- 若需要跨 AI 对话排障，建议直接执行菜单 `20` 导出标准 AI 诊断包并整体粘贴。
 - 若你在本地电脑生成 SSH 密钥，请把公钥上传到节点服务器：
   - `root` 用户路径：`/root/.ssh/authorized_keys`
   - 普通用户路径：`/home/<用户名>/.ssh/authorized_keys`
@@ -413,10 +419,11 @@ sb-admin
 18. SSH 安全状态总览（只读）
 19. SSH 一键安全修复（半自动）
 20. 运维快照（导出关键状态）
+21. AI诊断包导出（可粘贴给任意AI）
 【系统级操作（谨慎）】
-21. 安装/更新（git pull + 依赖 + venv + 重启）
-22. 卸载
-23. 退出
+22. 安装/更新（git pull + 依赖 + venv + 重启）
+23. 卸载
+24. 退出
 
 说明：菜单 `14` 支持两类同步：  
 1) 默认参数同步（`/admin/nodes/sync_agent_defaults`）  
@@ -441,6 +448,22 @@ bash /root/sb-bot-panel/scripts/admin/ops_snapshot.sh
 ```
 
 默认输出目录：`/var/backups/sb-controller/ops-snapshots/`
+
+AI 诊断包导出（管理服务器，可直接粘贴给任意 AI）：
+
+```bash
+bash /root/sb-bot-panel/scripts/admin/ai_context_export.sh
+```
+
+默认输出目录：`/var/backups/sb-controller/ai-context/`
+
+AI 诊断包导出（节点服务器，可直接粘贴给任意 AI）：
+
+```bash
+bash /root/sb-bot-panel/scripts/ai_context_export.sh
+```
+
+默认输出目录：`/var/backups/sb-agent/ai-context/`
 
 说明：
 

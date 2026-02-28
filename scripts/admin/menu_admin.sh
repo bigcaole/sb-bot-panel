@@ -19,6 +19,7 @@ HARDEN_SCRIPT="${PROJECT_DIR}/scripts/admin/harden_security.sh"
 TOKEN_COLLAPSE_SCRIPT="${PROJECT_DIR}/scripts/admin/auth_token_collapse.sh"
 LOG_ARCHIVE_SCRIPT="${PROJECT_DIR}/scripts/admin/log_archive.sh"
 OPS_SNAPSHOT_SCRIPT="${PROJECT_DIR}/scripts/admin/ops_snapshot.sh"
+AI_CONTEXT_SCRIPT="${PROJECT_DIR}/scripts/admin/ai_context_export.sh"
 ADMIN_SCRIPT_ACTOR="sb-admin"
 
 msg() { echo -e "\033[1;32m[信息]\033[0m $*"; }
@@ -840,11 +841,12 @@ show_menu() {
 18. SSH 安全状态总览（只读）
 19. SSH 一键安全修复（半自动）
 20. 运维快照（导出关键状态）
+21. AI诊断包导出（可粘贴给任意AI）
 
 【系统级操作（谨慎）】
-21. 安装/更新（git pull + 依赖 + venv + 重启）
-22. 卸载
-23. 退出
+22. 安装/更新（git pull + 依赖 + venv + 重启）
+23. 卸载
+24. 退出
 ========================================
 EOF
 }
@@ -985,7 +987,7 @@ main() {
 
   while true; do
     show_menu
-    read -r -p "请输入选项 [1-23]: " action
+    read -r -p "请输入选项 [1-24]: " action
     case "$action" in
       1)
         configure_only
@@ -1111,6 +1113,14 @@ main() {
         pause
         ;;
       21)
+        if [[ -f "$AI_CONTEXT_SCRIPT" ]]; then
+          bash "$AI_CONTEXT_SCRIPT"
+        else
+          err "未找到 AI 诊断包脚本: $AI_CONTEXT_SCRIPT"
+        fi
+        pause
+        ;;
+      22)
         if confirm_action "确认执行安装/更新？" "N"; then
           install_or_update
         else
@@ -1118,16 +1128,16 @@ main() {
         fi
         pause
         ;;
-      22)
+      23)
         do_uninstall
         pause
         ;;
-      23)
+      24)
         msg "已退出。"
         exit 0
         ;;
       *)
-        warn "无效选项，请输入 1-23。"
+        warn "无效选项，请输入 1-24。"
         pause
         ;;
     esac

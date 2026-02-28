@@ -6,6 +6,7 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 INSTALL_SCRIPT="$ROOT_DIR/scripts/install.sh"
 LOCAL_CERT_CHECK_SCRIPT="$ROOT_DIR/scripts/sb_cert_check.sh"
 OPS_SNAPSHOT_SCRIPT="$ROOT_DIR/scripts/ops_snapshot.sh"
+AI_CONTEXT_SCRIPT="$ROOT_DIR/scripts/ai_context_export.sh"
 SYSTEM_CERT_CHECK_SCRIPT="/usr/local/bin/sb-cert-check.sh"
 
 AGENT_SERVICE="sb-agent"
@@ -880,9 +881,10 @@ show_menu() {
   echo ""
   echo "【系统级操作（谨慎）】"
   echo "19) 节点运维快照（导出关键状态）"
-  echo "20) 更新同步（保留原配置，自动 git pull）"
-  echo "21) 卸载"
-  echo "22) 退出"
+  echo "20) AI诊断包导出（可粘贴给任意AI）"
+  echo "21) 更新同步（保留原配置，自动 git pull）"
+  echo "22) 卸载"
+  echo "23) 退出"
   echo "========================================"
 }
 
@@ -890,7 +892,7 @@ main() {
   require_root
   while true; do
     show_menu
-    read -r -p "请选择操作 [1-22]: " choice
+    read -r -p "请选择操作 [1-23]: " choice
     case "$choice" in
       1)
         run_reconfigure
@@ -976,6 +978,14 @@ main() {
         pause
         ;;
       20)
+        if [[ -f "$AI_CONTEXT_SCRIPT" ]]; then
+          bash "$AI_CONTEXT_SCRIPT"
+        else
+          err "未找到 AI 诊断包脚本: $AI_CONTEXT_SCRIPT"
+        fi
+        pause
+        ;;
+      21)
         if confirm_action "确认执行更新同步？" "N"; then
           run_install
         else
@@ -983,16 +993,16 @@ main() {
         fi
         pause
         ;;
-      21)
+      22)
         uninstall_all
         pause
         ;;
-      22)
+      23)
         msg "已退出。"
         exit 0
         ;;
       *)
-        warn "无效选项，请输入 1-22。"
+        warn "无效选项，请输入 1-23。"
         pause
         ;;
     esac
