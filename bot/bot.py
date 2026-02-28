@@ -5550,6 +5550,7 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     remember_known_chat(update, context)
+    clear_all_wizard_state(context)
     if not is_admin_chat(update):
         await deny_non_admin(update)
         return
@@ -5558,6 +5559,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     remember_known_chat(update, context)
+    clear_all_wizard_state(context)
     if not is_admin_chat(update):
         await deny_non_admin(update)
         return
@@ -5581,6 +5583,7 @@ def clear_all_wizard_state(context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data.pop(USER_NODES_WIZARD_KEY, None)
     context.user_data.pop(NODE_EDIT_KEY, None)
     context.user_data.pop(NODE_REALITY_KEY, None)
+    context.user_data.pop(NODE_OPS_CONFIG_KEY, None)
     pop_user_speed_pending(context)
 
 
@@ -7249,10 +7252,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await query.answer()
 
     if callback_data == "menu:main":
+        clear_all_wizard_state(context)
         await query.edit_message_text("主菜单", reply_markup=build_main_menu())
         return
 
     if callback_data.startswith("menu:"):
+        clear_all_wizard_state(context)
         submenu_key = callback_data.split(":", maxsplit=1)[1]
         submenu = SUBMENUS.get(submenu_key)
         if not submenu:

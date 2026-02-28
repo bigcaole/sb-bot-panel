@@ -59,6 +59,43 @@ def extract_handle_callback_dispatch(tree: ast.AST) -> Tuple[Set[str], Set[str]]
     return exact, prefixes
 
 
+def extract_function_calls(tree: ast.AST, function_name: str) -> Set[str]:
+    calls: Set[str] = set()
+    target = None
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == function_name:
+            target = node
+            break
+    if target is None:
+        return calls
+    for node in ast.walk(target):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            calls.add(node.func.id)
+    return calls
+
+
+def extract_clear_all_wizard_pop_keys(tree: ast.AST) -> Set[str]:
+    keys: Set[str] = set()
+    target = None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "clear_all_wizard_state":
+            target = node
+            break
+    if target is None:
+        return keys
+    for node in ast.walk(target):
+        if not isinstance(node, ast.Call):
+            continue
+        if not (isinstance(node.func, ast.Attribute) and node.func.attr == "pop"):
+            continue
+        if not node.args:
+            continue
+        first_arg = node.args[0]
+        if isinstance(first_arg, ast.Name):
+            keys.add(first_arg.id)
+    return keys
+
+
 class BotDispatchContractTestCase(unittest.TestCase):
     def setUp(self) -> None:
         source = BOT_FILE.read_text(encoding="utf-8")
@@ -98,6 +135,16 @@ class BotDispatchContractTestCase(unittest.TestCase):
         }
         for token in required_prefixes:
             self.assertIn(token, prefixes)
+
+    def test_start_and_menu_clear_state_before_render(self) -> None:
+        start_calls = extract_function_calls(self._tree, "start")
+        menu_calls = extract_function_calls(self._tree, "menu")
+        self.assertIn("clear_all_wizard_state", start_calls)
+        self.assertIn("clear_all_wizard_state", menu_calls)
+
+    def test_clear_state_covers_node_ops_config(self) -> None:
+        pop_keys = extract_clear_all_wizard_pop_keys(self._tree)
+        self.assertIn("NODE_OPS_CONFIG_KEY", pop_keys)
 
 
 if __name__ == "__main__":
