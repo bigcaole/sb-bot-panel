@@ -5841,12 +5841,47 @@ async def nodes_create_confirm(
         context.user_data.pop(NODES_WIZARD_KEY, None)
         return ConversationHandler.END
 
+    created_node_code = str(result.get("node_code", payload["node_code"]))
+    node_detail, node_detail_error, _ = await controller_request("GET", f"/nodes/{created_node_code}")
+    readiness_lines = []
+    if isinstance(node_detail, dict) and not node_detail_error:
+        supports_reality = int(node_detail.get("supports_reality", 1) or 0) == 1
+        supports_tuic = int(node_detail.get("supports_tuic", 1) or 0) == 1
+
+        agent_ip_value = str(node_detail.get("agent_ip") or "").strip()
+        if agent_ip_value:
+            readiness_lines.append("[OK] 已设置节点来源IP白名单")
+        else:
+            readiness_lines.append("[WARN] 未设置节点来源IP白名单")
+
+        if supports_reality:
+            has_reality_sni = bool(str(node_detail.get("reality_server_name") or "").strip())
+            has_reality_pub = bool(str(node_detail.get("reality_public_key") or "").strip())
+            has_reality_sid = bool(str(node_detail.get("reality_short_id") or "").strip())
+            if has_reality_sni and has_reality_pub and has_reality_sid:
+                readiness_lines.append("[OK] REALITY 参数完整（可生成 vless+reality）")
+            else:
+                readiness_lines.append("[WARN] REALITY 参数不完整（vless+reality 会被跳过）")
+
+        if supports_tuic:
+            has_tuic_sni = bool(str(node_detail.get("tuic_server_name") or "").strip())
+            if has_tuic_sni:
+                readiness_lines.append("[OK] TUIC 证书域名已设置")
+            else:
+                readiness_lines.append("[WARN] TUIC 证书域名未设置（将回退 host）")
+    elif node_detail_error:
+        readiness_lines.append(f"[WARN] 就绪诊断读取失败：{localize_controller_error(node_detail_error)}")
+
+    readiness_text = ""
+    if readiness_lines:
+        readiness_text = "\n\n就绪诊断：\n" + "\n".join(readiness_lines)
+
     reality_text = result.get("reality_server_name") or "未设置"
     await edit_or_reply_with_auto_clear(
         query,
         context,
         "创建节点成功\n\n"
-        f"节点代码：{result.get('node_code', payload['node_code'])}\n"
+        f"节点代码：{created_node_code}\n"
         f"地区：{result.get('region', payload['region'])}\n"
         f"主机：{result.get('host', payload['host'])}\n"
         f"节点来源IP白名单：{result.get('agent_ip', payload['agent_ip'])}\n"
@@ -5856,7 +5891,8 @@ async def nodes_create_confirm(
         f"状态：{'启用' if int(result.get('enabled', 1)) == 1 else '禁用'}\n\n"
         f"建议在管理服务器放行该IP到controller端口：\n"
         f"ufw allow from {result.get('agent_ip', payload['agent_ip'])} "
-        f"to any port {CONTROLLER_PORT_HINT} proto tcp",
+        f"to any port {CONTROLLER_PORT_HINT} proto tcp"
+        f"{readiness_text}",
         reply_markup=build_submenu("nodes"),
     )
     context.user_data.pop(NODES_WIZARD_KEY, None)
