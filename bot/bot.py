@@ -5847,6 +5847,15 @@ async def nodes_create_confirm(
     if isinstance(node_detail, dict) and not node_detail_error:
         supports_reality = int(node_detail.get("supports_reality", 1) or 0) == 1
         supports_tuic = int(node_detail.get("supports_tuic", 1) or 0) == 1
+        last_seen_at = 0
+        try:
+            last_seen_at = int(node_detail.get("last_seen_at", 0) or 0)
+        except (TypeError, ValueError):
+            last_seen_at = 0
+        now_ts = int(time.time())
+        is_online = (
+            last_seen_at > 0 and (now_ts - last_seen_at) <= NODE_OFFLINE_THRESHOLD_SECONDS
+        )
 
         agent_ip_value = str(node_detail.get("agent_ip") or "").strip()
         if agent_ip_value:
@@ -5860,8 +5869,14 @@ async def nodes_create_confirm(
             has_reality_sid = bool(str(node_detail.get("reality_short_id") or "").strip())
             if has_reality_sni and has_reality_pub and has_reality_sid:
                 readiness_lines.append("[OK] REALITY 参数完整（可生成 vless+reality）")
+            elif is_online:
+                readiness_lines.append(
+                    "[WARN] REALITY 参数待上报（节点在线时会自动生成并上报，通常 1 个轮询周期内完成）"
+                )
             else:
-                readiness_lines.append("[WARN] REALITY 参数不完整（vless+reality 会被跳过）")
+                readiness_lines.append(
+                    "[WARN] REALITY 参数不完整（节点离线/未同步，当前 vless+reality 会被跳过）"
+                )
 
         if supports_tuic:
             has_tuic_sni = bool(str(node_detail.get("tuic_server_name") or "").strip())
