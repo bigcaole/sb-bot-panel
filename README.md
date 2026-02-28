@@ -114,6 +114,8 @@ git clone <你的仓库地址> sb-bot-panel && cd sb-bot-panel && sudo bash scri
 6. `tuic_listen_port`（默认 `24443`，建议高位 UDP 端口）
 7. `poll_interval`（默认 `15` 秒）
 
+若安装/配置失败，默认自动导出 AI 诊断包到 `/tmp/sb-install-node-ai-context-on-fail-*.md`（可用 `INSTALL_NODE_EXPORT_AI_CONTEXT_ON_FAIL=0` 关闭）。
+
 ## 节点服务器菜单管理
 
 ```bash
@@ -276,6 +278,8 @@ git clone <你的仓库地址> sb-bot-panel && cd sb-bot-panel && sudo bash scri
 - 写入并启用 systemd：
   - `sb-controller.service`
   - `sb-bot.service`
+- 若安装/更新失败，默认自动导出 AI 诊断包到 `/tmp/sb-install-admin-ai-context-on-fail-*.md`
+  - 可用 `INSTALL_ADMIN_EXPORT_AI_CONTEXT_ON_FAIL=0` 关闭
 
 说明：菜单 `17) 安装/更新` 默认复用现有 `.env` 配置，不会每次重复询问端口/域名/token/chat_id。需要改参数时使用菜单 `1) 配置（快速默认 / 高级变量向导）`。
 
