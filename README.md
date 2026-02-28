@@ -487,6 +487,13 @@ bash /root/sb-bot-panel/scripts/admin/db_consistency_check.sh
 
 - 会依次执行：`/admin/db/export` -> `/admin/db/verify_export`（与当前库比对）-> `/admin/db/integrity`
 - 任何一步失败会返回非 0 退出码，避免带问题做迁移
+- 失败时默认自动导出 AI 诊断包到 `/tmp/sb-db-check-ai-context-on-fail-*.md`（可用 `DB_CHECK_EXPORT_AI_CONTEXT_ON_FAIL=0` 关闭）
+
+安全加固向导失败自动诊断包：
+
+- 脚本：`bash /root/sb-bot-panel/scripts/admin/harden_security.sh`
+- 失败时默认自动导出到 `/tmp/sb-harden-security-ai-context-on-fail-*.md`
+- 可用 `HARDEN_EXPORT_AI_CONTEXT_ON_FAIL=0` 关闭
 
 ## GitHub 自动验收（CI）
 
