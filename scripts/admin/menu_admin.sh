@@ -18,6 +18,7 @@ DB_CHECK_SCRIPT="${PROJECT_DIR}/scripts/admin/db_consistency_check.sh"
 HARDEN_SCRIPT="${PROJECT_DIR}/scripts/admin/harden_security.sh"
 TOKEN_COLLAPSE_SCRIPT="${PROJECT_DIR}/scripts/admin/auth_token_collapse.sh"
 LOG_ARCHIVE_SCRIPT="${PROJECT_DIR}/scripts/admin/log_archive.sh"
+OPS_SNAPSHOT_SCRIPT="${PROJECT_DIR}/scripts/admin/ops_snapshot.sh"
 ADMIN_SCRIPT_ACTOR="sb-admin"
 
 msg() { echo -e "\033[1;32m[信息]\033[0m $*"; }
@@ -838,11 +839,12 @@ show_menu() {
 17. 手动安全清理（过期封禁 + 审计日志）
 18. SSH 安全状态总览（只读）
 19. SSH 一键安全修复（半自动）
+20. 运维快照（导出关键状态）
 
 【系统级操作（谨慎）】
-20. 安装/更新（git pull + 依赖 + venv + 重启）
-21. 卸载
-22. 退出
+21. 安装/更新（git pull + 依赖 + venv + 重启）
+22. 卸载
+23. 退出
 ========================================
 EOF
 }
@@ -983,7 +985,7 @@ main() {
 
   while true; do
     show_menu
-    read -r -p "请输入选项 [1-22]: " action
+    read -r -p "请输入选项 [1-23]: " action
     case "$action" in
       1)
         configure_only
@@ -1101,6 +1103,14 @@ main() {
         pause
         ;;
       20)
+        if [[ -f "$OPS_SNAPSHOT_SCRIPT" ]]; then
+          bash "$OPS_SNAPSHOT_SCRIPT"
+        else
+          err "未找到运维快照脚本: $OPS_SNAPSHOT_SCRIPT"
+        fi
+        pause
+        ;;
+      21)
         if confirm_action "确认执行安装/更新？" "N"; then
           install_or_update
         else
@@ -1108,16 +1118,16 @@ main() {
         fi
         pause
         ;;
-      21)
+      22)
         do_uninstall
         pause
         ;;
-      22)
+      23)
         msg "已退出。"
         exit 0
         ;;
       *)
-        warn "无效选项，请输入 1-22。"
+        warn "无效选项，请输入 1-23。"
         pause
         ;;
     esac

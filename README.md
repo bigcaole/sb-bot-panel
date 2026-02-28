@@ -408,10 +408,11 @@ sb-admin
 17. 手动安全清理（过期封禁 + 审计日志）
 18. SSH 安全状态总览（只读）
 19. SSH 一键安全修复（半自动）
+20. 运维快照（导出关键状态）
 【系统级操作（谨慎）】
-20. 安装/更新（git pull + 依赖 + venv + 重启）
-21. 卸载
-22. 退出
+21. 安装/更新（git pull + 依赖 + venv + 重启）
+22. 卸载
+23. 退出
 
 说明：菜单 `14` 支持两类同步：  
 1) 默认参数同步（`/admin/nodes/sync_agent_defaults`）  
@@ -428,6 +429,14 @@ sb-admin
 ```bash
 bash /root/sb-bot-panel/scripts/admin/smoke_test.sh --require-api
 ```
+
+运维快照导出（管理服务器，排障建议先执行）：
+
+```bash
+bash /root/sb-bot-panel/scripts/admin/ops_snapshot.sh
+```
+
+默认输出目录：`/var/backups/sb-controller/ops-snapshots/`
 
 说明：
 
