@@ -7,16 +7,26 @@ from fastapi import Request
 
 from controller.security import get_request_ip
 
+MAX_AUDIT_ACTOR_LENGTH = 120
+MAX_AUDIT_ACTION_LENGTH = 160
+MAX_AUDIT_RESOURCE_TYPE_LENGTH = 80
+MAX_AUDIT_RESOURCE_ID_LENGTH = 240
+MAX_AUDIT_SOURCE_IP_LENGTH = 80
+
+
+def _safe_trimmed_text(value: Any, max_length: int) -> str:
+    text = str(value or "").strip()
+    if max_length < 1:
+        return ""
+    if len(text) > max_length:
+        text = text[:max_length]
+    return text
+
 
 def get_request_actor(request: Optional[Request]) -> str:
     if request is None:
         return ""
-    actor = str(request.headers.get("X-Actor", "") or "").strip()
-    if not actor:
-        return ""
-    if len(actor) > 120:
-        actor = actor[:120]
-    return actor
+    return _safe_trimmed_text(request.headers.get("X-Actor", ""), MAX_AUDIT_ACTOR_LENGTH)
 
 
 def get_source_ip_for_audit(request: Optional[Request]) -> str:
@@ -48,7 +58,7 @@ def write_audit_log(
     source_ip: str = "",
     created_at: int = 0,
 ) -> None:
-    action_text = str(action or "").strip()
+    action_text = _safe_trimmed_text(action, MAX_AUDIT_ACTION_LENGTH)
     if not action_text:
         return
     ts = int(created_at or time.time())
@@ -58,12 +68,12 @@ def write_audit_log(
         VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
         (
-            str(actor or "").strip(),
+            _safe_trimmed_text(actor, MAX_AUDIT_ACTOR_LENGTH),
             action_text,
-            str(resource_type or "").strip(),
-            str(resource_id or "").strip(),
+            _safe_trimmed_text(resource_type, MAX_AUDIT_RESOURCE_TYPE_LENGTH),
+            _safe_trimmed_text(resource_id, MAX_AUDIT_RESOURCE_ID_LENGTH),
             normalize_audit_detail(detail),
-            str(source_ip or "").strip(),
+            _safe_trimmed_text(source_ip, MAX_AUDIT_SOURCE_IP_LENGTH),
             ts,
         ),
     )

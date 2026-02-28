@@ -71,6 +71,35 @@ class AuditCleanupTestCase(unittest.TestCase):
             remaining = int(conn.execute("SELECT COUNT(*) AS c FROM audit_logs").fetchone()["c"] or 0)
             self.assertEqual(1, remaining)
 
+    def test_write_audit_log_clamps_long_fields(self) -> None:
+        with self._build_conn() as conn:
+            write_audit_log(
+                conn,
+                action="a" * 300,
+                resource_type="t" * 200,
+                resource_id="r" * 500,
+                detail={"k": "v"},
+                actor="u" * 300,
+                source_ip="x" * 200,
+                created_at=1_700_000_000,
+            )
+            conn.commit()
+            row = conn.execute(
+                """
+                SELECT actor, action, resource_type, resource_id, detail, source_ip
+                FROM audit_logs
+                ORDER BY id DESC
+                LIMIT 1
+                """
+            ).fetchone()
+            self.assertIsNotNone(row)
+            self.assertEqual(120, len(str(row["actor"] or "")))
+            self.assertEqual(160, len(str(row["action"] or "")))
+            self.assertEqual(80, len(str(row["resource_type"] or "")))
+            self.assertEqual(240, len(str(row["resource_id"] or "")))
+            self.assertEqual('{"k":"v"}', str(row["detail"] or ""))
+            self.assertEqual(80, len(str(row["source_ip"] or "")))
+
 
 if __name__ == "__main__":
     unittest.main()
