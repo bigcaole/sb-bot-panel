@@ -1673,6 +1673,40 @@ def decode_ip_token(token: str) -> str:
         return ""
 
 
+def parse_admin_api_whitelist_status(security_payload: dict) -> dict:
+    if not isinstance(security_payload, dict):
+        return {
+            "enabled": False,
+            "source": "unknown",
+            "source_label": "未知来源",
+            "total_count": 0,
+            "effective_count": 0,
+            "invalid_count": 0,
+            "summary": "读取失败",
+        }
+    enabled = bool(security_payload.get("admin_api_whitelist_enabled"))
+    source = str(security_payload.get("admin_api_whitelist_source", "")).strip() or "none"
+    source_label_map = {
+        "admin_api_whitelist": "显式配置",
+        "controller_port_whitelist_fallback": "controller白名单回退",
+        "none": "未配置",
+    }
+    source_label = source_label_map.get(source, source)
+    total_count = int(security_payload.get("admin_api_whitelist_count", 0) or 0)
+    effective_count = int(security_payload.get("admin_api_whitelist_effective_count", 0) or 0)
+    invalid_count = int(security_payload.get("admin_api_whitelist_invalid_count", 0) or 0)
+    summary = "已启用（{0}）".format(source_label) if enabled else "未启用（{0}）".format(source_label)
+    return {
+        "enabled": enabled,
+        "source": source,
+        "source_label": source_label,
+        "total_count": total_count,
+        "effective_count": effective_count,
+        "invalid_count": invalid_count,
+        "summary": summary,
+    }
+
+
 def shorten_ip_for_button(source_ip: str, limit: int = 18) -> str:
     text = str(source_ip or "").strip()
     if len(text) <= limit:
@@ -2111,6 +2145,7 @@ def format_admin_overview_text(overview: dict) -> str:
     queue_cap_per_node = int(tasks.get("queue_cap_per_node", 0) or 0)
     near_cap_threshold = int(tasks.get("near_cap_threshold", 0) or 0)
     events_exclude_local = bool(security.get("security_events_exclude_local", True))
+    admin_api_whitelist = parse_admin_api_whitelist_status(security)
 
     lines = [
         "控制面概览：",
@@ -2145,6 +2180,12 @@ def format_admin_overview_text(overview: dict) -> str:
             idempotency_deduplicated,
             idempotency_ratio,
         ),
+        "管理接口来源白名单：{0}（有效 {1}/总 {2}/无效 {3}）".format(
+            admin_api_whitelist.get("summary", "-"),
+            int(admin_api_whitelist.get("effective_count", 0) or 0),
+            int(admin_api_whitelist.get("total_count", 0) or 0),
+            int(admin_api_whitelist.get("invalid_count", 0) or 0),
+        ),
         "安全告警：{0} 条".format(len(warnings)),
         "未授权访问(1h/24h)：{0}/{1}".format(unauthorized_1h, unauthorized_24h),
         "事件统计过滤本机：{0}".format("是" if events_exclude_local else "否"),
@@ -2165,6 +2206,11 @@ def format_admin_overview_text(overview: dict) -> str:
         lines.append("告警摘要：")
         for warning in warnings[:3]:
             lines.append("- {0}".format(str(warning)))
+    if (
+        admin_api_whitelist.get("source") == "controller_port_whitelist_fallback"
+        and int(admin_api_whitelist.get("effective_count", 0) or 0) > 0
+    ):
+        lines.append("提示：管理白名单当前使用 controller 白名单回退，建议显式配置 ADMIN_API_WHITELIST。")
 
     return "\n".join(lines)
 
@@ -4538,6 +4584,7 @@ async def run_admin_node_access_status_action(query, back_menu_callback: str) ->
         rate_limit_enabled = (
             "已启用" if bool(security_result.get("api_rate_limit_enabled")) else "未启用"
         )
+        admin_api_whitelist = parse_admin_api_whitelist_status(security_result)
         lines.append("全局安全状态：")
         lines.append(f"- 接口鉴权：{auth_enabled}")
         lines.append(f"- Token拆分：{split_mode}")
@@ -4546,6 +4593,14 @@ async def run_admin_node_access_status_action(query, back_menu_callback: str) ->
         lines.append(
             "- controller白名单数量：{0}".format(
                 int(security_result.get("controller_port_whitelist_count", 0) or 0)
+            )
+        )
+        lines.append(
+            "- 管理接口来源白名单：{0}（有效 {1}/总 {2}/无效 {3}）".format(
+                admin_api_whitelist.get("summary", "-"),
+                int(admin_api_whitelist.get("effective_count", 0) or 0),
+                int(admin_api_whitelist.get("total_count", 0) or 0),
+                int(admin_api_whitelist.get("invalid_count", 0) or 0),
             )
         )
         protected_items = security_result.get("security_block_protected_ips", [])
@@ -4642,6 +4697,10 @@ async def run_admin_security_events_action(query, include_local: bool) -> None:
     blocked_ip_count_text = "-"
     token_rotation_text = "-"
     split_mode_text = "-"
+    admin_api_whitelist_text = "-"
+    admin_api_whitelist_invalid_text = "-"
+    admin_api_whitelist_source = "unknown"
+    admin_api_whitelist_enabled = False
     if status_error:
         token_count_text = "读取失败"
         auth_enabled_text = "读取失败"
@@ -4652,6 +4711,8 @@ async def run_admin_security_events_action(query, include_local: bool) -> None:
         protected_invalid_text = "读取失败"
         blocked_ip_count_text = "读取失败"
         token_rotation_text = "读取失败"
+        admin_api_whitelist_text = "读取失败"
+        admin_api_whitelist_invalid_text = "读取失败"
     elif isinstance(status_result, dict):
         auth_enabled = bool(status_result.get("auth_enabled"))
         auth_enabled_text = "已启用" if auth_enabled else "未启用"
@@ -4709,6 +4770,17 @@ async def run_admin_security_events_action(query, include_local: bool) -> None:
             )
         else:
             protected_invalid_text = str(protected_invalid_count)
+        admin_api_whitelist = parse_admin_api_whitelist_status(status_result)
+        admin_api_whitelist_source = str(admin_api_whitelist.get("source", "unknown"))
+        admin_api_whitelist_enabled = bool(admin_api_whitelist.get("enabled"))
+        admin_api_whitelist_text = "{0}（有效 {1}/总 {2}）".format(
+            admin_api_whitelist.get("summary", "-"),
+            int(admin_api_whitelist.get("effective_count", 0) or 0),
+            int(admin_api_whitelist.get("total_count", 0) or 0),
+        )
+        admin_api_whitelist_invalid_text = str(
+            int(admin_api_whitelist.get("invalid_count", 0) or 0)
+        )
 
     unlocked_enabled_nodes = 0
     whitelist_missing_count = 0
@@ -4734,6 +4806,10 @@ async def run_admin_security_events_action(query, include_local: bool) -> None:
             advice.append("1h 未授权较高，建议在云防火墙/UFW 增加来源限制。")
         if auth_enabled_text == "未启用":
             advice.append("立即启用 ADMIN_AUTH_TOKEN/NODE_AUTH_TOKEN 鉴权。")
+        if not admin_api_whitelist_enabled:
+            advice.append("建议启用 ADMIN_API_WHITELIST，仅放行可信来源访问管理接口。")
+    if admin_api_whitelist_source == "controller_port_whitelist_fallback":
+        advice.append("管理白名单当前为回退模式，建议显式配置 ADMIN_API_WHITELIST。")
     if not advice:
         advice.append("继续观察 1h 趋势。")
 
@@ -4751,6 +4827,8 @@ async def run_admin_security_events_action(query, include_local: bool) -> None:
         f"白名单有效项：{protected_effective_text}",
         f"白名单无效项：{protected_invalid_text}",
         f"当前封禁IP：{blocked_ip_count_text}",
+        f"管理接口来源白名单：{admin_api_whitelist_text}",
+        f"管理白名单无效项：{admin_api_whitelist_invalid_text}",
         f"访问收敛：{access_text}",
         "",
         "来源 TOP5：",

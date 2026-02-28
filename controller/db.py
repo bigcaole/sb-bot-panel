@@ -216,6 +216,12 @@ def init_db() -> None:
         )
         conn.execute(
             """
+            CREATE INDEX IF NOT EXISTS idx_audit_logs_action_created_at_source_ip
+            ON audit_logs(action, created_at DESC, source_ip)
+            """
+        )
+        conn.execute(
+            """
             CREATE INDEX IF NOT EXISTS idx_audit_logs_actor_created_at
             ON audit_logs(actor, created_at DESC)
             """

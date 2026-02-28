@@ -146,6 +146,12 @@ class BotDispatchContractTestCase(unittest.TestCase):
         pop_keys = extract_clear_all_wizard_pop_keys(self._tree)
         self.assertIn("NODE_OPS_CONFIG_KEY", pop_keys)
 
+    def test_security_panels_include_admin_api_whitelist_visibility(self) -> None:
+        source = BOT_FILE.read_text(encoding="utf-8")
+        self.assertIn("管理接口来源白名单", source)
+        self.assertIn("admin_api_whitelist_source", source)
+        self.assertIn("ADMIN_API_WHITELIST", source)
+
 
 if __name__ == "__main__":
     unittest.main()
