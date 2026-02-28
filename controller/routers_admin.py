@@ -1385,30 +1385,26 @@ def get_node_task_idempotency_snapshot(
     per_node_rows = conn.execute(
         """
         SELECT
-          json_extract(detail, '$.node_code') AS node_code,
-          action
+          COALESCE(NULLIF(TRIM(json_extract(detail, '$.node_code')), ''), 'unknown') AS node_code,
+          SUM(CASE WHEN action = 'node.task.create' THEN 1 ELSE 0 END) AS created,
+          SUM(CASE WHEN action = 'node.task.deduplicated' THEN 1 ELSE 0 END) AS deduplicated,
+          COUNT(*) AS incoming_total
         FROM audit_logs
         WHERE action IN ('node.task.create', 'node.task.deduplicated')
           AND created_at >= ?
+        GROUP BY node_code
+        ORDER BY incoming_total DESC, node_code ASC
+        LIMIT ?
         """,
-        (since_ts,),
+        (since_ts, top_limit),
     ).fetchall()
 
-    per_node_counter: Dict[str, Dict[str, int]] = {}
+    by_node_items: List[Dict[str, Union[str, int, float]]] = []
     for row in per_node_rows:
         node_code = str(row["node_code"] or "").strip() or "unknown"
-        action = str(row["action"] or "").strip()
-        bucket = per_node_counter.setdefault(node_code, {"create": 0, "deduplicated": 0})
-        if action == "node.task.create":
-            bucket["create"] = int(bucket["create"] + 1)
-        elif action == "node.task.deduplicated":
-            bucket["deduplicated"] = int(bucket["deduplicated"] + 1)
-
-    by_node_items: List[Dict[str, Union[str, int, float]]] = []
-    for node_code, bucket in per_node_counter.items():
-        create_count = int(bucket.get("create", 0) or 0)
-        dedup_count = int(bucket.get("deduplicated", 0) or 0)
-        total_incoming = int(create_count + dedup_count)
+        create_count = int(row["created"] or 0)
+        dedup_count = int(row["deduplicated"] or 0)
+        total_incoming = int(row["incoming_total"] or 0)
         dedup_ratio = float((dedup_count / total_incoming) if total_incoming > 0 else 0.0)
         by_node_items.append(
             {
@@ -1419,12 +1415,6 @@ def get_node_task_idempotency_snapshot(
                 "dedup_ratio": round(dedup_ratio, 4),
             }
         )
-    by_node_items.sort(
-        key=lambda item: (
-            -int(item.get("incoming_total", 0) or 0),
-            str(item.get("node_code", "")),
-        )
-    )
 
     incoming_total = int(created_count + deduplicated_count)
     dedup_ratio_total = float((deduplicated_count / incoming_total) if incoming_total > 0 else 0.0)
@@ -1435,7 +1425,7 @@ def get_node_task_idempotency_snapshot(
         "created": int(created_count),
         "deduplicated": int(deduplicated_count),
         "dedup_ratio": round(dedup_ratio_total, 4),
-        "top_nodes": by_node_items[:top_limit],
+        "top_nodes": by_node_items,
     }
 
 
