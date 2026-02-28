@@ -1116,6 +1116,7 @@ def run_security_auto_block_once(conn, now_ts: int) -> Dict[str, Union[int, List
         window_seconds=int(SECURITY_AUTO_BLOCK_WINDOW_SECONDS),
         top_limit=max(20, int(SECURITY_AUTO_BLOCK_MAX_PER_INTERVAL) * 20),
         include_local=False,
+        conn=conn,
     )
     top_rows = snapshot.get("top_unauthorized_ips", [])
     if not isinstance(top_rows, list):

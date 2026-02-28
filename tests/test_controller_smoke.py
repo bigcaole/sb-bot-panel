@@ -948,6 +948,60 @@ class ControllerSmokeTestCase(unittest.TestCase):
             items = list_resp.json().get("items", [])
             self.assertTrue(any(str(item.get("source_ip")) == "8.8.8.8" for item in items))
 
+    def test_security_auto_block_snapshot_reuses_current_connection(self) -> None:
+        now_ts = int(time.time())
+        with db_module.get_connection() as conn:
+            for _ in range(12):
+                conn.execute(
+                    """
+                    INSERT INTO audit_logs(actor, action, resource_type, resource_id, detail, source_ip, created_at)
+                    VALUES(?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    ("", "auth.unauthorized", "http", "/nodes", "{}", "9.9.9.9", now_ts),
+                )
+            conn.commit()
+
+        admin_router_module.SECURITY_AUTO_BLOCK_ENABLED = True
+        admin_router_module.SECURITY_AUTO_BLOCK_WINDOW_SECONDS = 3600
+        admin_router_module.SECURITY_AUTO_BLOCK_THRESHOLD = 10
+        admin_router_module.SECURITY_AUTO_BLOCK_DURATION_SECONDS = 3600
+        admin_router_module.SECURITY_AUTO_BLOCK_MAX_PER_INTERVAL = 1
+
+        original_snapshot_builder = admin_router_module.build_unauthorized_events_snapshot
+        seen_conn = {"has_conn": False}
+
+        def wrapped_snapshot_builder(
+            now_ts: int,
+            window_seconds: int = 3600,
+            top_limit: int = 5,
+            include_local=None,
+            conn=None,
+        ):
+            if conn is not None:
+                seen_conn["has_conn"] = True
+            return original_snapshot_builder(
+                now_ts=now_ts,
+                window_seconds=window_seconds,
+                top_limit=top_limit,
+                include_local=include_local,
+                conn=conn,
+            )
+
+        admin_router_module.build_unauthorized_events_snapshot = wrapped_snapshot_builder
+        try:
+            with TestClient(app_module.app) as client:
+                auto_resp = client.post(
+                    "/admin/security/auto_block/run",
+                    headers=self._auth_header(),
+                )
+                self.assertEqual(200, auto_resp.status_code)
+                payload = auto_resp.json()
+                self.assertTrue(bool(payload.get("ok")))
+                self.assertTrue(bool(payload.get("enabled")))
+                self.assertTrue(bool(seen_conn["has_conn"]))
+        finally:
+            admin_router_module.build_unauthorized_events_snapshot = original_snapshot_builder
+
     def test_node_task_deduplicate_smoke(self) -> None:
         with TestClient(app_module.app) as client:
             first_resp = client.post(
