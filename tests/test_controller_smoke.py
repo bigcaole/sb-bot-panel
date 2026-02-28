@@ -423,6 +423,16 @@ class ControllerSmokeTestCase(unittest.TestCase):
                 headers=self._auth_header(),
             )
             self.assertEqual(400, invalid_prefix_resp.status_code)
+            invalid_action_resp = client.get(
+                "/admin/audit?limit=20&action=ops.%25",
+                headers=self._auth_header(),
+            )
+            self.assertEqual(400, invalid_action_resp.status_code)
+            invalid_actor_resp = client.get(
+                "/admin/audit?limit=20&actor=smoke%0Aops",
+                headers=self._auth_header(),
+            )
+            self.assertEqual(400, invalid_actor_resp.status_code)
 
             sensitive_audit_resp = client.post(
                 "/admin/audit/event",

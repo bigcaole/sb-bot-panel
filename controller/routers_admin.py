@@ -153,6 +153,10 @@ def _mask_sensitive_audit_detail(detail_text: str) -> str:
     return masked
 
 
+def _has_control_characters(text: str) -> bool:
+    return any((ord(ch) < 32 or ord(ch) == 127) for ch in str(text or ""))
+
+
 def _enqueue_task_for_nodes(
     request: Request,
     task_type: str,
@@ -2539,8 +2543,12 @@ def list_admin_audit_logs(
     action_value = str(action or "").strip()
     action_prefix_value = str(action_prefix or "").strip()
     actor_value = str(actor or "").strip()
+    if action_value and (len(action_value) > 96 or not re.fullmatch(r"[A-Za-z0-9._:-]+", action_value)):
+        raise HTTPException(status_code=400, detail="invalid action")
     if action_prefix_value and (len(action_prefix_value) > 64 or not re.fullmatch(r"[A-Za-z0-9._:-]+", action_prefix_value)):
         raise HTTPException(status_code=400, detail="invalid action_prefix")
+    if actor_value and (len(actor_value) > 64 or _has_control_characters(actor_value)):
+        raise HTTPException(status_code=400, detail="invalid actor")
     window_value = int(window_seconds or 0)
     if window_value < 0:
         window_value = 0
