@@ -17,6 +17,8 @@ AI_CONTEXT_SCRIPT="${PROJECT_DIR}/scripts/admin/ai_context_export.sh"
 AI_CONTEXT_ON_FAIL="${SMOKE_EXPORT_AI_CONTEXT_ON_FAIL:-1}"
 REQUIRE_TOKEN_SPLIT="${SMOKE_REQUIRE_TOKEN_SPLIT:-0}"
 REQUIRE_ADMIN_API_WHITELIST="${SMOKE_REQUIRE_ADMIN_API_WHITELIST:-0}"
+RATE_LIMIT_RETRY_ATTEMPTS="${SMOKE_RATE_LIMIT_RETRY_ATTEMPTS:-3}"
+RATE_LIMIT_RETRY_MAX_WAIT_SECONDS="${SMOKE_RATE_LIMIT_RETRY_MAX_WAIT_SECONDS:-20}"
 
 msg() { echo -e "\033[1;32m[信息]\033[0m $*"; }
 warn() { echo -e "\033[1;33m[警告]\033[0m $*"; }
@@ -126,6 +128,9 @@ usage() {
   - require-api 模式下：API 不可达会直接失败
   - require-token-split 模式下：要求管理/节点 token 必须拆分，否则判失败
   - require-admin-api-whitelist 模式下：要求 ADMIN_API_WHITELIST 已启用，否则判失败
+  - API 冒烟默认对 429 按 Retry-After 自动重试（次数/最大等待可用环境变量调整）
+    * SMOKE_RATE_LIMIT_RETRY_ATTEMPTS（默认 3）
+    * SMOKE_RATE_LIMIT_RETRY_MAX_WAIT_SECONDS（默认 20）
   - 验收失败时默认自动导出 AI 诊断包（可用环境变量 SMOKE_EXPORT_AI_CONTEXT_ON_FAIL=0 关闭）
 EOF
 }
@@ -227,7 +232,58 @@ run_py_checks() {
 http_code() {
   local url="$1"
   shift || true
-  curl -sS -o /tmp/sb_smoke_resp.txt -w "%{http_code}" -H "X-Actor: ${SMOKE_ACTOR}" "$@" "$url" || true
+  curl -sS -D /tmp/sb_smoke_headers.txt -o /tmp/sb_smoke_resp.txt -w "%{http_code}" -H "X-Actor: ${SMOKE_ACTOR}" "$@" "$url" || true
+}
+
+extract_retry_after_seconds() {
+  local retry_after
+  retry_after="$(awk -F':' 'tolower($1)=="retry-after"{gsub(/[[:space:]]/, "", $2); print $2; exit}' /tmp/sb_smoke_headers.txt 2>/dev/null || true)"
+  if [[ -z "$retry_after" || ! "$retry_after" =~ ^[0-9]+$ ]]; then
+    echo 1
+    return
+  fi
+  echo "$retry_after"
+}
+
+http_code_with_retry() {
+  local url="$1"
+  shift || true
+  local attempts="$RATE_LIMIT_RETRY_ATTEMPTS"
+  local max_wait="$RATE_LIMIT_RETRY_MAX_WAIT_SECONDS"
+  local try=1
+  local code
+  local retry_after
+  local wait_seconds
+
+  if ! [[ "$attempts" =~ ^[0-9]+$ ]] || (( attempts < 1 )); then
+    attempts=1
+  fi
+  if ! [[ "$max_wait" =~ ^[0-9]+$ ]] || (( max_wait < 1 )); then
+    max_wait=20
+  fi
+
+  while (( try <= attempts )); do
+    code="$(http_code "$url" "$@")"
+    if [[ "$code" != "429" ]]; then
+      echo "$code"
+      return
+    fi
+    if (( try >= attempts )); then
+      echo "$code"
+      return
+    fi
+    retry_after="$(extract_retry_after_seconds)"
+    wait_seconds="$retry_after"
+    if (( wait_seconds > max_wait )); then
+      wait_seconds="$max_wait"
+    fi
+    if (( wait_seconds < 1 )); then
+      wait_seconds=1
+    fi
+    sleep "$wait_seconds"
+    try=$((try + 1))
+  done
+  echo "429"
 }
 
 wait_api_ready() {
@@ -300,12 +356,12 @@ run_api_checks() {
   fi
 
   if [[ -n "$auth_token" ]]; then
-    code="$(http_code "${api_url}/nodes")"
+    code="$(http_code_with_retry "${api_url}/nodes")"
     if [[ "$code" != "401" ]]; then
       FAIL_API=1
       record_fail "鉴权校验异常：未带 token 访问 /nodes 期望 401，实际 ${code}"
     fi
-    code="$(http_code "${api_url}/nodes" -H "Authorization: Bearer ${auth_token}")"
+    code="$(http_code_with_retry "${api_url}/nodes" -H "Authorization: Bearer ${auth_token}")"
     if [[ "$code" != "200" ]]; then
       FAIL_API=1
       record_fail "鉴权校验异常：带 token 访问 /nodes 期望 200，实际 ${code}"
@@ -324,7 +380,7 @@ if isinstance(payload, list) and payload:
 PY
       )"
     fi
-    code="$(http_code "${api_url}/admin/security/status" -H "Authorization: Bearer ${auth_token}")"
+    code="$(http_code_with_retry "${api_url}/admin/security/status" -H "Authorization: Bearer ${auth_token}")"
     if [[ "$code" != "200" ]]; then
       FAIL_API=1
       record_fail "管理接口校验异常：带 token 访问 /admin/security/status 期望 200，实际 ${code}"
@@ -366,33 +422,33 @@ PY
         fi
       fi
     fi
-    code="$(http_code "${api_url}/admin/overview" -H "Authorization: Bearer ${auth_token}")"
+    code="$(http_code_with_retry "${api_url}/admin/overview" -H "Authorization: Bearer ${auth_token}")"
     if [[ "$code" != "200" ]]; then
       FAIL_API=1
       record_fail "管理接口校验异常：带 token 访问 /admin/overview 期望 200，实际 ${code}"
     fi
-    code="$(http_code "${api_url}/admin/node_tasks/idempotency" -H "Authorization: Bearer ${auth_token}")"
+    code="$(http_code_with_retry "${api_url}/admin/node_tasks/idempotency" -H "Authorization: Bearer ${auth_token}")"
     if [[ "$code" != "200" ]]; then
       FAIL_API=1
       record_fail "管理接口校验异常：带 token 访问 /admin/node_tasks/idempotency 期望 200，实际 ${code}"
     fi
-    code="$(http_code "${api_url}/admin/security/maintenance_cleanup" -X POST -H "Authorization: Bearer ${auth_token}")"
+    code="$(http_code_with_retry "${api_url}/admin/security/maintenance_cleanup" -X POST -H "Authorization: Bearer ${auth_token}")"
     if [[ "$code" != "200" ]]; then
       FAIL_API=1
       record_fail "管理接口校验异常：带 token 调用 /admin/security/maintenance_cleanup 期望 200，实际 ${code}"
     fi
-    code="$(http_code "${api_url}/admin/security/auto_block/run" -X POST -H "Authorization: Bearer ${auth_token}")"
+    code="$(http_code_with_retry "${api_url}/admin/security/auto_block/run" -X POST -H "Authorization: Bearer ${auth_token}")"
     if [[ "$code" != "200" ]]; then
       FAIL_API=1
       record_fail "管理接口校验异常：带 token 调用 /admin/security/auto_block/run 期望 200，实际 ${code}"
     fi
-    code="$(http_code "${api_url}/admin/db/integrity" -H "Authorization: Bearer ${auth_token}")"
+    code="$(http_code_with_retry "${api_url}/admin/db/integrity" -H "Authorization: Bearer ${auth_token}")"
     if [[ "$code" != "200" ]]; then
       FAIL_API=1
       record_fail "数据库完整性接口校验异常：带 token 访问 /admin/db/integrity 期望 200，实际 ${code}"
     fi
     if [[ -n "$first_node_code" ]]; then
-      code="$(http_code "${api_url}/nodes/${first_node_code}/tasks/next" -X POST -H "Authorization: Bearer ${auth_token}")"
+      code="$(http_code_with_retry "${api_url}/nodes/${first_node_code}/tasks/next" -X POST -H "Authorization: Bearer ${auth_token}")"
       if [[ "$code" == "200" ]]; then
         FAIL_API=1
         record_fail "鉴权隔离异常：管理 token 访问节点任务接口被允许（/nodes/${first_node_code}/tasks/next=200）"
@@ -401,7 +457,7 @@ PY
       fi
     fi
     if [[ -n "$node_token" ]]; then
-      code="$(http_code "${api_url}/admin/security/status" -H "Authorization: Bearer ${node_token}")"
+      code="$(http_code_with_retry "${api_url}/admin/security/status" -H "Authorization: Bearer ${node_token}")"
       if [[ "$code" == "200" ]]; then
         if [[ "${auth_token_split_active}" == "1" ]]; then
           FAIL_API=1
@@ -414,32 +470,32 @@ PY
       fi
     fi
   else
-    code="$(http_code "${api_url}/nodes")"
+    code="$(http_code_with_retry "${api_url}/nodes")"
     if [[ "$code" != "200" ]]; then
       FAIL_API=1
       record_fail "管理 token 为空时 /nodes 应可访问，期望 200，实际 ${code}"
     fi
-    code="$(http_code "${api_url}/admin/db/integrity")"
+    code="$(http_code_with_retry "${api_url}/admin/db/integrity")"
     if [[ "$code" != "200" ]]; then
       FAIL_API=1
       record_fail "管理 token 为空时 /admin/db/integrity 应可访问，期望 200，实际 ${code}"
     fi
-    code="$(http_code "${api_url}/admin/overview")"
+    code="$(http_code_with_retry "${api_url}/admin/overview")"
     if [[ "$code" != "200" ]]; then
       FAIL_API=1
       record_fail "管理 token 为空时 /admin/overview 应可访问，期望 200，实际 ${code}"
     fi
-    code="$(http_code "${api_url}/admin/node_tasks/idempotency")"
+    code="$(http_code_with_retry "${api_url}/admin/node_tasks/idempotency")"
     if [[ "$code" != "200" ]]; then
       FAIL_API=1
       record_fail "管理 token 为空时 /admin/node_tasks/idempotency 应可访问，期望 200，实际 ${code}"
     fi
-    code="$(http_code "${api_url}/admin/security/maintenance_cleanup" -X POST)"
+    code="$(http_code_with_retry "${api_url}/admin/security/maintenance_cleanup" -X POST)"
     if [[ "$code" != "200" ]]; then
       FAIL_API=1
       record_fail "管理 token 为空时 /admin/security/maintenance_cleanup 应可访问，期望 200，实际 ${code}"
     fi
-    code="$(http_code "${api_url}/admin/security/auto_block/run" -X POST)"
+    code="$(http_code_with_retry "${api_url}/admin/security/auto_block/run" -X POST)"
     if [[ "$code" != "200" ]]; then
       FAIL_API=1
       record_fail "管理 token 为空时 /admin/security/auto_block/run 应可访问，期望 200，实际 ${code}"
@@ -447,9 +503,9 @@ PY
   fi
 
   if [[ -n "$auth_token" ]]; then
-    node_access_status="$(http_code "${api_url}/admin/node_access/status" -H "Authorization: Bearer ${auth_token}")"
+    node_access_status="$(http_code_with_retry "${api_url}/admin/node_access/status" -H "Authorization: Bearer ${auth_token}")"
   else
-    node_access_status="$(http_code "${api_url}/admin/node_access/status")"
+    node_access_status="$(http_code_with_retry "${api_url}/admin/node_access/status")"
   fi
   if [[ "$node_access_status" == "200" ]]; then
     if node_access_metrics="$("$PYTHON_BIN" - <<'PY'
