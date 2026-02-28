@@ -38,8 +38,11 @@ from controller.security import (
     get_rate_limit_identity,
     has_any_admin_auth_token,
     has_any_node_auth_token,
+    is_admin_api_path,
+    is_admin_api_whitelist_enabled,
     is_auth_exempt_path,
     is_node_agent_auth_path,
+    is_request_allowed_by_admin_api_whitelist,
     is_rate_limit_target_path,
     should_write_unauthorized_audit,
     verify_admin_authorization,
@@ -122,6 +125,40 @@ async def auth_middleware(request: Request, call_next):
     request_path = str(request.url.path or "/")
     if is_auth_exempt_path(request_path):
         return await call_next(request)
+    if is_admin_api_path(request_path) and is_admin_api_whitelist_enabled():
+        if not is_request_allowed_by_admin_api_whitelist(request):
+            try:
+                source_ip = get_source_ip_for_audit(request)
+                now_ts = int(time.time())
+                audit_key = build_unauthorized_audit_key(
+                    source_ip=source_ip,
+                    path=request_path,
+                    method=str(request.method or "GET"),
+                )
+                should_log, dropped_count = should_write_unauthorized_audit(
+                    "admin-whitelist:{0}".format(audit_key), now_ts
+                )
+                with get_connection() as conn:
+                    if should_log:
+                        detail = {"method": request.method}
+                        if dropped_count > 0:
+                            detail["sampled_dropped"] = int(dropped_count)
+                        write_audit_log(
+                            conn,
+                            action="auth.source_not_allowed",
+                            resource_type="http",
+                            resource_id=request_path,
+                            detail=detail,
+                            actor=get_request_actor(request),
+                            source_ip=source_ip,
+                        )
+                        conn.commit()
+            except Exception:
+                pass
+            return JSONResponse(
+                status_code=403,
+                content={"ok": False, "error": "source_not_allowed"},
+            )
     if API_RATE_LIMIT_ENABLED and is_rate_limit_target_path(request.url.path):
         identity = get_rate_limit_identity(request)
         limited, retry_after = check_and_consume_rate_limit(identity, now_ts)

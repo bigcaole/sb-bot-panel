@@ -1,4 +1,5 @@
 import unittest
+import ipaddress
 
 from controller import security
 
@@ -14,10 +15,16 @@ class SecurityTestCase(unittest.TestCase):
         self._old_state_max_keys = security.RATE_LIMIT_STATE_MAX_KEYS
         self._old_unauth_sample = security.UNAUTHORIZED_AUDIT_SAMPLE_SECONDS
         self._old_unauth_state_max_keys = security.UNAUTHORIZED_AUDIT_STATE_MAX_KEYS
+        self._old_admin_api_whitelist_items = list(security.ADMIN_API_WHITELIST_ITEMS)
+        self._old_admin_api_whitelist_networks = list(security._ADMIN_API_WHITELIST_NETWORKS)
+        self._old_admin_api_whitelist_invalid_items = list(security._ADMIN_API_WHITELIST_INVALID_ITEMS)
         security._RATE_LIMIT_STATE.clear()
         security._RATE_LIMIT_LAST_CLEANUP_AT = 0
         security._UNAUTH_AUDIT_STATE.clear()
         security._UNAUTH_AUDIT_LAST_CLEANUP_AT = 0
+        security.ADMIN_API_WHITELIST_ITEMS[:] = []
+        security._ADMIN_API_WHITELIST_NETWORKS[:] = []
+        security._ADMIN_API_WHITELIST_INVALID_ITEMS[:] = []
 
     def tearDown(self) -> None:
         security.AUTH_TOKEN = self._old_auth_token
@@ -29,6 +36,9 @@ class SecurityTestCase(unittest.TestCase):
         security.RATE_LIMIT_STATE_MAX_KEYS = self._old_state_max_keys
         security.UNAUTHORIZED_AUDIT_SAMPLE_SECONDS = self._old_unauth_sample
         security.UNAUTHORIZED_AUDIT_STATE_MAX_KEYS = self._old_unauth_state_max_keys
+        security.ADMIN_API_WHITELIST_ITEMS[:] = self._old_admin_api_whitelist_items
+        security._ADMIN_API_WHITELIST_NETWORKS[:] = self._old_admin_api_whitelist_networks
+        security._ADMIN_API_WHITELIST_INVALID_ITEMS[:] = self._old_admin_api_whitelist_invalid_items
         security._RATE_LIMIT_STATE.clear()
         security._RATE_LIMIT_LAST_CLEANUP_AT = 0
         security._UNAUTH_AUDIT_STATE.clear()
@@ -93,6 +103,31 @@ class SecurityTestCase(unittest.TestCase):
         self.assertTrue(security.is_node_agent_auth_path("/nodes/JP1/report_reality"))
         self.assertFalse(security.is_node_agent_auth_path("/nodes/JP1/tasks/create"))
         self.assertFalse(security.is_node_agent_auth_path("/admin/nodes/JP1/sync_preview"))
+
+    def test_is_admin_api_path(self) -> None:
+        self.assertTrue(security.is_admin_api_path("/nodes"))
+        self.assertTrue(security.is_admin_api_path("/admin/security/status"))
+        self.assertFalse(security.is_admin_api_path("/nodes/JP1/sync"))
+        self.assertFalse(security.is_admin_api_path("/nodes/JP1/tasks/next"))
+        self.assertFalse(security.is_admin_api_path("/sub/links/u1001"))
+
+    def test_admin_api_whitelist_matching(self) -> None:
+        class _DummyClient:
+            def __init__(self, host: str):
+                self.host = host
+
+        class _DummyRequest:
+            def __init__(self, host: str):
+                self.client = _DummyClient(host)
+                self.headers = {}
+
+        security.ADMIN_API_WHITELIST_ITEMS[:] = ["203.0.113.0/24"]
+        security._ADMIN_API_WHITELIST_NETWORKS[:] = [ipaddress.ip_network("203.0.113.0/24")]
+        security._ADMIN_API_WHITELIST_INVALID_ITEMS[:] = []
+        self.assertTrue(security.is_admin_api_whitelist_enabled())
+        self.assertTrue(security.is_request_allowed_by_admin_api_whitelist(_DummyRequest("203.0.113.10")))
+        self.assertFalse(security.is_request_allowed_by_admin_api_whitelist(_DummyRequest("198.51.100.10")))
+        self.assertTrue(security.is_request_allowed_by_admin_api_whitelist(_DummyRequest("127.0.0.1")))
 
     def test_auth_token_source_and_split_state(self) -> None:
         security.AUTH_TOKEN = "legacy-token"

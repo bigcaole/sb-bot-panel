@@ -16,6 +16,7 @@ SMOKE_ACTOR="smoke-test"
 AI_CONTEXT_SCRIPT="${PROJECT_DIR}/scripts/admin/ai_context_export.sh"
 AI_CONTEXT_ON_FAIL="${SMOKE_EXPORT_AI_CONTEXT_ON_FAIL:-1}"
 REQUIRE_TOKEN_SPLIT="${SMOKE_REQUIRE_TOKEN_SPLIT:-0}"
+REQUIRE_ADMIN_API_WHITELIST="${SMOKE_REQUIRE_ADMIN_API_WHITELIST:-0}"
 
 msg() { echo -e "\033[1;32m[信息]\033[0m $*"; }
 warn() { echo -e "\033[1;33m[警告]\033[0m $*"; }
@@ -117,12 +118,14 @@ usage() {
   bash scripts/admin/smoke_test.sh --skip-api
   bash scripts/admin/smoke_test.sh --api-base-url http://127.0.0.1:8080
   bash scripts/admin/smoke_test.sh --require-token-split
+  bash scripts/admin/smoke_test.sh --require-admin-api-whitelist
 
 说明：
   - 默认执行：Python 语法检查 + unittest + API 冒烟（auto）
   - auto 模式下：若 API 不可达，仅给警告，不判失败
   - require-api 模式下：API 不可达会直接失败
   - require-token-split 模式下：要求管理/节点 token 必须拆分，否则判失败
+  - require-admin-api-whitelist 模式下：要求 ADMIN_API_WHITELIST 已启用，否则判失败
   - 验收失败时默认自动导出 AI 诊断包（可用环境变量 SMOKE_EXPORT_AI_CONTEXT_ON_FAIL=0 关闭）
 EOF
 }
@@ -148,6 +151,10 @@ parse_args() {
         ;;
       --require-token-split)
         REQUIRE_TOKEN_SPLIT="1"
+        shift
+        ;;
+      --require-admin-api-whitelist)
+        REQUIRE_ADMIN_API_WHITELIST="1"
         shift
         ;;
       -h|--help)
@@ -273,6 +280,7 @@ run_api_checks() {
   local admin_auth_source=""
   local node_auth_source=""
   local auth_token_split_active=0
+  local admin_api_whitelist_enabled=0
 
   msg "3/3 运行 API 冒烟检查（${api_url}）..."
 
@@ -330,10 +338,11 @@ payload = json.loads(Path("/tmp/sb_smoke_resp.txt").read_text(encoding="utf-8"))
 admin_source = str(payload.get("admin_auth_source", "")).strip()
 node_source = str(payload.get("node_auth_source", "")).strip()
 split_active = 1 if bool(payload.get("auth_token_split_active")) else 0
-print(f"{admin_source},{node_source},{split_active}")
+admin_api_whitelist_enabled = 1 if bool(payload.get("admin_api_whitelist_enabled")) else 0
+print(f"{admin_source},{node_source},{split_active},{admin_api_whitelist_enabled}")
 PY
       )"
-      IFS=',' read -r admin_auth_source node_auth_source auth_token_split_active <<<"$sec_fields"
+      IFS=',' read -r admin_auth_source node_auth_source auth_token_split_active admin_api_whitelist_enabled <<<"$sec_fields"
       if [[ "$admin_auth_source" != "admin_auth_token" ]]; then
         record_warn "管理鉴权来源为 ${admin_auth_source:-unknown}（建议使用 ADMIN_AUTH_TOKEN）"
       fi
@@ -346,6 +355,14 @@ PY
           record_fail "token 拆分检查失败：当前仍是兼容模式（auth_token_split_active=false）。可执行：bash /root/sb-bot-panel/scripts/admin/auth_token_split_migrate.sh --yes"
         else
           record_warn "token 拆分未启用（兼容模式）；建议拆分 ADMIN_AUTH_TOKEN 与 NODE_AUTH_TOKEN"
+        fi
+      fi
+      if [[ "${admin_api_whitelist_enabled}" != "1" ]]; then
+        if [[ "${REQUIRE_ADMIN_API_WHITELIST}" == "1" ]]; then
+          FAIL_API=1
+          record_fail "来源白名单检查失败：ADMIN_API_WHITELIST 未启用（admin_api_whitelist_enabled=false）"
+        else
+          record_warn "ADMIN_API_WHITELIST 未启用（建议至少加入固定运维来源 IP/CIDR）"
         fi
       fi
     fi

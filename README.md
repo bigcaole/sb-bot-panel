@@ -437,7 +437,7 @@ sb-admin
 执行 `安全加固向导` 并轮换 token 后，脚本会自动触发一次节点 token 同步（默认包含禁用节点并强制新建），降低节点鉴权不同步风险。  
 同样地，执行 `Token 收敛` 后也会自动触发一次节点 token 同步任务，进一步降低节点掉线风险。  
 Token 优先级、拆分迁移、收敛规则与严格验收，统一见下文 `Token 模型与生命周期（管理/节点）` 章节。
-执行 `安全加固向导` 时，脚本会提示并可自动把“当前 SSH 来源 IP”加入 `CONTROLLER_PORT_WHITELIST` 与 `SECURITY_BLOCK_PROTECTED_IPS`，减少误封与误锁风险。
+执行 `安全加固向导` 时，脚本会提示并可自动把“当前 SSH 来源 IP”加入 `CONTROLLER_PORT_WHITELIST`、`ADMIN_API_WHITELIST` 与 `SECURITY_BLOCK_PROTECTED_IPS`，减少误封与误锁风险。
 
 统一验收命令（管理服务器）：
 
@@ -445,6 +445,8 @@ Token 优先级、拆分迁移、收敛规则与严格验收，统一见下文 `
 bash /root/sb-bot-panel/scripts/admin/smoke_test.sh --require-api
 # 严格要求通过 token 拆分验收（推荐）
 bash /root/sb-bot-panel/scripts/admin/smoke_test.sh --require-api --require-token-split
+# 严格要求启用管理接口来源白名单（推荐）
+bash /root/sb-bot-panel/scripts/admin/smoke_test.sh --require-api --require-admin-api-whitelist
 ```
 
 说明补充：
@@ -485,6 +487,7 @@ bash /root/sb-bot-panel/scripts/ai_context_export.sh
 - 检查项：Python 语法、`tests/` 单元测试、controller API 鉴权冒烟
 - token 选择优先级、拆分判定规则见下文 `Token 模型与生命周期（管理/节点）`
 - token 拆分检查：默认告警；启用 `--require-token-split`（或环境变量 `SMOKE_REQUIRE_TOKEN_SPLIT=1`）时，若仍为兼容模式会直接判失败
+- 管理接口来源白名单检查：默认告警；启用 `--require-admin-api-whitelist`（或环境变量 `SMOKE_REQUIRE_ADMIN_API_WHITELIST=1`）时，若未启用 `ADMIN_API_WHITELIST` 会直接判失败
 - 访问收敛检查：会读取 `/admin/node_access/status`，默认仅告警；若设置 `SMOKE_REQUIRE_NODE_LOCK=1`，当存在“启用但未锁定来源IP”的节点会直接判失败
 - 退出码：`0=通过`，`10=代码检查失败`，`20=API检查失败`，`30=代码+API均失败`
 
@@ -578,6 +581,7 @@ scp root@旧IP:/var/backups/sb-migrate/sb-migrate-xxxx.tar.gz root@新IP:/root/
 - `HTTPS_ACME_EMAIL=admin@example.com`（可选，证书账号邮箱）
 - `CONTROLLER_PORT=8080`
 - `CONTROLLER_PORT_WHITELIST=`（可选；逗号分隔 IP/CIDR，用于限制 8080 访问来源）
+- `ADMIN_API_WHITELIST=`（可选；逗号分隔 IP/CIDR，用于限制“管理接口”来源，应用层二次限制）
 - `SECURITY_BLOCK_PROTECTED_IPS=`（可选；逗号分隔 IP/CIDR，manual/auto 封禁会跳过这些来源；无效项会在安全状态中告警）
 - `ADMIN_AUTH_TOKEN=随机长串`（管理接口 token）
 - `NODE_AUTH_TOKEN=随机长串`（节点接口 token）
@@ -747,6 +751,9 @@ bash /root/sb-bot-panel/scripts/admin/smoke_test.sh --require-api --require-toke
 - 建议同时使用防火墙限制管理端口来源（仅节点 IP）：
   - `ufw allow from <节点IP> to any port <CONTROLLER_PORT> proto tcp`
   - `ufw deny <CONTROLLER_PORT>/tcp`
+- 可选启用管理接口应用层来源白名单（即使端口策略误配也可二次拦截）：
+  - `ADMIN_API_WHITELIST=运维IP1,运维网段CIDR`
+  - 启用后，非白名单来源访问管理接口会返回 `403 source_not_allowed`（本机 `127.0.0.1/::1` 默认允许）
 - 公有仓库通常不需要 token。
 - 私有仓库建议使用 deploy key 或 PAT（Personal Access Token）。
 

@@ -1,6 +1,7 @@
 import tempfile
 import time
 import unittest
+import ipaddress
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -27,11 +28,15 @@ class ControllerSmokeTestCase(unittest.TestCase):
             "security.ADMIN_AUTH_TOKEN": security_module.ADMIN_AUTH_TOKEN,
             "security.NODE_AUTH_TOKEN": security_module.NODE_AUTH_TOKEN,
             "security.API_RATE_LIMIT_ENABLED": security_module.API_RATE_LIMIT_ENABLED,
+            "security.ADMIN_API_WHITELIST_ITEMS": list(security_module.ADMIN_API_WHITELIST_ITEMS),
+            "security._ADMIN_API_WHITELIST_NETWORKS": list(security_module._ADMIN_API_WHITELIST_NETWORKS),
+            "security._ADMIN_API_WHITELIST_INVALID_ITEMS": list(security_module._ADMIN_API_WHITELIST_INVALID_ITEMS),
             "routers_sub.SUB_LINK_SIGN_KEY": sub_router_module.SUB_LINK_SIGN_KEY,
             "routers_sub.SUB_LINK_REQUIRE_SIGNATURE": sub_router_module.SUB_LINK_REQUIRE_SIGNATURE,
             "routers_admin.AUTH_TOKEN": admin_router_module.AUTH_TOKEN,
             "routers_admin.ADMIN_AUTH_TOKEN": admin_router_module.ADMIN_AUTH_TOKEN,
             "routers_admin.NODE_AUTH_TOKEN": admin_router_module.NODE_AUTH_TOKEN,
+            "routers_admin.ADMIN_API_WHITELIST_ITEMS": list(admin_router_module.ADMIN_API_WHITELIST_ITEMS),
             "routers_admin.SUB_LINK_SIGN_KEY": admin_router_module.SUB_LINK_SIGN_KEY,
             "routers_admin.SUB_LINK_REQUIRE_SIGNATURE": admin_router_module.SUB_LINK_REQUIRE_SIGNATURE,
             "routers_admin.SUB_LINK_DEFAULT_TTL_SECONDS": admin_router_module.SUB_LINK_DEFAULT_TTL_SECONDS,
@@ -60,11 +65,15 @@ class ControllerSmokeTestCase(unittest.TestCase):
         security_module.ADMIN_AUTH_TOKEN = ""
         security_module.NODE_AUTH_TOKEN = ""
         security_module.API_RATE_LIMIT_ENABLED = False
+        security_module.ADMIN_API_WHITELIST_ITEMS[:] = []
+        security_module._ADMIN_API_WHITELIST_NETWORKS[:] = []
+        security_module._ADMIN_API_WHITELIST_INVALID_ITEMS[:] = []
         sub_router_module.SUB_LINK_SIGN_KEY = "sign-key"
         sub_router_module.SUB_LINK_REQUIRE_SIGNATURE = True
         admin_router_module.AUTH_TOKEN = "test-token"
         admin_router_module.ADMIN_AUTH_TOKEN = ""
         admin_router_module.NODE_AUTH_TOKEN = ""
+        admin_router_module.ADMIN_API_WHITELIST_ITEMS[:] = []
         admin_router_module.SUB_LINK_SIGN_KEY = "sign-key"
         admin_router_module.SUB_LINK_REQUIRE_SIGNATURE = True
         admin_router_module.SUB_LINK_DEFAULT_TTL_SECONDS = 600
@@ -165,6 +174,15 @@ class ControllerSmokeTestCase(unittest.TestCase):
         security_module.ADMIN_AUTH_TOKEN = self._old_values["security.ADMIN_AUTH_TOKEN"]
         security_module.NODE_AUTH_TOKEN = self._old_values["security.NODE_AUTH_TOKEN"]
         security_module.API_RATE_LIMIT_ENABLED = self._old_values["security.API_RATE_LIMIT_ENABLED"]
+        security_module.ADMIN_API_WHITELIST_ITEMS[:] = self._old_values[
+            "security.ADMIN_API_WHITELIST_ITEMS"
+        ]
+        security_module._ADMIN_API_WHITELIST_NETWORKS[:] = self._old_values[
+            "security._ADMIN_API_WHITELIST_NETWORKS"
+        ]
+        security_module._ADMIN_API_WHITELIST_INVALID_ITEMS[:] = self._old_values[
+            "security._ADMIN_API_WHITELIST_INVALID_ITEMS"
+        ]
         sub_router_module.SUB_LINK_SIGN_KEY = self._old_values["routers_sub.SUB_LINK_SIGN_KEY"]
         sub_router_module.SUB_LINK_REQUIRE_SIGNATURE = self._old_values[
             "routers_sub.SUB_LINK_REQUIRE_SIGNATURE"
@@ -172,6 +190,9 @@ class ControllerSmokeTestCase(unittest.TestCase):
         admin_router_module.AUTH_TOKEN = self._old_values["routers_admin.AUTH_TOKEN"]
         admin_router_module.ADMIN_AUTH_TOKEN = self._old_values["routers_admin.ADMIN_AUTH_TOKEN"]
         admin_router_module.NODE_AUTH_TOKEN = self._old_values["routers_admin.NODE_AUTH_TOKEN"]
+        admin_router_module.ADMIN_API_WHITELIST_ITEMS[:] = self._old_values[
+            "routers_admin.ADMIN_API_WHITELIST_ITEMS"
+        ]
         admin_router_module.SUB_LINK_SIGN_KEY = self._old_values["routers_admin.SUB_LINK_SIGN_KEY"]
         admin_router_module.SUB_LINK_REQUIRE_SIGNATURE = self._old_values[
             "routers_admin.SUB_LINK_REQUIRE_SIGNATURE"
@@ -326,6 +347,8 @@ class ControllerSmokeTestCase(unittest.TestCase):
             self.assertIn("admin_auth_source", admin_sec.json())
             self.assertIn("node_auth_source", admin_sec.json())
             self.assertIn("auth_token_split_active", admin_sec.json())
+            self.assertIn("admin_api_whitelist_enabled", admin_sec.json())
+            self.assertIn("admin_api_whitelist_invalid_count", admin_sec.json())
 
             ai_export_resp = client.post(
                 "/admin/diagnostics/ai_context_export",
@@ -978,13 +1001,18 @@ class ControllerSmokeTestCase(unittest.TestCase):
             self.assertEqual(400, protected_cidr_resp.status_code)
 
             admin_router_module.SECURITY_BLOCK_PROTECTED_IPS_ITEMS = ["bad-ip", "198.51.100.0/24"]
+            admin_router_module.ADMIN_API_WHITELIST_ITEMS[:] = ["bad-cidr", "203.0.113.0/24"]
             sec_resp = client.get("/admin/security/status", headers=self._auth_header())
             self.assertEqual(200, sec_resp.status_code)
             sec_data = sec_resp.json()
             self.assertEqual(1, int(sec_data.get("security_block_protected_ips_invalid_count", 0) or 0))
+            self.assertEqual(1, int(sec_data.get("admin_api_whitelist_invalid_count", 0) or 0))
             warnings = sec_data.get("warnings", [])
             self.assertTrue(
                 any("SECURITY_BLOCK_PROTECTED_IPS 含无效项" in str(item) for item in warnings)
+            )
+            self.assertTrue(
+                any("ADMIN_API_WHITELIST 含无效项" in str(item) for item in warnings)
             )
 
             list_resp = client.get("/admin/security/blocked_ips", headers=self._auth_header())
@@ -1001,6 +1029,32 @@ class ControllerSmokeTestCase(unittest.TestCase):
             )
             self.assertEqual(200, unblock_resp.status_code)
             self.assertTrue(bool(unblock_resp.json().get("ok")))
+
+    def test_admin_api_whitelist_enforcement_smoke(self) -> None:
+        old_get_request_ip = security_module.get_request_ip
+        try:
+            security_module.ADMIN_API_WHITELIST_ITEMS[:] = ["203.0.113.0/24"]
+            security_module._ADMIN_API_WHITELIST_NETWORKS[:] = [
+                ipaddress.ip_network("203.0.113.0/24")
+            ]
+            security_module._ADMIN_API_WHITELIST_INVALID_ITEMS[:] = []
+            admin_router_module.ADMIN_API_WHITELIST_ITEMS[:] = ["203.0.113.0/24"]
+
+            security_module.get_request_ip = lambda request: "198.51.100.10"
+            with TestClient(app_module.app) as client:
+                denied_resp = client.get("/nodes", headers=self._auth_header())
+                self.assertEqual(403, denied_resp.status_code)
+                self.assertEqual("source_not_allowed", str(denied_resp.json().get("error", "")))
+
+            security_module.get_request_ip = lambda request: "203.0.113.9"
+            with TestClient(app_module.app) as client:
+                allowed_resp = client.get("/nodes", headers=self._auth_header())
+                self.assertEqual(200, allowed_resp.status_code)
+                status_resp = client.get("/admin/security/status", headers=self._auth_header())
+                self.assertEqual(200, status_resp.status_code)
+                self.assertTrue(bool(status_resp.json().get("admin_api_whitelist_enabled")))
+        finally:
+            security_module.get_request_ip = old_get_request_ip
 
     def test_security_auto_block_smoke(self) -> None:
         now_ts = int(time.time())

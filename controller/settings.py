@@ -79,6 +79,9 @@ API_DOCS_ENABLED = _get_bool_env("API_DOCS_ENABLED", False)
 # 管理端 8080 放行白名单（可为空，来源于 .env）
 CONTROLLER_PORT_WHITELIST_ITEMS = _get_csv_env("CONTROLLER_PORT_WHITELIST")
 
+# 管理接口应用层来源白名单（可为空；为空=不启用应用层限制）
+ADMIN_API_WHITELIST_ITEMS = _get_csv_env("ADMIN_API_WHITELIST")
+
 # 安全封禁保护白名单（可为空，逗号分隔 IP/CIDR；manual/auto block 会跳过这些来源）
 SECURITY_BLOCK_PROTECTED_IPS_ITEMS = _get_csv_env("SECURITY_BLOCK_PROTECTED_IPS")
 

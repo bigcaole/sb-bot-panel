@@ -36,6 +36,7 @@ BOT_TOKEN_PLACEHOLDER="__REPLACE_WITH_TELEGRAM_BOT_TOKEN__"
 
 CONTROLLER_PORT="8080"
 CONTROLLER_PORT_WHITELIST=""
+ADMIN_API_WHITELIST=""
 CONTROLLER_URL=""
 CONTROLLER_PUBLIC_URL=""
 PANEL_BASE_URL=""
@@ -446,10 +447,11 @@ has_env_key() {
 }
 
 load_existing_env_defaults() {
-  local old_port old_port_whitelist old_url old_public_url old_panel_base old_enable_https old_https_domain old_https_email old_auth old_admin_auth old_node_auth old_bot old_admin old_view_admin old_ops_admin old_super_admin old_migrate old_backup_retention old_migrate_retention old_log_archive_window old_log_archive_retention old_log_archive_dir old_menu_ttl old_monitor_interval old_offline_threshold old_time_sync_interval old_mutation_cooldown old_trust_xff old_trusted_proxy_ips old_task_timeout old_task_retention old_task_max_pending old_sub_link_sign_key old_sub_link_require old_sub_link_ttl old_rate_limit_enabled old_rate_limit_window old_rate_limit_max old_security_events_exclude_local old_security_block_protected_ips old_security_auto_block_enabled old_security_auto_block_interval old_security_auto_block_window old_security_auto_block_threshold old_security_auto_block_duration old_security_auto_block_max old_controller_http_timeout old_bot_actor_label
+  local old_port old_port_whitelist old_admin_api_whitelist old_url old_public_url old_panel_base old_enable_https old_https_domain old_https_email old_auth old_admin_auth old_node_auth old_bot old_admin old_view_admin old_ops_admin old_super_admin old_migrate old_backup_retention old_migrate_retention old_log_archive_window old_log_archive_retention old_log_archive_dir old_menu_ttl old_monitor_interval old_offline_threshold old_time_sync_interval old_mutation_cooldown old_trust_xff old_trusted_proxy_ips old_task_timeout old_task_retention old_task_max_pending old_sub_link_sign_key old_sub_link_require old_sub_link_ttl old_rate_limit_enabled old_rate_limit_window old_rate_limit_max old_security_events_exclude_local old_security_block_protected_ips old_security_auto_block_enabled old_security_auto_block_interval old_security_auto_block_window old_security_auto_block_threshold old_security_auto_block_duration old_security_auto_block_max old_controller_http_timeout old_bot_actor_label
   local has_auth_key has_admin_auth_key has_node_auth_key
   old_port="$(get_env_value "CONTROLLER_PORT")"
   old_port_whitelist="$(get_env_value "CONTROLLER_PORT_WHITELIST")"
+  old_admin_api_whitelist="$(get_env_value "ADMIN_API_WHITELIST")"
   old_url="$(get_env_value "CONTROLLER_URL")"
   old_public_url="$(get_env_value "CONTROLLER_PUBLIC_URL")"
   old_panel_base="$(get_env_value "PANEL_BASE_URL")"
@@ -501,6 +503,7 @@ load_existing_env_defaults() {
 
   CONTROLLER_PORT="${old_port:-8080}"
   CONTROLLER_PORT_WHITELIST="${old_port_whitelist:-}"
+  ADMIN_API_WHITELIST="${old_admin_api_whitelist:-}"
   CONTROLLER_URL="${old_url:-http://127.0.0.1:${CONTROLLER_PORT}}"
   CONTROLLER_PUBLIC_URL="${old_public_url:-}"
   PANEL_BASE_URL="${old_panel_base:-}"
@@ -609,6 +612,7 @@ ensure_split_auth_tokens() {
 
 normalize_loaded_values() {
   CONTROLLER_PORT_WHITELIST="$(normalize_whitelist_csv "$CONTROLLER_PORT_WHITELIST")"
+  ADMIN_API_WHITELIST="$(normalize_whitelist_csv "$ADMIN_API_WHITELIST")"
   if ! [[ "$ENABLE_HTTPS" =~ ^[01]$ ]]; then
     ENABLE_HTTPS="0"
   fi
@@ -739,6 +743,7 @@ prompt_env_config() {
   msg "配置向导说明："
   echo "  - CONTROLLER_PORT：controller 对外监听端口（节点 agent 需要访问）"
   echo "  - CONTROLLER_PORT_WHITELIST：可选，限制可访问 controller 端口的来源 IP/CIDR"
+  echo "  - ADMIN_API_WHITELIST：可选，管理接口来源白名单（应用层二次限制）"
   echo "  - CONTROLLER_PUBLIC_URL：可选，对外访问 URL（给节点/外部使用）"
   echo "  - PANEL_BASE_URL：bot 生成订阅链接使用的基础地址（建议使用域名）"
   echo "  - ENABLE_HTTPS / HTTPS_DOMAIN：启用 Caddy 自动证书（申请+续期）"
@@ -774,6 +779,9 @@ prompt_env_config() {
   read -r -p "CONTROLLER_PORT_WHITELIST（可选，逗号分隔 IP/CIDR；留空=公网放行） [${CONTROLLER_PORT_WHITELIST}]: " input_port_whitelist
   CONTROLLER_PORT_WHITELIST="${input_port_whitelist:-$CONTROLLER_PORT_WHITELIST}"
   CONTROLLER_PORT_WHITELIST="$(normalize_whitelist_csv "$CONTROLLER_PORT_WHITELIST")"
+  read -r -p "ADMIN_API_WHITELIST（可选，逗号分隔 IP/CIDR；留空=不启用应用层来源限制） [${ADMIN_API_WHITELIST}]: " input_admin_api_whitelist
+  ADMIN_API_WHITELIST="${input_admin_api_whitelist:-$ADMIN_API_WHITELIST}"
+  ADMIN_API_WHITELIST="$(normalize_whitelist_csv "$ADMIN_API_WHITELIST")"
   read -r -p "SECURITY_BLOCK_PROTECTED_IPS（可选，逗号分隔 IP/CIDR；封禁保护白名单） [${SECURITY_BLOCK_PROTECTED_IPS}]: " input_block_protected
   SECURITY_BLOCK_PROTECTED_IPS="${input_block_protected:-$SECURITY_BLOCK_PROTECTED_IPS}"
   SECURITY_BLOCK_PROTECTED_IPS="$(normalize_whitelist_csv "$SECURITY_BLOCK_PROTECTED_IPS")"
@@ -1046,12 +1054,22 @@ prompt_env_config_quick() {
     AUTH_DISABLED_EXPLICIT=0
   fi
 
+  local current_client_ip
+  current_client_ip=""
   if [[ -z "${SECURITY_BLOCK_PROTECTED_IPS:-}" ]]; then
-    local current_client_ip
     current_client_ip="$(detect_current_ssh_client_ip)"
     if [[ -n "$current_client_ip" ]]; then
       SECURITY_BLOCK_PROTECTED_IPS="$current_client_ip"
       msg "快速配置安全默认：已自动设置封禁保护白名单为当前来源 IP（${current_client_ip}）。"
+    fi
+  fi
+  if [[ -z "${ADMIN_API_WHITELIST:-}" ]]; then
+    if [[ -z "$current_client_ip" ]]; then
+      current_client_ip="$(detect_current_ssh_client_ip)"
+    fi
+    if [[ -n "$current_client_ip" ]]; then
+      ADMIN_API_WHITELIST="$current_client_ip"
+      msg "快速配置安全默认：已自动设置管理接口来源白名单为当前来源 IP（${current_client_ip}）。"
     fi
   fi
 
@@ -1091,6 +1109,7 @@ CONTROLLER_PORT=${CONTROLLER_PORT}
 
 # controller 端口白名单（可选，逗号分隔）
 CONTROLLER_PORT_WHITELIST=${CONTROLLER_PORT_WHITELIST}
+ADMIN_API_WHITELIST=${ADMIN_API_WHITELIST}
 SECURITY_BLOCK_PROTECTED_IPS=${SECURITY_BLOCK_PROTECTED_IPS}
 
 # 轻量鉴权 token（可用逗号分隔做轮换过渡）
@@ -1613,6 +1632,11 @@ run_self_checks() {
   else
     check_warn "CONTROLLER_PORT_WHITELIST 为空（8080 可能为公网开放）"
   fi
+  if [[ -n "$ADMIN_API_WHITELIST" ]]; then
+    check_ok ".env 参数存在：ADMIN_API_WHITELIST"
+  else
+    check_warn "ADMIN_API_WHITELIST 为空（管理接口未启用应用层来源限制）"
+  fi
   if [[ -z "$AUTH_TOKEN" ]]; then
     check_warn "AUTH_TOKEN 为空（controller 接口不鉴权，建议仅内网或配防火墙来源限制）"
   elif [[ "$AUTH_TOKEN" == "devtoken123" || ${#AUTH_TOKEN} -lt 16 ]]; then
@@ -1738,6 +1762,7 @@ show_summary() {
   echo "venv 目录: ${VENV_DIR}"
   echo "Controller: 0.0.0.0:${CONTROLLER_PORT}"
   echo "CONTROLLER_PORT_WHITELIST: ${CONTROLLER_PORT_WHITELIST}"
+  echo "ADMIN_API_WHITELIST: ${ADMIN_API_WHITELIST}"
   if [[ "$ENABLE_HTTPS" == "1" ]]; then
     echo "HTTPS 域名: ${HTTPS_DOMAIN}"
   else

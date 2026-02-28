@@ -58,6 +58,7 @@ from controller.settings import (
     API_DOCS_ENABLED,
     AGENT_DEFAULT_POLL_INTERVAL,
     ADMIN_OVERVIEW_CACHE_TTL_SECONDS,
+    ADMIN_API_WHITELIST_ITEMS,
     ADMIN_SECURITY_STATUS_CACHE_TTL_SECONDS,
     AUDIT_LOG_CLEANUP_BATCH_SIZE,
     AUDIT_LOG_CLEANUP_INTERVAL_SECONDS,
@@ -546,6 +547,10 @@ def build_security_status_payload(
     protected_effective_count = max(
         0, int(len(SECURITY_BLOCK_PROTECTED_IPS_ITEMS) - len(protected_invalid_items))
     )
+    admin_api_whitelist_invalid_items = get_invalid_ip_or_cidr_items(ADMIN_API_WHITELIST_ITEMS)
+    admin_api_whitelist_effective_count = max(
+        0, int(len(ADMIN_API_WHITELIST_ITEMS) - len(admin_api_whitelist_invalid_items))
+    )
     if conn is None:
         with get_connection() as local_conn:
             return build_security_status_payload(conn=local_conn, now_ts=now_ts)
@@ -589,6 +594,10 @@ def build_security_status_payload(
         warnings.append("已启用 XFF 信任，但 TRUSTED_PROXY_IPS 为空")
     if not API_RATE_LIMIT_ENABLED:
         warnings.append("轻量限流未启用")
+    if not ADMIN_API_WHITELIST_ITEMS:
+        warnings.append("ADMIN_API_WHITELIST 未设置：管理接口未启用应用层来源限制")
+    if admin_api_whitelist_invalid_items:
+        warnings.append("ADMIN_API_WHITELIST 含无效项（已忽略），请修正格式")
     if API_DOCS_ENABLED:
         warnings.append("API 文档入口已启用（建议仅排障临时开启）")
     if not SECURITY_EVENTS_EXCLUDE_LOCAL:
@@ -620,6 +629,12 @@ def build_security_status_payload(
         "weak_auth_token_risks": weak_token_risks,
         "controller_port_whitelist": CONTROLLER_PORT_WHITELIST_ITEMS,
         "controller_port_whitelist_count": len(CONTROLLER_PORT_WHITELIST_ITEMS),
+        "admin_api_whitelist": ADMIN_API_WHITELIST_ITEMS,
+        "admin_api_whitelist_count": len(ADMIN_API_WHITELIST_ITEMS),
+        "admin_api_whitelist_effective_count": int(admin_api_whitelist_effective_count),
+        "admin_api_whitelist_invalid": admin_api_whitelist_invalid_items,
+        "admin_api_whitelist_invalid_count": len(admin_api_whitelist_invalid_items),
+        "admin_api_whitelist_enabled": bool(admin_api_whitelist_effective_count > 0),
         "trust_x_forwarded_for": TRUST_X_FORWARDED_FOR,
         "trusted_proxy_ips": sorted(TRUSTED_PROXY_IPS),
         "sub_link_sign_enabled": bool(SUB_LINK_SIGN_KEY),

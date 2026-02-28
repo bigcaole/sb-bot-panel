@@ -392,6 +392,7 @@ main() {
   local admin_auth_raw
   local node_auth_raw
   local whitelist_current
+  local admin_api_whitelist_current
   local protect_csv_current
   local current_client_ip
   controller_port="$(get_env_value CONTROLLER_PORT)"
@@ -402,12 +403,14 @@ main() {
   admin_auth_raw="$(get_env_value ADMIN_AUTH_TOKEN)"
   node_auth_raw="$(get_env_value NODE_AUTH_TOKEN)"
   whitelist_current="$(get_env_value CONTROLLER_PORT_WHITELIST)"
+  admin_api_whitelist_current="$(get_env_value ADMIN_API_WHITELIST)"
   protect_csv_current="$(get_env_value SECURITY_BLOCK_PROTECTED_IPS)"
   current_client_ip="$(detect_current_ssh_client_ip)"
 
   msg "开始执行管理面安全加固向导。"
   echo "当前端口: ${controller_port}"
   echo "当前白名单: ${whitelist_current:-（空）}"
+  echo "管理接口来源白名单: ${admin_api_whitelist_current:-（空）}"
   echo "封禁保护白名单: ${protect_csv_current:-（空）}"
   echo "当前 SSH 来源 IP: ${current_client_ip:-未知}"
   if [[ -n "${admin_auth_raw//[[:space:]]/}" || -n "${node_auth_raw//[[:space:]]/}" ]]; then
@@ -480,6 +483,9 @@ main() {
   local mode="whitelist"
   local whitelist_input=""
   local whitelist_final=""
+  local admin_api_whitelist_toggle="Y"
+  local admin_api_whitelist_input=""
+  local admin_api_whitelist_final=""
   echo "请选择 8080 访问策略："
   echo "  1) 白名单放行（推荐）"
   echo "  2) 公网放行（不推荐）"
@@ -521,6 +527,34 @@ main() {
       ;;
   esac
 
+  admin_api_whitelist_final="$(normalize_whitelist_csv "$admin_api_whitelist_current")"
+  read -r -p "是否启用管理接口来源白名单 ADMIN_API_WHITELIST（推荐）？[Y/n]: " admin_api_whitelist_toggle
+  admin_api_whitelist_toggle="${admin_api_whitelist_toggle:-Y}"
+  if [[ "$admin_api_whitelist_toggle" =~ ^[Yy]$ ]]; then
+    local default_admin_api_whitelist
+    default_admin_api_whitelist="$admin_api_whitelist_final"
+    if [[ -z "${default_admin_api_whitelist//[[:space:]]/}" && -n "$current_client_ip" ]]; then
+      default_admin_api_whitelist="$current_client_ip"
+    fi
+    read -r -p "请输入允许访问管理接口的 IP/CIDR（逗号分隔） [${default_admin_api_whitelist}]: " admin_api_whitelist_input
+    admin_api_whitelist_input="${admin_api_whitelist_input:-$default_admin_api_whitelist}"
+    admin_api_whitelist_final="$(normalize_whitelist_csv "$admin_api_whitelist_input")"
+    if [[ -n "$current_client_ip" ]] && ! csv_contains_item "$admin_api_whitelist_final" "$current_client_ip"; then
+      warn "当前 SSH 来源 IP(${current_client_ip}) 不在 ADMIN_API_WHITELIST 中。"
+      read -r -p "是否自动追加当前来源 IP 到 ADMIN_API_WHITELIST？[Y/n]: " answer
+      answer="${answer:-Y}"
+      if [[ "$answer" =~ ^[Yy]$ ]]; then
+        admin_api_whitelist_final="$(append_csv_item "$admin_api_whitelist_final" "$current_client_ip")"
+        msg "已追加当前来源 IP 到 ADMIN_API_WHITELIST。"
+      fi
+    fi
+    set_env_value "ADMIN_API_WHITELIST" "$admin_api_whitelist_final"
+  else
+    admin_api_whitelist_final=""
+    set_env_value "ADMIN_API_WHITELIST" ""
+    warn "已关闭 ADMIN_API_WHITELIST（管理接口仅依赖鉴权 token）。"
+  fi
+
   apply_ufw_rules "$controller_port" "$mode" "$whitelist_final" "$enable_https"
 
   if [[ -n "$current_client_ip" ]]; then
@@ -547,6 +581,7 @@ main() {
   echo "AUTH_TOKEN: $(if [[ -n "$new_auth_token" ]]; then echo '已轮换'; elif [[ -n "$final_auth_token" ]]; then echo '未轮换'; else echo '未设置'; fi)"
   echo "8080 策略: ${mode}"
   echo "8080 白名单: ${whitelist_final:-（空）}"
+  echo "ADMIN_API_WHITELIST: ${admin_api_whitelist_final:-（空）}"
   local sync_admin_raw="$final_admin_auth"
   if [[ -z "${sync_admin_raw//[[:space:]]/}" ]]; then
     sync_admin_raw="$final_auth_token"
@@ -581,10 +616,11 @@ main() {
     detail_json="$(jq -nc \
       --arg mode "$mode" \
       --arg whitelist "$whitelist_final" \
+      --arg admin_api_whitelist "$admin_api_whitelist_final" \
       --arg rotate_admin "$([[ -n "$new_admin_token" ]] && echo true || echo false)" \
       --arg rotate_node "$([[ -n "$new_node_token" ]] && echo true || echo false)" \
       --arg rotate_auth "$([[ -n "$new_auth_token" ]] && echo true || echo false)" \
-      '{mode:$mode, whitelist:$whitelist, rotate_admin:($rotate_admin=="true"), rotate_node:($rotate_node=="true"), rotate_auth:($rotate_auth=="true")}')"
+      '{mode:$mode, whitelist:$whitelist, admin_api_whitelist:$admin_api_whitelist, rotate_admin:($rotate_admin=="true"), rotate_node:($rotate_node=="true"), rotate_auth:($rotate_auth=="true")}')"
   else
     detail_json="{}"
   fi

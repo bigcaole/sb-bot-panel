@@ -9,7 +9,7 @@ from typing import Dict, Optional, Set, Tuple
 from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from controller.settings import API_DOCS_ENABLED
+from controller.settings import ADMIN_API_WHITELIST_ITEMS, API_DOCS_ENABLED
 
 
 def _get_int_env(name: str, default: int) -> int:
@@ -94,6 +94,16 @@ _NODE_AGENT_PATH_PATTERNS = (
     re.compile(r"^/nodes/[^/]+/tasks/[0-9]+/report$"),
     re.compile(r"^/nodes/[^/]+/report_reality$"),
 )
+_ADMIN_API_WHITELIST_NETWORKS = []
+_ADMIN_API_WHITELIST_INVALID_ITEMS = []
+for _raw_item in ADMIN_API_WHITELIST_ITEMS:
+    _value = str(_raw_item or "").strip()
+    if not _value:
+        continue
+    try:
+        _ADMIN_API_WHITELIST_NETWORKS.append(ipaddress.ip_network(_value, strict=False))
+    except ValueError:
+        _ADMIN_API_WHITELIST_INVALID_ITEMS.append(_value)
 
 
 def _trim_oldest_state_items(
@@ -223,6 +233,43 @@ def is_auth_exempt_path(path: str) -> bool:
     # 订阅链接需给客户端直接拉取，保持匿名可访问。
     if normalized.startswith("/sub/"):
         return True
+    return False
+
+
+def is_admin_api_path(path: str) -> bool:
+    normalized = str(path or "").strip() or "/"
+    if is_auth_exempt_path(normalized):
+        return False
+    return not is_node_agent_auth_path(normalized)
+
+
+def is_admin_api_whitelist_enabled() -> bool:
+    return bool(_ADMIN_API_WHITELIST_NETWORKS)
+
+
+def get_admin_api_whitelist_invalid_items() -> list:
+    return list(_ADMIN_API_WHITELIST_INVALID_ITEMS)
+
+
+def is_request_allowed_by_admin_api_whitelist(request: Request) -> bool:
+    if not is_admin_api_whitelist_enabled():
+        return True
+
+    request_ip_raw = get_request_ip(request)
+    if not request_ip_raw:
+        return False
+    try:
+        request_ip_obj = ipaddress.ip_address(str(request_ip_raw))
+    except ValueError:
+        return False
+
+    # 运维脚本/bot 的本机调用默认放行，避免误锁本机管理能力。
+    if request_ip_obj.is_loopback:
+        return True
+
+    for network in _ADMIN_API_WHITELIST_NETWORKS:
+        if request_ip_obj in network:
+            return True
     return False
 
 
