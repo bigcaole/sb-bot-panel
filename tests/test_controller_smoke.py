@@ -416,6 +416,12 @@ class ControllerSmokeTestCase(unittest.TestCase):
                 self.assertEqual("smoke-ops", str(item.get("actor", "")))
                 self.assertTrue(str(item.get("action", "")).startswith("ops."))
 
+            invalid_prefix_resp = client.get(
+                "/admin/audit?limit=20&action_prefix=ops.%25",
+                headers=self._auth_header(),
+            )
+            self.assertEqual(400, invalid_prefix_resp.status_code)
+
             sync_tokens_resp = client.post(
                 "/admin/auth/sync_node_tokens",
                 headers=self._auth_header(),

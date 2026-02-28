@@ -2485,6 +2485,8 @@ def list_admin_audit_logs(
     action_value = str(action or "").strip()
     action_prefix_value = str(action_prefix or "").strip()
     actor_value = str(actor or "").strip()
+    if action_prefix_value and (len(action_prefix_value) > 64 or not re.fullmatch(r"[A-Za-z0-9._:-]+", action_prefix_value)):
+        raise HTTPException(status_code=400, detail="invalid action_prefix")
     window_value = int(window_seconds or 0)
     if window_value < 0:
         window_value = 0
@@ -2497,8 +2499,8 @@ def list_admin_audit_logs(
         where_clauses.append("action = ?")
         params.append(action_value)
     elif action_prefix_value:
-        where_clauses.append("SUBSTR(action, 1, ?) = ?")
-        params.extend([len(action_prefix_value), action_prefix_value])
+        where_clauses.append("action LIKE ?")
+        params.append("{0}%".format(action_prefix_value))
     if actor_value:
         where_clauses.append("actor = ?")
         params.append(actor_value)
