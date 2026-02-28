@@ -3138,7 +3138,12 @@ def format_limit_mode_label(mode: str) -> str:
 
 
 def format_sub_links_info_text(
-    user_code: str, links_url: str = "", base64_url: str = "", signed: bool = False, expire_at: int = 0
+    user_code: str,
+    links_url: str = "",
+    base64_url: str = "",
+    signed: bool = False,
+    expire_at: int = 0,
+    diagnosis_text: str = "",
 ) -> str:
     plain_url = links_url.strip() if links_url else f"{PANEL_BASE_URL}/sub/links/{user_code}"
     b64_url = base64_url.strip() if base64_url else f"{PANEL_BASE_URL}/sub/base64/{user_code}"
@@ -3154,7 +3159,48 @@ def format_sub_links_info_text(
         f"{b64_url}\n\n"
         f"{signed_hint}"
         "如果REALITY参数未配置，将在明文订阅中提示并跳过vless链接。"
+        f"{diagnosis_text}"
     )
+
+
+def format_subscription_diagnosis_text(user: dict, user_nodes: list) -> str:
+    status_text = str((user or {}).get("status", "") or "").strip().lower()
+    expire_at = 0
+    try:
+        expire_at = int((user or {}).get("expire_at", 0) or 0)
+    except (TypeError, ValueError):
+        expire_at = 0
+    now_ts = int(time.time())
+    expired = expire_at > 0 and expire_at <= now_ts
+
+    nodes = user_nodes if isinstance(user_nodes, list) else []
+    total = len(nodes)
+    enabled = 0
+    for item in nodes:
+        try:
+            if int(item.get("enabled", 0) or 0) == 1:
+                enabled += 1
+        except (TypeError, ValueError):
+            continue
+
+    lines = [
+        "",
+        "",
+        "订阅诊断：",
+        f"- 用户状态：{status_text or '-'}",
+        f"- 到期状态：{'已过期' if expired else '正常'}",
+        f"- 已绑定节点：{total}",
+        f"- 可用节点（启用）：{enabled}",
+    ]
+    if status_text != "active":
+        lines.append("- 提示：用户被禁用时，订阅会返回 403（user is disabled）。")
+    elif expired:
+        lines.append("- 提示：用户过期时，订阅会返回 403（user expired）。")
+    elif total == 0:
+        lines.append("- 提示：未分配节点时，订阅会返回 # no available links。")
+    elif enabled == 0:
+        lines.append("- 提示：已绑定节点均禁用时，订阅会返回 # no available links。")
+    return "\n".join(lines)
 
 
 def format_query_user_detail_text(user: dict, user_nodes: list) -> str:
@@ -5511,7 +5557,9 @@ async def create_user_confirm(
         f"限速：{speed_text}\n"
         f"TUIC端口：{tuic_port}\n\n"
         f"订阅链接{signed_tip}：\n{links_url}\n\n"
-        f"Base64订阅{signed_tip}：\n{base64_url}",
+        f"Base64订阅{signed_tip}：\n{base64_url}\n\n"
+        "提示：新建用户默认未分配节点；未分配节点时订阅会返回 # no available links。\n"
+        "请在“节点分配”中绑定节点后再使用订阅。",
         reply_markup=build_submenu("user"),
     )
     context.user_data.pop(WIZARD_KEY, None)
@@ -7953,6 +8001,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 expire_at = int(signed_data.get("expire_at", 0) or 0)
             except (TypeError, ValueError):
                 expire_at = 0
+        user_data, _, _ = await controller_request("GET", f"/users/{user_code}")
+        user_nodes_data, _, _ = await controller_request("GET", f"/users/{user_code}/nodes")
+        diagnosis_text = ""
+        if isinstance(user_data, dict) and isinstance(user_nodes_data, list):
+            diagnosis_text = format_subscription_diagnosis_text(user_data, user_nodes_data)
         await query.edit_message_text(
             format_sub_links_info_text(
                 user_code,
@@ -7960,6 +8013,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 base64_url=base64_url,
                 signed=signed_flag,
                 expire_at=expire_at,
+                diagnosis_text=diagnosis_text,
             ),
             reply_markup=build_sub_links_info_keyboard(user_code),
         )
