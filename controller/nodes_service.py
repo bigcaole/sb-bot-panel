@@ -1,4 +1,6 @@
+import ipaddress
 import sqlite3
+from urllib.parse import urlsplit
 from typing import Dict, List, Union
 
 from fastapi import HTTPException, Request
@@ -7,6 +9,46 @@ from controller.audit import get_request_actor, get_source_ip_for_audit, write_a
 from controller.db import get_connection
 from controller.schemas import CreateNodeRequest, UpdateNodeRequest
 from controller.security import validate_agent_ip
+
+
+def _normalize_host_candidate(raw_host: str) -> str:
+    value = str(raw_host or "").strip()
+    if not value:
+        return ""
+    if "://" in value:
+        parsed = urlsplit(value)
+        value = str(parsed.hostname or "").strip()
+    if value.startswith("[") and value.endswith("]"):
+        value = value[1:-1].strip()
+    # host:port (non-IPv6)
+    if value.count(":") == 1:
+        maybe_host, maybe_port = value.rsplit(":", 1)
+        if maybe_port.isdigit():
+            value = maybe_host.strip()
+    return value
+
+
+def _is_ip_literal(value: str) -> bool:
+    candidate = str(value or "").strip()
+    if not candidate:
+        return False
+    try:
+        ipaddress.ip_address(candidate)
+        return True
+    except ValueError:
+        return False
+
+
+def derive_tuic_server_name(host: str, tuic_server_name: Union[str, None]) -> Union[str, None]:
+    explicit = str(tuic_server_name or "").strip()
+    if explicit:
+        return explicit
+    candidate = _normalize_host_candidate(host)
+    if not candidate:
+        return None
+    if _is_ip_literal(candidate):
+        return None
+    return candidate
 
 
 def create_node_service(payload: CreateNodeRequest, request: Request) -> Dict[str, Union[int, str, None]]:
@@ -24,6 +66,7 @@ def create_node_service(payload: CreateNodeRequest, request: Request) -> Dict[st
     if monitor_enabled not in (0, 1):
         raise HTTPException(status_code=400, detail="monitor_enabled must be 0 or 1")
     agent_ip = validate_agent_ip(payload.agent_ip)
+    tuic_server_name = derive_tuic_server_name(payload.host, payload.tuic_server_name)
 
     with get_connection() as conn:
         try:
@@ -52,7 +95,7 @@ def create_node_service(payload: CreateNodeRequest, request: Request) -> Dict[st
                     payload.host,
                     agent_ip,
                     payload.reality_server_name,
-                    payload.tuic_server_name,
+                    tuic_server_name,
                     payload.tuic_listen_port,
                     monitor_enabled,
                     payload.tuic_port_start,
@@ -88,7 +131,7 @@ def create_node_service(payload: CreateNodeRequest, request: Request) -> Dict[st
         "host": payload.host,
         "agent_ip": agent_ip,
         "reality_server_name": payload.reality_server_name,
-        "tuic_server_name": payload.tuic_server_name,
+        "tuic_server_name": tuic_server_name,
         "tuic_listen_port": payload.tuic_listen_port,
         "monitor_enabled": monitor_enabled,
         "tuic_port_start": payload.tuic_port_start,

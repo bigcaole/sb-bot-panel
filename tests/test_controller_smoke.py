@@ -577,6 +577,49 @@ class ControllerSmokeTestCase(unittest.TestCase):
             self.assertEqual(200, node_disabled_sync.status_code)
             self.assertEqual(0, len(node_disabled_sync.json().get("users", [])))
 
+    def test_create_node_auto_fills_tuic_server_name_for_domain_host(self) -> None:
+        with TestClient(app_module.app) as client:
+            create_resp = client.post(
+                "/nodes/create",
+                headers=self._auth_header(),
+                json={
+                    "node_code": "KR1",
+                    "region": "KR",
+                    "host": "kr1.example.com",
+                    "agent_ip": "203.0.113.10",
+                    "reality_server_name": "apple.com",
+                    "tuic_port_start": 23000,
+                    "tuic_port_end": 23010,
+                    "enabled": 1,
+                },
+            )
+            self.assertEqual(200, create_resp.status_code)
+            payload = create_resp.json()
+            self.assertEqual("kr1.example.com", str(payload.get("tuic_server_name", "")))
+
+            get_resp = client.get("/nodes/KR1", headers=self._auth_header())
+            self.assertEqual(200, get_resp.status_code)
+            self.assertEqual("kr1.example.com", str(get_resp.json().get("tuic_server_name", "")))
+
+    def test_create_node_keeps_tuic_server_name_empty_for_ip_host(self) -> None:
+        with TestClient(app_module.app) as client:
+            create_resp = client.post(
+                "/nodes/create",
+                headers=self._auth_header(),
+                json={
+                    "node_code": "IP1",
+                    "region": "JP",
+                    "host": "5.5.5.5",
+                    "agent_ip": "5.5.5.5",
+                    "tuic_port_start": 23100,
+                    "tuic_port_end": 23110,
+                    "enabled": 1,
+                },
+            )
+            self.assertEqual(200, create_resp.status_code)
+            payload = create_resp.json()
+            self.assertIsNone(payload.get("tuic_server_name"))
+
     def test_security_block_unblock_smoke(self) -> None:
         with TestClient(app_module.app) as client:
             block_resp = client.post(
