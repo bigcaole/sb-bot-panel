@@ -280,7 +280,7 @@ post_ops_audit_event() {
 
 sync_node_tokens_after_rotation() {
   local controller_port="$1"
-  local auth_token_raw="$2"
+  local admin_token_raw="$2"
   local token=""
   local response=""
   local body=""
@@ -290,14 +290,14 @@ sync_node_tokens_after_rotation() {
   local deduplicated=""
   local failed=""
 
-  token="$(pick_working_auth_token "$controller_port" "$auth_token_raw")" || {
-    warn "AUTH_TOKEN 多值模式下未探测到可用 token，回退使用第一个 token 执行节点同步。"
+  token="$(pick_working_auth_token "$controller_port" "$admin_token_raw")" || {
+    warn "管理 token 多值模式下未探测到可用 token，回退使用第一个 token 执行节点同步。"
   }
   if [[ -z "$token" ]]; then
-    token="$(first_auth_token "$auth_token_raw")"
+    token="$(first_auth_token "$admin_token_raw")"
   fi
   if [[ -z "$token" ]]; then
-    warn "自动同步节点 token 已跳过：AUTH_TOKEN 为空。"
+    warn "自动同步节点 token 已跳过：管理 token 为空。"
     return
   fi
 
@@ -389,6 +389,8 @@ main() {
   local controller_port
   local enable_https
   local auth_token_raw
+  local admin_auth_raw
+  local node_auth_raw
   local whitelist_current
   local protect_csv_current
   local current_client_ip
@@ -397,6 +399,8 @@ main() {
   enable_https="$(get_env_value ENABLE_HTTPS)"
   enable_https="${enable_https:-0}"
   auth_token_raw="$(get_env_value AUTH_TOKEN)"
+  admin_auth_raw="$(get_env_value ADMIN_AUTH_TOKEN)"
+  node_auth_raw="$(get_env_value NODE_AUTH_TOKEN)"
   whitelist_current="$(get_env_value CONTROLLER_PORT_WHITELIST)"
   protect_csv_current="$(get_env_value SECURITY_BLOCK_PROTECTED_IPS)"
   current_client_ip="$(detect_current_ssh_client_ip)"
@@ -406,22 +410,70 @@ main() {
   echo "当前白名单: ${whitelist_current:-（空）}"
   echo "封禁保护白名单: ${protect_csv_current:-（空）}"
   echo "当前 SSH 来源 IP: ${current_client_ip:-未知}"
+  if [[ -n "${admin_auth_raw//[[:space:]]/}" || -n "${node_auth_raw//[[:space:]]/}" ]]; then
+    echo "鉴权模式: 拆分优先（ADMIN/NODE）"
+  else
+    echo "鉴权模式: 兼容模式（AUTH_TOKEN）"
+  fi
   echo ""
 
-  local rotate_token="Y"
-  local new_token=""
+  local rotate_admin_token="Y"
+  local rotate_node_token="Y"
+  local rotate_auth_token="N"
+  local new_admin_token=""
+  local new_node_token=""
+  local new_auth_token=""
+  local final_admin_auth="$admin_auth_raw"
+  local final_node_auth="$node_auth_raw"
   local final_auth_token="$auth_token_raw"
-  read -r -p "是否轮换 AUTH_TOKEN（推荐）？[Y/n]: " rotate_token
-  rotate_token="${rotate_token:-Y}"
-  if [[ "$rotate_token" =~ ^[Yy]$ ]]; then
-    new_token="$(generate_auth_token)"
-    if [[ -n "$auth_token_raw" ]]; then
-      final_auth_token="${new_token},${auth_token_raw}"
+  local fallback_for_admin="$admin_auth_raw"
+  local fallback_for_node="$node_auth_raw"
+  if [[ -z "${fallback_for_admin//[[:space:]]/}" ]]; then
+    fallback_for_admin="$auth_token_raw"
+  fi
+  if [[ -z "${fallback_for_node//[[:space:]]/}" ]]; then
+    fallback_for_node="$auth_token_raw"
+  fi
+
+  read -r -p "是否轮换 ADMIN_AUTH_TOKEN（推荐）？[Y/n]: " rotate_admin_token
+  rotate_admin_token="${rotate_admin_token:-Y}"
+  if [[ "$rotate_admin_token" =~ ^[Yy]$ ]]; then
+    new_admin_token="$(generate_auth_token)"
+    if [[ -n "${fallback_for_admin//[[:space:]]/}" ]]; then
+      final_admin_auth="${new_admin_token},${fallback_for_admin}"
     else
-      final_auth_token="$new_token"
+      final_admin_auth="$new_admin_token"
+    fi
+    set_env_value "ADMIN_AUTH_TOKEN" "$final_admin_auth"
+    msg "已写入新 ADMIN_AUTH_TOKEN（过渡模式保留旧 token）。"
+  fi
+
+  read -r -p "是否轮换 NODE_AUTH_TOKEN（推荐）？[Y/n]: " rotate_node_token
+  rotate_node_token="${rotate_node_token:-Y}"
+  if [[ "$rotate_node_token" =~ ^[Yy]$ ]]; then
+    new_node_token="$(generate_auth_token)"
+    if [[ -n "${fallback_for_node//[[:space:]]/}" ]]; then
+      final_node_auth="${new_node_token},${fallback_for_node}"
+    else
+      final_node_auth="$new_node_token"
+    fi
+    set_env_value "NODE_AUTH_TOKEN" "$final_node_auth"
+    msg "已写入新 NODE_AUTH_TOKEN（过渡模式保留旧 token）。"
+  fi
+
+  read -r -p "是否同时轮换兼容 AUTH_TOKEN（可选）？[y/N]: " rotate_auth_token
+  rotate_auth_token="${rotate_auth_token:-N}"
+  if [[ "$rotate_auth_token" =~ ^[Yy]$ ]]; then
+    new_auth_token="$(generate_auth_token)"
+    if [[ -n "${auth_token_raw//[[:space:]]/}" ]]; then
+      final_auth_token="${new_auth_token},${auth_token_raw}"
+    else
+      final_auth_token="$new_auth_token"
     fi
     set_env_value "AUTH_TOKEN" "$final_auth_token"
     msg "已写入新 AUTH_TOKEN（过渡模式保留旧 token）。"
+  else
+    final_auth_token="$(get_env_value AUTH_TOKEN)"
   fi
 
   local mode_choice="1"
@@ -490,29 +542,49 @@ main() {
 
   echo ""
   msg "安全加固完成。"
-  echo "AUTH_TOKEN: $(if [[ -n "$final_auth_token" ]]; then echo '已更新'; else echo '未变更'; fi)"
+  echo "ADMIN_AUTH_TOKEN: $(if [[ -n "$final_admin_auth" ]]; then echo '已维护'; else echo '未设置'; fi)"
+  echo "NODE_AUTH_TOKEN: $(if [[ -n "$final_node_auth" ]]; then echo '已维护'; else echo '未设置'; fi)"
+  echo "AUTH_TOKEN: $(if [[ -n "$new_auth_token" ]]; then echo '已轮换'; elif [[ -n "$final_auth_token" ]]; then echo '未轮换'; else echo '未设置'; fi)"
   echo "8080 策略: ${mode}"
   echo "8080 白名单: ${whitelist_final:-（空）}"
-  if [[ -n "$new_token" ]]; then
-    sync_node_tokens_after_rotation "$controller_port" "$final_auth_token"
+  local sync_admin_raw="$final_admin_auth"
+  if [[ -z "${sync_admin_raw//[[:space:]]/}" ]]; then
+    sync_admin_raw="$final_auth_token"
+  fi
+  if [[ -z "${sync_admin_raw//[[:space:]]/}" ]]; then
+    sync_admin_raw="$final_node_auth"
+  fi
+  if [[ -n "$new_admin_token" || -n "$new_node_token" || -n "$new_auth_token" ]]; then
+    sync_node_tokens_after_rotation "$controller_port" "$sync_admin_raw"
     echo ""
-    warn "当前为 token 过渡模式（新,旧）。节点完成更新后，请将 AUTH_TOKEN 收敛为新 token。"
-    echo "建议后续收敛为："
-    echo "  AUTH_TOKEN=${new_token}"
+    warn "当前为 token 过渡模式（新,旧）。节点完成更新后，建议执行收敛脚本转为单值。"
+    echo "建议后续执行："
+    echo "  bash /root/sb-bot-panel/scripts/admin/auth_token_collapse.sh --yes"
+    if [[ -n "$new_admin_token" ]]; then
+      echo "  ADMIN_AUTH_TOKEN=${new_admin_token}"
+    fi
+    if [[ -n "$new_node_token" ]]; then
+      echo "  NODE_AUTH_TOKEN=${new_node_token}"
+    fi
+    if [[ -n "$new_auth_token" ]]; then
+      echo "  AUTH_TOKEN=${new_auth_token}"
+    fi
   fi
 
   local ops_token
   local detail_json
-  ops_token="$(pick_working_auth_token "$controller_port" "$final_auth_token")" || true
+  ops_token="$(pick_working_auth_token "$controller_port" "$sync_admin_raw")" || true
   if [[ -z "$ops_token" ]]; then
-    ops_token="$(first_auth_token "$final_auth_token")"
+    ops_token="$(first_auth_token "$sync_admin_raw")"
   fi
   if command -v jq >/dev/null 2>&1; then
     detail_json="$(jq -nc \
       --arg mode "$mode" \
       --arg whitelist "$whitelist_final" \
-      --arg token_rotated "$([[ -n "$new_token" ]] && echo true || echo false)" \
-      '{mode:$mode, whitelist:$whitelist, token_rotated:($token_rotated=="true")}')"
+      --arg rotate_admin "$([[ -n "$new_admin_token" ]] && echo true || echo false)" \
+      --arg rotate_node "$([[ -n "$new_node_token" ]] && echo true || echo false)" \
+      --arg rotate_auth "$([[ -n "$new_auth_token" ]] && echo true || echo false)" \
+      '{mode:$mode, whitelist:$whitelist, rotate_admin:($rotate_admin=="true"), rotate_node:($rotate_node=="true"), rotate_auth:($rotate_auth=="true")}')"
   else
     detail_json="{}"
   fi

@@ -434,7 +434,7 @@ sb-admin
 2) 节点 Token 同步（`/admin/auth/sync_node_tokens`）  
 用于节点参数或 token 快速对齐。  
 管理端排障时，可使用 `GET /admin/nodes/{node_code}/sync_preview` 预览该节点下发内容（不受 `agent_ip` 限制，且不刷新 `last_seen_at`）。  
-执行 `安全加固向导` 并轮换 `AUTH_TOKEN` 后，脚本也会自动触发一次节点 token 同步（默认包含禁用节点并强制新建），降低节点鉴权不同步风险。
+执行 `安全加固向导` 并轮换 token 后（优先 `ADMIN_AUTH_TOKEN` / `NODE_AUTH_TOKEN`，可选兼容 `AUTH_TOKEN`），脚本也会自动触发一次节点 token 同步（默认包含禁用节点并强制新建），降低节点鉴权不同步风险。
 同样地，执行 `Token 收敛` 后也会自动触发一次节点 token 同步任务，进一步降低节点掉线风险。  
 `Token 收敛` 会同时处理 `AUTH_TOKEN` / `ADMIN_AUTH_TOKEN` / `NODE_AUTH_TOKEN` 的多值过渡状态。  
 当三者本身均为单值（No-Op）时，脚本也会尝试执行一次节点 token 对齐同步。  
