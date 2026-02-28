@@ -437,6 +437,15 @@ class ControllerSmokeTestCase(unittest.TestCase):
             self.assertGreaterEqual(len(ops_rows), 1)
             for item in ops_rows:
                 self.assertTrue(str(item.get("action", "")).startswith("ops."))
+            with db_module.get_connection() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO audit_logs(actor, action, resource_type, resource_id, detail, source_ip, created_at)
+                    VALUES(?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    ("", "ops.security.source_filter", "security", "controller", "{}", "198.51.100.77", int(time.time())),
+                )
+                conn.commit()
 
             ops_actor_rows_resp = client.get(
                 "/admin/audit?limit=20&action_prefix=ops.&actor=smoke-ops&window_seconds=3600",
@@ -449,6 +458,18 @@ class ControllerSmokeTestCase(unittest.TestCase):
             for item in ops_actor_rows:
                 self.assertEqual("smoke-ops", str(item.get("actor", "")))
                 self.assertTrue(str(item.get("action", "")).startswith("ops."))
+
+            ops_source_rows_resp = client.get(
+                "/admin/audit?limit=20&action=ops.security.source_filter&source_ip=198.51.100.77",
+                headers=self._auth_header(),
+            )
+            self.assertEqual(200, ops_source_rows_resp.status_code)
+            ops_source_rows = ops_source_rows_resp.json()
+            self.assertTrue(isinstance(ops_source_rows, list))
+            self.assertGreaterEqual(len(ops_source_rows), 1)
+            for item in ops_source_rows:
+                self.assertEqual("198.51.100.77", str(item.get("source_ip", "")))
+                self.assertEqual("ops.security.source_filter", str(item.get("action", "")))
 
             invalid_prefix_resp = client.get(
                 "/admin/audit?limit=20&action_prefix=ops.%25",
@@ -465,6 +486,11 @@ class ControllerSmokeTestCase(unittest.TestCase):
                 headers=self._auth_header(),
             )
             self.assertEqual(400, invalid_actor_resp.status_code)
+            invalid_source_ip_resp = client.get(
+                "/admin/audit?limit=20&source_ip=test%0Aclient",
+                headers=self._auth_header(),
+            )
+            self.assertEqual(400, invalid_source_ip_resp.status_code)
 
             sensitive_audit_resp = client.post(
                 "/admin/audit/event",

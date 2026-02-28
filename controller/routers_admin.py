@@ -2629,6 +2629,7 @@ def list_admin_audit_logs(
     action: str = "",
     action_prefix: str = "",
     actor: str = "",
+    source_ip: str = "",
     window_seconds: int = 0,
     authorization: Optional[str] = Header(default=None, alias="Authorization"),
 ) -> Union[List[Dict[str, Union[int, str]]], JSONResponse]:
@@ -2643,12 +2644,15 @@ def list_admin_audit_logs(
     action_value = str(action or "").strip()
     action_prefix_value = str(action_prefix or "").strip()
     actor_value = str(actor or "").strip()
+    source_ip_value = str(source_ip or "").strip()
     if action_value and (len(action_value) > 96 or not re.fullmatch(r"[A-Za-z0-9._:-]+", action_value)):
         raise HTTPException(status_code=400, detail="invalid action")
     if action_prefix_value and (len(action_prefix_value) > 64 or not re.fullmatch(r"[A-Za-z0-9._:-]+", action_prefix_value)):
         raise HTTPException(status_code=400, detail="invalid action_prefix")
     if actor_value and (len(actor_value) > 64 or _has_control_characters(actor_value)):
         raise HTTPException(status_code=400, detail="invalid actor")
+    if source_ip_value and (len(source_ip_value) > 128 or _has_control_characters(source_ip_value)):
+        raise HTTPException(status_code=400, detail="invalid source_ip")
     window_value = int(window_seconds or 0)
     if window_value < 0:
         window_value = 0
@@ -2666,6 +2670,9 @@ def list_admin_audit_logs(
     if actor_value:
         where_clauses.append("actor = ?")
         params.append(actor_value)
+    if source_ip_value:
+        where_clauses.append("source_ip = ?")
+        params.append(source_ip_value)
     if window_value > 0:
         where_clauses.append("created_at >= ?")
         params.append(int(time.time()) - window_value)
