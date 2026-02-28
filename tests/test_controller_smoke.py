@@ -2,6 +2,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from fastapi.testclient import TestClient
 
@@ -30,6 +31,7 @@ class ControllerSmokeTestCase(unittest.TestCase):
             "routers_admin.SUB_LINK_SIGN_KEY": admin_router_module.SUB_LINK_SIGN_KEY,
             "routers_admin.SUB_LINK_REQUIRE_SIGNATURE": admin_router_module.SUB_LINK_REQUIRE_SIGNATURE,
             "routers_admin.SUB_LINK_DEFAULT_TTL_SECONDS": admin_router_module.SUB_LINK_DEFAULT_TTL_SECONDS,
+            "routers_admin.PANEL_BASE_URL": admin_router_module.PANEL_BASE_URL,
             "routers_admin.run_ufw_command": getattr(admin_router_module, "run_ufw_command", None),
             "routers_admin.SECURITY_AUTO_BLOCK_ENABLED": admin_router_module.SECURITY_AUTO_BLOCK_ENABLED,
             "routers_admin.SECURITY_AUTO_BLOCK_WINDOW_SECONDS": admin_router_module.SECURITY_AUTO_BLOCK_WINDOW_SECONDS,
@@ -50,6 +52,7 @@ class ControllerSmokeTestCase(unittest.TestCase):
         admin_router_module.SUB_LINK_SIGN_KEY = "sign-key"
         admin_router_module.SUB_LINK_REQUIRE_SIGNATURE = True
         admin_router_module.SUB_LINK_DEFAULT_TTL_SECONDS = 600
+        admin_router_module.PANEL_BASE_URL = "https://panel.example.com"
         admin_router_module.run_ufw_command = lambda args, timeout_seconds=20: (0, "ok", "")
         admin_router_module.SECURITY_AUTO_BLOCK_ENABLED = False
         admin_router_module.SECURITY_AUTO_BLOCK_WINDOW_SECONDS = 3600
@@ -140,6 +143,7 @@ class ControllerSmokeTestCase(unittest.TestCase):
         admin_router_module.SUB_LINK_DEFAULT_TTL_SECONDS = self._old_values[
             "routers_admin.SUB_LINK_DEFAULT_TTL_SECONDS"
         ]
+        admin_router_module.PANEL_BASE_URL = self._old_values["routers_admin.PANEL_BASE_URL"]
         admin_router_module.run_ufw_command = self._old_values["routers_admin.run_ufw_command"]
         admin_router_module.SECURITY_AUTO_BLOCK_ENABLED = self._old_values[
             "routers_admin.SECURITY_AUTO_BLOCK_ENABLED"
@@ -505,7 +509,11 @@ class ControllerSmokeTestCase(unittest.TestCase):
             self.assertTrue(bool(signed.get("signed")))
 
             signed_links_url = str(signed["links_url"])
-            signed_path = signed_links_url.replace("http://testserver", "")
+            self.assertTrue(signed_links_url.startswith("https://panel.example.com/sub/links/u1001"))
+            split = urlsplit(signed_links_url)
+            signed_path = split.path
+            if split.query:
+                signed_path = "{0}?{1}".format(signed_path, split.query)
             signed_resp = client.get(signed_path)
             self.assertEqual(200, signed_resp.status_code)
             body = signed_resp.text

@@ -52,6 +52,7 @@ from controller.settings import (
     BACKUP_RETENTION_COUNT,
     CONTROLLER_PORT_WHITELIST_ITEMS,
     CONTROLLER_PUBLIC_URL,
+    PANEL_BASE_URL,
     CONTROLLER_PORT,
     MIGRATE_RETENTION_COUNT,
     NODE_TASK_MAX_PENDING_PER_NODE,
@@ -85,6 +86,15 @@ def _normalize_controller_url(raw_url: str) -> str:
         return ""
     if not re.match(r"^https?://", value):
         value = "http://{0}".format(value)
+    return value.rstrip("/")
+
+
+def _normalize_public_base_url(raw_url: str) -> str:
+    value = str(raw_url or "").strip().rstrip("/")
+    if not value:
+        return ""
+    if not re.match(r"^https?://", value):
+        value = "https://{0}".format(value)
     return value.rstrip("/")
 
 
@@ -2402,9 +2412,14 @@ def get_signed_sub_urls(
     auth_error = verify_admin_authorization(authorization)
     if auth_error is not None:
         return auth_error
+    resolved_base_url = (
+        _normalize_public_base_url(PANEL_BASE_URL)
+        or _normalize_public_base_url(CONTROLLER_PUBLIC_URL)
+        or str(request.base_url).rstrip("/")
+    )
     signed_data = build_signed_subscription_urls(
         user_code=user_code,
-        base_url=str(request.base_url).rstrip("/"),
+        base_url=resolved_base_url,
         ttl_seconds=int(ttl_seconds or 0),
         default_ttl_seconds=SUB_LINK_DEFAULT_TTL_SECONDS,
         sign_key=SUB_LINK_SIGN_KEY,
