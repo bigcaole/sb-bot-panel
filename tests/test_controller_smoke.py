@@ -229,6 +229,25 @@ class ControllerSmokeTestCase(unittest.TestCase):
             )
             self.assertEqual("abcd1234", str(node_after_report_payload.get("reality_short_id", "")))
 
+            set_agent_ip_resp = client.patch(
+                "/nodes/JP1",
+                headers=self._auth_header(),
+                json={"agent_ip": "198.51.100.10"},
+            )
+            self.assertEqual(200, set_agent_ip_resp.status_code)
+
+            blocked_sync_resp = client.get("/nodes/JP1/sync", headers=self._auth_header())
+            self.assertEqual(403, blocked_sync_resp.status_code)
+
+            preview_sync_resp = client.get(
+                "/admin/nodes/JP1/sync_preview",
+                headers=self._auth_header(),
+            )
+            self.assertEqual(200, preview_sync_resp.status_code)
+            preview_users = preview_sync_resp.json().get("users", [])
+            self.assertEqual(1, len(preview_users))
+            self.assertEqual("u1001", str(preview_users[0].get("user_code", "")))
+
             admin_sec = client.get("/admin/security/status", headers=self._auth_header())
             self.assertEqual(200, admin_sec.status_code)
             self.assertTrue(bool(admin_sec.json().get("auth_enabled")))

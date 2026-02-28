@@ -397,7 +397,12 @@ def report_node_task_service(
     return {"ok": True, "node_code": node_code, "task_id": task_id, "status": next_status}
 
 
-def get_node_sync_service(node_code: str, request: Request) -> Dict[str, Union[Dict, List, int]]:
+def get_node_sync_service(
+    node_code: str,
+    request: Request,
+    enforce_agent_ip: bool = True,
+    touch_last_seen: bool = True,
+) -> Dict[str, Union[Dict, List, int, None]]:
     generated_at = int(time.time())
     with get_connection() as conn:
         node_row = conn.execute(
@@ -426,11 +431,13 @@ def get_node_sync_service(node_code: str, request: Request) -> Dict[str, Union[D
         ).fetchone()
         if node_row is None:
             raise HTTPException(status_code=404, detail="Node not found")
-        verify_node_agent_ip(request, node_code, node_row["agent_ip"])
-        conn.execute(
-            "UPDATE nodes SET last_seen_at = ? WHERE node_code = ?",
-            (generated_at, node_code),
-        )
+        if enforce_agent_ip:
+            verify_node_agent_ip(request, node_code, node_row["agent_ip"])
+        if touch_last_seen:
+            conn.execute(
+                "UPDATE nodes SET last_seen_at = ? WHERE node_code = ?",
+                (generated_at, node_code),
+            )
         node_enabled = int(node_row["enabled"] or 0) == 1
         if node_enabled:
             user_rows = conn.execute(
@@ -459,7 +466,8 @@ def get_node_sync_service(node_code: str, request: Request) -> Dict[str, Union[D
             user_rows = []
 
     node_data = dict(node_row)
-    node_data["last_seen_at"] = generated_at
+    if touch_last_seen:
+        node_data["last_seen_at"] = generated_at
     user_items = []
     for row in user_rows:
         item = dict(row)

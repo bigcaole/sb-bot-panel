@@ -345,6 +345,7 @@ sb-admin
 1) 默认参数同步（`/admin/nodes/sync_agent_defaults`）  
 2) 节点 Token 同步（`/admin/auth/sync_node_tokens`）  
 用于节点参数或 token 快速对齐。  
+管理端排障时，可使用 `GET /admin/nodes/{node_code}/sync_preview` 预览该节点下发内容（不受 `agent_ip` 限制，且不刷新 `last_seen_at`）。  
 执行 `安全加固向导` 并轮换 `AUTH_TOKEN` 后，脚本也会自动触发一次节点 token 同步（默认包含禁用节点并强制新建），降低节点鉴权不同步风险。
 同样地，执行 `收敛 AUTH_TOKEN` 后也会自动触发一次节点 token 同步任务，进一步降低节点掉线风险。
 当 `AUTH_TOKEN` 本身已是单值（No-Op）时，脚本也会尝试执行一次节点 token 对齐同步。

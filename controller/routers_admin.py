@@ -25,7 +25,7 @@ from controller.db_migration import (
     load_export_payload,
     validate_export_payload,
 )
-from controller.node_runtime_service import create_node_task_service
+from controller.node_runtime_service import create_node_task_service, get_node_sync_service
 from controller.schemas import (
     AuditEventRequest,
     BlockIpRequest,
@@ -316,6 +316,45 @@ def sync_node_time(
         audit_action="admin.nodes.sync_time",
     )
     result["server_unix"] = now_ts
+    return result
+
+
+@router.get(
+    "/admin/nodes/{node_code}/sync_preview",
+    summary="Preview node sync payload (admin)",
+    description=(
+        "AUTH_TOKEN 为空时不校验；非空时需要请求头 Authorization: Bearer <AUTH_TOKEN>。"
+        "用于管理端排查节点下发内容，不受 nodes.agent_ip 限制。"
+    ),
+    response_model=None,
+)
+def get_admin_node_sync_preview(
+    node_code: str,
+    request: Request,
+    authorization: Optional[str] = Header(default=None, alias="Authorization"),
+) -> Union[Dict[str, Union[Dict, List, int, None]], JSONResponse]:
+    auth_error = verify_admin_authorization(authorization)
+    if auth_error is not None:
+        return auth_error
+    result = get_node_sync_service(
+        node_code=node_code,
+        request=request,
+        enforce_agent_ip=False,
+        touch_last_seen=False,
+    )
+    now_ts = int(time.time())
+    with get_connection() as conn:
+        write_audit_log(
+            conn,
+            action="admin.nodes.sync_preview",
+            resource_type="node",
+            resource_id=node_code,
+            detail={"users": len(result.get("users", []))},
+            actor=get_request_actor(request),
+            source_ip=get_source_ip_for_audit(request),
+            created_at=now_ts,
+        )
+        conn.commit()
     return result
 
 
