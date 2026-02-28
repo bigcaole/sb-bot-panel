@@ -39,6 +39,9 @@ class ControllerSmokeTestCase(unittest.TestCase):
             "routers_admin.SECURITY_AUTO_BLOCK_DURATION_SECONDS": admin_router_module.SECURITY_AUTO_BLOCK_DURATION_SECONDS,
             "routers_admin.SECURITY_AUTO_BLOCK_MAX_PER_INTERVAL": admin_router_module.SECURITY_AUTO_BLOCK_MAX_PER_INTERVAL,
             "routers_admin.SECURITY_BLOCK_PROTECTED_IPS_ITEMS": admin_router_module.SECURITY_BLOCK_PROTECTED_IPS_ITEMS,
+            "routers_admin._ADMIN_OVERVIEW_CACHE_TTL_SECONDS": admin_router_module._ADMIN_OVERVIEW_CACHE_TTL_SECONDS,
+            "routers_admin._ADMIN_OVERVIEW_CACHE_EXPIRE_AT": admin_router_module._ADMIN_OVERVIEW_CACHE_EXPIRE_AT,
+            "routers_admin._ADMIN_OVERVIEW_CACHE_PAYLOAD": admin_router_module._ADMIN_OVERVIEW_CACHE_PAYLOAD,
             "routers_admin.export_admin_ai_context_snapshot": admin_router_module.export_admin_ai_context_snapshot,
             "routers_admin.export_admin_ops_snapshot": admin_router_module.export_admin_ops_snapshot,
             "routers_nodes.NODE_TASK_MAX_PENDING_PER_NODE": nodes_router_module.NODE_TASK_MAX_PENDING_PER_NODE,
@@ -62,6 +65,9 @@ class ControllerSmokeTestCase(unittest.TestCase):
         admin_router_module.SECURITY_AUTO_BLOCK_DURATION_SECONDS = 3600
         admin_router_module.SECURITY_AUTO_BLOCK_MAX_PER_INTERVAL = 5
         admin_router_module.SECURITY_BLOCK_PROTECTED_IPS_ITEMS = []
+        admin_router_module._ADMIN_OVERVIEW_CACHE_TTL_SECONDS = 30
+        admin_router_module._ADMIN_OVERVIEW_CACHE_EXPIRE_AT = 0
+        admin_router_module._ADMIN_OVERVIEW_CACHE_PAYLOAD = None
         def _fake_ai_context_export(output_path: Path):
             output_path.write_text("# smoke export\n", encoding="utf-8")
             return True, ""
@@ -174,6 +180,15 @@ class ControllerSmokeTestCase(unittest.TestCase):
         ]
         admin_router_module.SECURITY_BLOCK_PROTECTED_IPS_ITEMS = self._old_values[
             "routers_admin.SECURITY_BLOCK_PROTECTED_IPS_ITEMS"
+        ]
+        admin_router_module._ADMIN_OVERVIEW_CACHE_TTL_SECONDS = self._old_values[
+            "routers_admin._ADMIN_OVERVIEW_CACHE_TTL_SECONDS"
+        ]
+        admin_router_module._ADMIN_OVERVIEW_CACHE_EXPIRE_AT = self._old_values[
+            "routers_admin._ADMIN_OVERVIEW_CACHE_EXPIRE_AT"
+        ]
+        admin_router_module._ADMIN_OVERVIEW_CACHE_PAYLOAD = self._old_values[
+            "routers_admin._ADMIN_OVERVIEW_CACHE_PAYLOAD"
         ]
         admin_router_module.export_admin_ai_context_snapshot = self._old_values[
             "routers_admin.export_admin_ai_context_snapshot"
@@ -609,6 +624,34 @@ class ControllerSmokeTestCase(unittest.TestCase):
             security_module.API_RATE_LIMIT_MAX_REQUESTS = old_max
             security_module._RATE_LIMIT_STATE.clear()
             security_module._RATE_LIMIT_LAST_CLEANUP_AT = 0
+
+    def test_admin_overview_cache_reuses_payload_within_ttl(self) -> None:
+        original_builder = admin_router_module.build_admin_overview_payload
+        call_counter = {"count": 0}
+
+        def wrapped_builder(now_ts: int):
+            call_counter["count"] += 1
+            return original_builder(now_ts)
+
+        admin_router_module._ADMIN_OVERVIEW_CACHE_TTL_SECONDS = 30
+        admin_router_module._ADMIN_OVERVIEW_CACHE_EXPIRE_AT = 0
+        admin_router_module._ADMIN_OVERVIEW_CACHE_PAYLOAD = None
+        admin_router_module.build_admin_overview_payload = wrapped_builder
+        try:
+            with TestClient(app_module.app) as client:
+                first = client.get("/admin/overview", headers=self._auth_header())
+                self.assertEqual(200, first.status_code)
+                second = client.get("/admin/overview", headers=self._auth_header())
+                self.assertEqual(200, second.status_code)
+                self.assertEqual(1, int(call_counter["count"]))
+                self.assertEqual(
+                    int(first.json().get("generated_at", 0) or 0),
+                    int(second.json().get("generated_at", 0) or 0),
+                )
+        finally:
+            admin_router_module.build_admin_overview_payload = original_builder
+            admin_router_module._ADMIN_OVERVIEW_CACHE_EXPIRE_AT = 0
+            admin_router_module._ADMIN_OVERVIEW_CACHE_PAYLOAD = None
 
     def test_subscription_sign_and_access_smoke(self) -> None:
         with TestClient(app_module.app) as client:

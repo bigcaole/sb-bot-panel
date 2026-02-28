@@ -6,6 +6,7 @@ import shutil
 import tarfile
 import tempfile
 import time
+from threading import Lock
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple, Union
 
@@ -96,6 +97,10 @@ WEAK_AUTH_TOKEN_EXAMPLES = {
     "admin",
     "123456",
 }
+_ADMIN_OVERVIEW_CACHE_TTL_SECONDS = 5
+_ADMIN_OVERVIEW_CACHE_EXPIRE_AT = 0
+_ADMIN_OVERVIEW_CACHE_PAYLOAD: Optional[Dict[str, Union[int, Dict, List]]] = None
+_ADMIN_OVERVIEW_CACHE_LOCK = Lock()
 
 
 def _normalize_controller_url(raw_url: str) -> str:
@@ -1335,6 +1340,27 @@ def build_admin_overview_payload(now_ts: int) -> Dict[str, Union[int, Dict, List
     }
 
 
+def get_admin_overview_payload_cached(now_ts: int) -> Dict[str, Union[int, Dict, List]]:
+    global _ADMIN_OVERVIEW_CACHE_EXPIRE_AT
+    global _ADMIN_OVERVIEW_CACHE_PAYLOAD
+    cache_ttl = int(_ADMIN_OVERVIEW_CACHE_TTL_SECONDS)
+    if cache_ttl <= 0:
+        return build_admin_overview_payload(now_ts=now_ts)
+
+    cached_payload = _ADMIN_OVERVIEW_CACHE_PAYLOAD
+    if cached_payload is not None and now_ts < int(_ADMIN_OVERVIEW_CACHE_EXPIRE_AT):
+        return cached_payload
+
+    with _ADMIN_OVERVIEW_CACHE_LOCK:
+        cached_payload = _ADMIN_OVERVIEW_CACHE_PAYLOAD
+        if cached_payload is not None and now_ts < int(_ADMIN_OVERVIEW_CACHE_EXPIRE_AT):
+            return cached_payload
+        fresh_payload = build_admin_overview_payload(now_ts=now_ts)
+        _ADMIN_OVERVIEW_CACHE_PAYLOAD = fresh_payload
+        _ADMIN_OVERVIEW_CACHE_EXPIRE_AT = int(now_ts + cache_ttl)
+        return fresh_payload
+
+
 def get_node_task_idempotency_snapshot(
     now_ts: int,
     window_seconds: int = 86400,
@@ -2208,7 +2234,7 @@ def get_admin_overview(
     auth_error = verify_admin_authorization(authorization)
     if auth_error is not None:
         return auth_error
-    return build_admin_overview_payload(now_ts=int(time.time()))
+    return get_admin_overview_payload_cached(now_ts=int(time.time()))
 
 
 @router.get(
