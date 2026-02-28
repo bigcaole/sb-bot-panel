@@ -39,25 +39,16 @@ def _is_ip_literal(value: str) -> bool:
         return False
 
 
-def derive_tuic_server_name(
-    host: str,
-    tuic_server_name: Union[str, None],
-    reality_server_name: Union[str, None] = None,
-) -> Union[str, None]:
+def derive_tuic_server_name(host: str, tuic_server_name: Union[str, None]) -> Union[str, None]:
     explicit = str(tuic_server_name or "").strip()
     if explicit:
         return explicit
     candidate = _normalize_host_candidate(host)
     if not candidate:
-        candidate = ""
-    if candidate and not _is_ip_literal(candidate):
-        return candidate
-
-    # host 为 IP 时，优先复用 reality 域名作为 TUIC 证书域名默认值，减少首次配置步骤。
-    reality_candidate = _normalize_host_candidate(reality_server_name or "")
-    if reality_candidate and not _is_ip_literal(reality_candidate):
-        return reality_candidate
-    return None
+        return None
+    if _is_ip_literal(candidate):
+        return None
+    return candidate
 
 
 def create_node_service(payload: CreateNodeRequest, request: Request) -> Dict[str, Union[int, str, None]]:
@@ -75,9 +66,7 @@ def create_node_service(payload: CreateNodeRequest, request: Request) -> Dict[st
     if monitor_enabled not in (0, 1):
         raise HTTPException(status_code=400, detail="monitor_enabled must be 0 or 1")
     agent_ip = validate_agent_ip(payload.agent_ip)
-    tuic_server_name = derive_tuic_server_name(
-        payload.host, payload.tuic_server_name, payload.reality_server_name
-    )
+    tuic_server_name = derive_tuic_server_name(payload.host, payload.tuic_server_name)
 
     with get_connection() as conn:
         try:
