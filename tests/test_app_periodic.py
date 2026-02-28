@@ -65,15 +65,37 @@ class AppPeriodicTaskTestCase(unittest.TestCase):
             raise RuntimeError("boom")
 
         lock = Lock()
-        updated = app_module._maybe_run_periodic_task(
-            now_ts=100,
-            interval_seconds=60,
-            last_at=30,
-            task_lock=lock,
-            task_runner=_runner,
-        )
+        with self.assertLogs(app_module.logger, level="WARNING"):
+            updated = app_module._maybe_run_periodic_task(
+                now_ts=100,
+                interval_seconds=60,
+                last_at=30,
+                task_lock=lock,
+                task_runner=_runner,
+            )
         self.assertEqual(100, updated)
         self.assertFalse(lock.locked())
+
+    def test_runner_failure_writes_warning_log(self) -> None:
+        def _runner() -> None:
+            raise RuntimeError("boom")
+
+        lock = Lock()
+        with self.assertLogs(app_module.logger, level="WARNING") as cm:
+            updated = app_module._maybe_run_periodic_task(
+                now_ts=100,
+                interval_seconds=60,
+                last_at=30,
+                task_lock=lock,
+                task_runner=_runner,
+                task_name="unit-test-task",
+            )
+        self.assertEqual(100, updated)
+        self.assertFalse(lock.locked())
+        merged = "\n".join(cm.output)
+        self.assertIn("periodic task failed", merged)
+        self.assertIn("unit-test-task", merged)
+        self.assertIn("boom", merged)
 
 
 if __name__ == "__main__":

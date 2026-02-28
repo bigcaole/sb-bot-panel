@@ -1,4 +1,5 @@
 import time
+import logging
 from threading import Lock
 
 from fastapi import FastAPI, Request
@@ -42,6 +43,8 @@ from controller.security import (
 )
 
 
+logger = logging.getLogger(__name__)
+
 if API_DOCS_ENABLED:
     app = FastAPI()
 else:
@@ -60,6 +63,7 @@ def _maybe_run_periodic_task(
     last_at: int,
     task_lock: Lock,
     task_runner,
+    task_name: str = "periodic_task",
 ) -> int:
     if now_ts - int(last_at) < int(interval_seconds):
         return int(last_at)
@@ -70,8 +74,8 @@ def _maybe_run_periodic_task(
             return int(last_at)
         try:
             task_runner()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("periodic task failed: name=%s error=%s", task_name, exc)
         return int(now_ts)
     finally:
         task_lock.release()
@@ -89,6 +93,7 @@ async def auth_middleware(request: Request, call_next):
         last_at=_SECURITY_BLOCK_CLEANUP_LAST_AT,
         task_lock=_SECURITY_BLOCK_CLEANUP_LOCK,
         task_runner=lambda: cleanup_expired_ip_blocks_once(now_ts=now_ts),
+        task_name="security_block_cleanup",
     )
     _AUDIT_LOG_CLEANUP_LAST_AT = _maybe_run_periodic_task(
         now_ts=now_ts,
@@ -96,6 +101,7 @@ async def auth_middleware(request: Request, call_next):
         last_at=_AUDIT_LOG_CLEANUP_LAST_AT,
         task_lock=_AUDIT_LOG_CLEANUP_LOCK,
         task_runner=lambda: _run_audit_log_cleanup_once(now_ts=now_ts),
+        task_name="audit_log_cleanup",
     )
     if SECURITY_AUTO_BLOCK_ENABLED:
         _SECURITY_AUTO_BLOCK_LAST_AT = _maybe_run_periodic_task(
@@ -104,6 +110,7 @@ async def auth_middleware(request: Request, call_next):
             last_at=_SECURITY_AUTO_BLOCK_LAST_AT,
             task_lock=_SECURITY_AUTO_BLOCK_LOCK,
             task_runner=lambda: _run_security_auto_block_once(now_ts=now_ts),
+            task_name="security_auto_block",
         )
 
     if not AUTH_TOKEN:
