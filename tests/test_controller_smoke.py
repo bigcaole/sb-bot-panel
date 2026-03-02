@@ -304,6 +304,19 @@ class ControllerSmokeTestCase(unittest.TestCase):
             self.assertEqual(200, mode_user_resp.status_code)
             self.assertEqual("off", str(mode_user_resp.json().get("limit_mode", "")))
 
+            old_vless_uuid = str(mode_user_resp.json().get("vless_uuid", ""))
+            old_tuic_secret = str(mode_user_resp.json().get("tuic_secret", ""))
+            rotate_creds_resp = client.post(
+                "/users/u1001/rotate_credentials",
+                headers=self._auth_header(),
+            )
+            self.assertEqual(200, rotate_creds_resp.status_code)
+            rotate_payload = rotate_creds_resp.json()
+            self.assertTrue(bool(rotate_payload.get("ok")))
+            self.assertEqual("u1001", str(rotate_payload.get("user_code", "")))
+            self.assertNotEqual(old_vless_uuid, str(rotate_payload.get("vless_uuid", "")))
+            self.assertNotEqual(old_tuic_secret, str(rotate_payload.get("tuic_secret", "")))
+
             sync_after_mode = client.get("/nodes/JP1/sync", headers=self._auth_header())
             self.assertEqual(200, sync_after_mode.status_code)
             sync_users = sync_after_mode.json().get("users", [])

@@ -17,6 +17,7 @@ from controller.users_service import (
     get_user_service,
     list_user_nodes_service,
     list_users_service,
+    rotate_user_credentials_service,
     set_user_limit_mode_service,
     set_user_speed_service,
     set_user_status_service,
@@ -57,6 +58,15 @@ def set_user_limit_mode(
     user_code: str, payload: SetUserLimitModeRequest, request: Request
 ) -> Dict[str, Union[bool, str]]:
     result = set_user_limit_mode_service(user_code, payload, request)
+    invalidate_admin_snapshots_cache()
+    return result
+
+
+@router.post("/users/{user_code}/rotate_credentials")
+def rotate_user_credentials(
+    user_code: str, request: Request
+) -> Dict[str, Union[bool, int, str]]:
+    result = rotate_user_credentials_service(user_code, request)
     invalidate_admin_snapshots_cache()
     return result
 

@@ -16,6 +16,18 @@ from controller.schemas import (
 )
 
 
+def _generate_unique_user_credential(conn: sqlite3.Connection, column_name: str) -> str:
+    for _ in range(12):
+        candidate = str(uuid.uuid4())
+        exists_row = conn.execute(
+            "SELECT 1 FROM users WHERE {0} = ? LIMIT 1".format(column_name),
+            (candidate,),
+        ).fetchone()
+        if exists_row is None:
+            return candidate
+    raise HTTPException(status_code=500, detail="failed to allocate unique user credential")
+
+
 def create_user_service(payload: CreateUserRequest, request: Request) -> Dict[str, Union[int, str]]:
     now = int(time.time())
 
@@ -23,8 +35,8 @@ def create_user_service(payload: CreateUserRequest, request: Request) -> Dict[st
         row = conn.execute("SELECT COALESCE(MAX(mark), 1000) + 1 AS next_mark FROM users").fetchone()
         mark = int(row["next_mark"])
         user_code = "u{0}".format(mark)
-        vless_uuid = str(uuid.uuid4())
-        tuic_secret = str(uuid.uuid4())
+        vless_uuid = _generate_unique_user_credential(conn, "vless_uuid")
+        tuic_secret = _generate_unique_user_credential(conn, "tuic_secret")
         expire_at = now + payload.valid_days * 86400
 
         try:
@@ -184,6 +196,50 @@ def set_user_limit_mode_service(
         conn.commit()
 
     return {"ok": True, "user_code": user_code, "limit_mode": mode_value}
+
+
+def rotate_user_credentials_service(
+    user_code: str, request: Request
+) -> Dict[str, Union[bool, int, str]]:
+    now_ts = int(time.time())
+    with get_connection() as conn:
+        user_row = conn.execute(
+            "SELECT user_code FROM users WHERE user_code = ?",
+            (user_code,),
+        ).fetchone()
+        if user_row is None:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        vless_uuid = _generate_unique_user_credential(conn, "vless_uuid")
+        tuic_secret = _generate_unique_user_credential(conn, "tuic_secret")
+        conn.execute(
+            "UPDATE users SET vless_uuid = ?, tuic_secret = ? WHERE user_code = ?",
+            (vless_uuid, tuic_secret, user_code),
+        )
+        bindings_row = conn.execute(
+            "SELECT COUNT(*) AS c FROM user_nodes WHERE user_code = ?",
+            (user_code,),
+        ).fetchone()
+        bindings = int(bindings_row["c"] or 0) if bindings_row else 0
+        write_audit_log(
+            conn,
+            action="user.rotate_credentials",
+            resource_type="user",
+            resource_id=user_code,
+            detail={"bindings": bindings},
+            actor=get_request_actor(request),
+            source_ip=get_source_ip_for_audit(request),
+            created_at=now_ts,
+        )
+        conn.commit()
+
+    return {
+        "ok": True,
+        "user_code": user_code,
+        "vless_uuid": vless_uuid,
+        "tuic_secret": tuic_secret,
+        "bindings": bindings,
+    }
 
 
 def delete_user_service(user_code: str, request: Request) -> Dict[str, Union[bool, str]]:

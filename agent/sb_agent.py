@@ -1035,6 +1035,56 @@ def tc_run(command: List[str], ignore_error: bool = False) -> bool:
     return True
 
 
+def build_tuic_tc_burst_kb(speed_mbps: int) -> int:
+    # Keep burst small enough for tighter shaping, while avoiding over-drop on higher rates.
+    speed = parse_int(speed_mbps, 0)
+    if speed <= 0:
+        return 64
+    burst = speed * 4
+    if burst < 32:
+        return 32
+    if burst > 128:
+        return 128
+    return burst
+
+
+def build_tuic_tc_filter_command(
+    iface: str,
+    direction: str,
+    protocol: str,
+    pref: int,
+    port_key: str,
+    port: int,
+    rate: str,
+    burst_kb: int,
+) -> List[str]:
+    return [
+        "tc",
+        "filter",
+        "add",
+        "dev",
+        iface,
+        direction,
+        "protocol",
+        protocol,
+        "pref",
+        str(pref),
+        "flower",
+        "ip_proto",
+        "udp",
+        port_key,
+        str(port),
+        "action",
+        "police",
+        "rate",
+        rate,
+        "burst",
+        "{0}k".format(int(burst_kb)),
+        "conform-exceed",
+        "drop",
+    ]
+
+
 def apply_tuic_speed_limits(rules: List[Dict[str, int]]) -> None:
     if not command_exists("tc") or not command_exists("ip"):
         LOGGER.warning("未检测到 tc/ip 命令，跳过 TUIC 限速下发")
@@ -1046,6 +1096,7 @@ def apply_tuic_speed_limits(rules: List[Dict[str, int]]) -> None:
         return
 
     desired_state = {
+        "mode": "dual-dir-police-v2",
         "iface": iface,
         "rules": sorted(
             [
@@ -1076,66 +1127,54 @@ def apply_tuic_speed_limits(rules: List[Dict[str, int]]) -> None:
         port = int(item["tuic_port"])
         speed = int(item["speed_mbps"])
         rate = "{0}mbit".format(speed)
+        burst_kb = build_tuic_tc_burst_kb(speed)
         # egress: server -> client, source port is tuic listen port.
-        ok_v4 = tc_run(
-            [
-                "tc",
-                "filter",
-                "add",
-                "dev",
-                iface,
-                "egress",
-                "protocol",
-                "ip",
-                "pref",
-                str(pref),
-                "flower",
-                "ip_proto",
-                "udp",
-                "src_port",
-                str(port),
-                "action",
-                "police",
-                "rate",
-                rate,
-                "burst",
-                "256k",
-                "conform-exceed",
-                "drop",
-            ],
-            ignore_error=False,
-        )
-        pref += 1
-        ok_v6 = tc_run(
-            [
-                "tc",
-                "filter",
-                "add",
-                "dev",
-                iface,
-                "egress",
-                "protocol",
-                "ipv6",
-                "pref",
-                str(pref),
-                "flower",
-                "ip_proto",
-                "udp",
-                "src_port",
-                str(port),
-                "action",
-                "police",
-                "rate",
-                rate,
-                "burst",
-                "256k",
-                "conform-exceed",
-                "drop",
-            ],
-            ignore_error=False,
-        )
-        pref += 1
-        if ok_v4 or ok_v6:
+        # ingress: client -> server, destination port is tuic listen port.
+        commands = [
+            build_tuic_tc_filter_command(
+                iface=iface,
+                direction="egress",
+                protocol="ip",
+                pref=pref,
+                port_key="src_port",
+                port=port,
+                rate=rate,
+                burst_kb=burst_kb,
+            ),
+            build_tuic_tc_filter_command(
+                iface=iface,
+                direction="egress",
+                protocol="ipv6",
+                pref=pref + 1,
+                port_key="src_port",
+                port=port,
+                rate=rate,
+                burst_kb=burst_kb,
+            ),
+            build_tuic_tc_filter_command(
+                iface=iface,
+                direction="ingress",
+                protocol="ip",
+                pref=pref + 2,
+                port_key="dst_port",
+                port=port,
+                rate=rate,
+                burst_kb=burst_kb,
+            ),
+            build_tuic_tc_filter_command(
+                iface=iface,
+                direction="ingress",
+                protocol="ipv6",
+                pref=pref + 3,
+                port_key="dst_port",
+                port=port,
+                rate=rate,
+                burst_kb=burst_kb,
+            ),
+        ]
+        pref += 4
+        ok_results = [tc_run(command, ignore_error=False) for command in commands]
+        if any(ok_results):
             LOGGER.info("已下发 TUIC 限速: port=%s speed=%s Mbps", port, speed)
         else:
             all_ok = False
