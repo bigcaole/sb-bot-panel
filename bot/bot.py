@@ -2859,10 +2859,31 @@ async def controller_request(
             timeout=CONTROLLER_HTTP_TIMEOUT_SECONDS,
             limits=httpx.Limits(max_connections=30, max_keepalive_connections=20),
         )
-    try:
-        response = await _controller_http_client.request(method, url, json=payload, headers=headers)
-    except httpx.HTTPError as exc:
-        return None, f"无法连接控制器接口（{exc}）", 0
+    response = None
+    last_exc = None
+    for attempt in range(2):
+        try:
+            response = await _controller_http_client.request(
+                method, url, json=payload, headers=headers
+            )
+            last_exc = None
+            break
+        except httpx.HTTPError as exc:
+            last_exc = exc
+            if attempt == 0:
+                # 连接池中的 keep-alive 连接可能在 controller 重启后失效，重建一次后再试。
+                if _controller_http_client is not None and not _controller_http_client.is_closed:
+                    await _controller_http_client.aclose()
+                _controller_http_client = httpx.AsyncClient(
+                    timeout=CONTROLLER_HTTP_TIMEOUT_SECONDS,
+                    limits=httpx.Limits(max_connections=30, max_keepalive_connections=20),
+                )
+                continue
+    if last_exc is not None or response is None:
+        detail = str(last_exc or "").strip()
+        if not detail and last_exc is not None:
+            detail = last_exc.__class__.__name__
+        return None, f"无法连接控制器接口（{detail}）", 0
 
     if response.status_code >= 400:
         try:
@@ -2894,10 +2915,30 @@ async def controller_request_text(
             timeout=CONTROLLER_HTTP_TIMEOUT_SECONDS,
             limits=httpx.Limits(max_connections=30, max_keepalive_connections=20),
         )
-    try:
-        response = await _controller_http_client.request(method, url, json=payload, headers=headers)
-    except httpx.HTTPError as exc:
-        return "", f"无法连接控制器接口（{exc}）", 0
+    response = None
+    last_exc = None
+    for attempt in range(2):
+        try:
+            response = await _controller_http_client.request(
+                method, url, json=payload, headers=headers
+            )
+            last_exc = None
+            break
+        except httpx.HTTPError as exc:
+            last_exc = exc
+            if attempt == 0:
+                if _controller_http_client is not None and not _controller_http_client.is_closed:
+                    await _controller_http_client.aclose()
+                _controller_http_client = httpx.AsyncClient(
+                    timeout=CONTROLLER_HTTP_TIMEOUT_SECONDS,
+                    limits=httpx.Limits(max_connections=30, max_keepalive_connections=20),
+                )
+                continue
+    if last_exc is not None or response is None:
+        detail = str(last_exc or "").strip()
+        if not detail and last_exc is not None:
+            detail = last_exc.__class__.__name__
+        return "", f"无法连接控制器接口（{detail}）", 0
 
     response_text = str(response.text or "")
     if response.status_code >= 400:
