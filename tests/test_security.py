@@ -191,6 +191,51 @@ class SecurityTestCase(unittest.TestCase):
         security.AUTH_TOKEN = ""
         self.assertEqual("open", security.get_rate_limit_auth_bucket("/nodes", None))
 
+    def test_should_bypass_rate_limit_for_trusted_loopback_actor(self) -> None:
+        class _DummyClient:
+            def __init__(self, host: str):
+                self.host = host
+
+        class _DummyUrl:
+            def __init__(self, path: str):
+                self.path = path
+
+        class _DummyRequest:
+            def __init__(self, host: str, actor: str = ""):
+                self.client = _DummyClient(host)
+                self.url = _DummyUrl("/nodes")
+                self.headers = {"X-Actor": actor} if actor else {}
+
+        old_actors = set(security.API_RATE_LIMIT_TRUSTED_LOOPBACK_ACTORS)
+        try:
+            security.API_RATE_LIMIT_TRUSTED_LOOPBACK_ACTORS = {"sb-bot"}
+            self.assertTrue(
+                security.should_bypass_rate_limit_for_request(
+                    _DummyRequest("127.0.0.1", actor="sb-bot"),
+                    auth_bucket="auth",
+                )
+            )
+            self.assertFalse(
+                security.should_bypass_rate_limit_for_request(
+                    _DummyRequest("127.0.0.1", actor="sb-bot"),
+                    auth_bucket="anon",
+                )
+            )
+            self.assertFalse(
+                security.should_bypass_rate_limit_for_request(
+                    _DummyRequest("198.51.100.10", actor="sb-bot"),
+                    auth_bucket="auth",
+                )
+            )
+            self.assertFalse(
+                security.should_bypass_rate_limit_for_request(
+                    _DummyRequest("127.0.0.1", actor="other-actor"),
+                    auth_bucket="auth",
+                )
+            )
+        finally:
+            security.API_RATE_LIMIT_TRUSTED_LOOPBACK_ACTORS = old_actors
+
     def test_is_rate_limit_target_path(self) -> None:
         self.assertTrue(security.is_rate_limit_target_path("/nodes"))
         self.assertTrue(security.is_rate_limit_target_path("/users"))

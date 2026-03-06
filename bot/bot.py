@@ -56,6 +56,26 @@ except ValueError:
     CONTROLLER_HTTP_TIMEOUT_SECONDS = 10.0
 if CONTROLLER_HTTP_TIMEOUT_SECONDS <= 0:
     CONTROLLER_HTTP_TIMEOUT_SECONDS = 10.0
+try:
+    CONTROLLER_RATE_LIMIT_RETRY_ATTEMPTS = int(
+        os.getenv("BOT_CONTROLLER_RATE_LIMIT_RETRY_ATTEMPTS", "2").strip() or "2"
+    )
+except ValueError:
+    CONTROLLER_RATE_LIMIT_RETRY_ATTEMPTS = 2
+if CONTROLLER_RATE_LIMIT_RETRY_ATTEMPTS < 0:
+    CONTROLLER_RATE_LIMIT_RETRY_ATTEMPTS = 0
+if CONTROLLER_RATE_LIMIT_RETRY_ATTEMPTS > 5:
+    CONTROLLER_RATE_LIMIT_RETRY_ATTEMPTS = 5
+try:
+    CONTROLLER_RATE_LIMIT_RETRY_MAX_WAIT_SECONDS = float(
+        os.getenv("BOT_CONTROLLER_RATE_LIMIT_RETRY_MAX_WAIT_SECONDS", "2").strip() or "2"
+    )
+except ValueError:
+    CONTROLLER_RATE_LIMIT_RETRY_MAX_WAIT_SECONDS = 2.0
+if CONTROLLER_RATE_LIMIT_RETRY_MAX_WAIT_SECONDS < 0:
+    CONTROLLER_RATE_LIMIT_RETRY_MAX_WAIT_SECONDS = 0.0
+if CONTROLLER_RATE_LIMIT_RETRY_MAX_WAIT_SECONDS > 10:
+    CONTROLLER_RATE_LIMIT_RETRY_MAX_WAIT_SECONDS = 10.0
 _parsed_controller_url = urlparse(CONTROLLER_URL)
 if _parsed_controller_url.port:
     CONTROLLER_PORT_HINT = int(_parsed_controller_url.port)
@@ -1925,6 +1945,25 @@ def get_node_edit_scope_text(field: str) -> str:
 def localize_controller_error(error_message: str) -> str:
     if error_message.startswith("node source ip not allowed for"):
         return "节点来源IP不在白名单中"
+    lower_error = str(error_message or "").lower()
+    if "rate_limited" in lower_error:
+        retry_after = 0
+        retry_match = re.search(r"retry_after['\"\\s:=]+([0-9]+)", lower_error)
+        if retry_match:
+            try:
+                retry_after = int(retry_match.group(1))
+            except ValueError:
+                retry_after = 0
+        if retry_after <= 0:
+            compact_match = re.match(r"^rate_limited:([0-9]+)$", lower_error.strip())
+            if compact_match:
+                try:
+                    retry_after = int(compact_match.group(1))
+                except ValueError:
+                    retry_after = 0
+        if retry_after > 0:
+            return f"请求过于频繁，请 {retry_after} 秒后重试"
+        return "请求过于频繁，请稍后重试"
     mapping = {
         "unauthorized": "未授权（请检查 ADMIN_AUTH_TOKEN/NODE_AUTH_TOKEN/AUTH_TOKEN）",
         "subscription signature required": "订阅签名缺失",
@@ -2843,6 +2882,44 @@ def parse_node_ops_config_updates(raw_text: str) -> tuple:
     return True, updates, ""
 
 
+def _parse_retry_after_seconds(
+    response: Optional[httpx.Response], error_body: Optional[dict] = None
+) -> int:
+    retry_after = 0
+    if isinstance(error_body, dict):
+        raw_retry = error_body.get("retry_after")
+        try:
+            retry_after = int(raw_retry or 0)
+        except (TypeError, ValueError):
+            retry_after = 0
+    if retry_after <= 0 and response is not None:
+        raw_header = str(response.headers.get("Retry-After", "") or "").strip()
+        if raw_header.isdigit():
+            retry_after = int(raw_header)
+    if retry_after < 0:
+        retry_after = 0
+    return retry_after
+
+
+def _build_controller_error_message(
+    response: Optional[httpx.Response],
+    error_body: Optional[dict],
+    fallback_text: str,
+) -> str:
+    if isinstance(error_body, dict):
+        detail = str(error_body.get("detail", "") or "").strip()
+        if detail:
+            return detail
+        error_code = str(error_body.get("error", "") or "").strip().lower()
+        if error_code == "rate_limited":
+            retry_after = _parse_retry_after_seconds(response, error_body=error_body)
+            if retry_after > 0:
+                return f"rate_limited:{retry_after}"
+            return "rate_limited"
+        return str(error_body)
+    return fallback_text
+
+
 async def controller_request(
     method: str, path: str, payload: dict = None
 ) -> tuple:
@@ -2861,16 +2938,28 @@ async def controller_request(
         )
     response = None
     last_exc = None
-    for attempt in range(2):
+    total_attempts = 1 + int(CONTROLLER_RATE_LIMIT_RETRY_ATTEMPTS)
+    if total_attempts < 1:
+        total_attempts = 1
+    for attempt in range(total_attempts):
         try:
             response = await _controller_http_client.request(
                 method, url, json=payload, headers=headers
             )
             last_exc = None
+            if response.status_code == 429 and attempt < (total_attempts - 1):
+                try:
+                    error_body = response.json()
+                except ValueError:
+                    error_body = None
+                retry_after = _parse_retry_after_seconds(response, error_body=error_body)
+                if retry_after > 0 and retry_after <= CONTROLLER_RATE_LIMIT_RETRY_MAX_WAIT_SECONDS:
+                    await asyncio.sleep(float(retry_after))
+                    continue
             break
         except httpx.HTTPError as exc:
             last_exc = exc
-            if attempt == 0:
+            if attempt < (total_attempts - 1):
                 # 连接池中的 keep-alive 连接可能在 controller 重启后失效，重建一次后再试。
                 if _controller_http_client is not None and not _controller_http_client.is_closed:
                     await _controller_http_client.aclose()
@@ -2888,7 +2977,11 @@ async def controller_request(
     if response.status_code >= 400:
         try:
             error_body = response.json()
-            error_message = str(error_body.get("detail", error_body))
+            error_message = _build_controller_error_message(
+                response=response,
+                error_body=error_body if isinstance(error_body, dict) else None,
+                fallback_text=str(error_body),
+            )
         except ValueError:
             error_message = response.text or f"HTTP {response.status_code}"
         return None, error_message, response.status_code
@@ -2917,16 +3010,28 @@ async def controller_request_text(
         )
     response = None
     last_exc = None
-    for attempt in range(2):
+    total_attempts = 1 + int(CONTROLLER_RATE_LIMIT_RETRY_ATTEMPTS)
+    if total_attempts < 1:
+        total_attempts = 1
+    for attempt in range(total_attempts):
         try:
             response = await _controller_http_client.request(
                 method, url, json=payload, headers=headers
             )
             last_exc = None
+            if response.status_code == 429 and attempt < (total_attempts - 1):
+                try:
+                    error_body = response.json()
+                except ValueError:
+                    error_body = None
+                retry_after = _parse_retry_after_seconds(response, error_body=error_body)
+                if retry_after > 0 and retry_after <= CONTROLLER_RATE_LIMIT_RETRY_MAX_WAIT_SECONDS:
+                    await asyncio.sleep(float(retry_after))
+                    continue
             break
         except httpx.HTTPError as exc:
             last_exc = exc
-            if attempt == 0:
+            if attempt < (total_attempts - 1):
                 if _controller_http_client is not None and not _controller_http_client.is_closed:
                     await _controller_http_client.aclose()
                 _controller_http_client = httpx.AsyncClient(
@@ -2944,7 +3049,11 @@ async def controller_request_text(
     if response.status_code >= 400:
         try:
             error_body = response.json()
-            error_message = str(error_body.get("detail", error_body))
+            error_message = _build_controller_error_message(
+                response=response,
+                error_body=error_body if isinstance(error_body, dict) else None,
+                fallback_text=str(error_body),
+            )
         except ValueError:
             error_message = response_text or f"HTTP {response.status_code}"
         return response_text, error_message, response.status_code

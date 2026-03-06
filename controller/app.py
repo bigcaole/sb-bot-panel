@@ -45,6 +45,7 @@ from controller.security import (
     is_node_agent_auth_path,
     is_request_allowed_by_admin_api_whitelist,
     is_rate_limit_target_path,
+    should_bypass_rate_limit_for_request,
     should_write_unauthorized_audit,
     verify_admin_authorization,
     verify_node_authorization,
@@ -163,14 +164,15 @@ async def auth_middleware(request: Request, call_next):
     authorization = request.headers.get("Authorization")
     if API_RATE_LIMIT_ENABLED and is_rate_limit_target_path(request.url.path):
         auth_bucket = get_rate_limit_auth_bucket(request_path, authorization)
-        identity = get_rate_limit_identity(request, auth_bucket=auth_bucket)
-        limited, retry_after = check_and_consume_rate_limit(identity, now_ts)
-        if limited:
-            return JSONResponse(
-                status_code=429,
-                content={"ok": False, "error": "rate_limited", "retry_after": retry_after},
-                headers={"Retry-After": str(retry_after)},
-            )
+        if not should_bypass_rate_limit_for_request(request, auth_bucket=auth_bucket):
+            identity = get_rate_limit_identity(request, auth_bucket=auth_bucket)
+            limited, retry_after = check_and_consume_rate_limit(identity, now_ts)
+            if limited:
+                return JSONResponse(
+                    status_code=429,
+                    content={"ok": False, "error": "rate_limited", "retry_after": retry_after},
+                    headers={"Retry-After": str(retry_after)},
+                )
 
     if is_node_agent_auth_path(request_path):
         auth_error = verify_node_authorization(authorization)

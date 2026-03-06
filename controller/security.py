@@ -20,6 +20,18 @@ def _get_int_env(name: str, default: int) -> int:
         return default
 
 
+def _parse_csv_set(raw: str, *, lower: bool = False) -> Set[str]:
+    values: Set[str] = set()
+    for item in str(raw or "").split(","):
+        value = str(item or "").strip()
+        if not value:
+            continue
+        if lower:
+            value = value.lower()
+        values.add(value)
+    return values
+
+
 AUTH_TOKEN = os.getenv("AUTH_TOKEN", "").strip()
 ADMIN_AUTH_TOKEN = os.getenv("ADMIN_AUTH_TOKEN", "").strip()
 NODE_AUTH_TOKEN = os.getenv("NODE_AUTH_TOKEN", "").strip()
@@ -48,6 +60,10 @@ if API_RATE_LIMIT_WINDOW_SECONDS < 1:
 API_RATE_LIMIT_MAX_REQUESTS = int(_get_int_env("API_RATE_LIMIT_MAX_REQUESTS", 120))
 if API_RATE_LIMIT_MAX_REQUESTS < 1:
     API_RATE_LIMIT_MAX_REQUESTS = 1
+API_RATE_LIMIT_TRUSTED_LOOPBACK_ACTORS = _parse_csv_set(
+    os.getenv("API_RATE_LIMIT_TRUSTED_LOOPBACK_ACTORS", "sb-bot,sb-admin"),
+    lower=True,
+)
 RATE_LIMIT_STATE_MAX_KEYS = int(_get_int_env("RATE_LIMIT_STATE_MAX_KEYS", 20000))
 if RATE_LIMIT_STATE_MAX_KEYS < 100:
     RATE_LIMIT_STATE_MAX_KEYS = 100
@@ -323,6 +339,27 @@ def get_rate_limit_identity(request: Request, auth_bucket: str = "anon") -> str:
     path_key = build_rate_limit_path_key(str(request.url.path or "/"))
     bucket_value = str(auth_bucket or "").strip() or "anon"
     return "{0}:{1}:{2}".format(request_ip, path_key, bucket_value)
+
+
+def should_bypass_rate_limit_for_request(
+    request: Request,
+    auth_bucket: str = "anon",
+) -> bool:
+    if str(auth_bucket or "").strip() != "auth":
+        return False
+    if not API_RATE_LIMIT_TRUSTED_LOOPBACK_ACTORS:
+        return False
+    actor = str(request.headers.get("X-Actor", "") or "").strip().lower()
+    if not actor or actor not in API_RATE_LIMIT_TRUSTED_LOOPBACK_ACTORS:
+        return False
+    request_ip_raw = get_request_ip(request)
+    if not request_ip_raw:
+        return False
+    try:
+        request_ip = ipaddress.ip_address(str(request_ip_raw))
+    except ValueError:
+        return False
+    return bool(request_ip.is_loopback)
 
 
 def is_rate_limit_target_path(path: str) -> bool:

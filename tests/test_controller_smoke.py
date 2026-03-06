@@ -825,6 +825,35 @@ class ControllerSmokeTestCase(unittest.TestCase):
             security_module._RATE_LIMIT_STATE.clear()
             security_module._RATE_LIMIT_LAST_CLEANUP_AT = 0
 
+    def test_rate_limit_bypass_for_trusted_actor_requests(self) -> None:
+        old_app_enabled = app_module.API_RATE_LIMIT_ENABLED
+        old_sec_enabled = security_module.API_RATE_LIMIT_ENABLED
+        old_window = security_module.API_RATE_LIMIT_WINDOW_SECONDS
+        old_max = security_module.API_RATE_LIMIT_MAX_REQUESTS
+        old_bypass_checker = app_module.should_bypass_rate_limit_for_request
+        try:
+            app_module.API_RATE_LIMIT_ENABLED = True
+            security_module.API_RATE_LIMIT_ENABLED = True
+            security_module.API_RATE_LIMIT_WINDOW_SECONDS = 60
+            security_module.API_RATE_LIMIT_MAX_REQUESTS = 1
+            security_module._RATE_LIMIT_STATE.clear()
+            security_module._RATE_LIMIT_LAST_CLEANUP_AT = 0
+            app_module.should_bypass_rate_limit_for_request = (
+                lambda request, auth_bucket="anon": auth_bucket == "auth"
+            )
+            with TestClient(app_module.app) as client:
+                for _ in range(4):
+                    resp = client.get("/nodes", headers=self._auth_header())
+                    self.assertEqual(200, resp.status_code)
+        finally:
+            app_module.should_bypass_rate_limit_for_request = old_bypass_checker
+            app_module.API_RATE_LIMIT_ENABLED = old_app_enabled
+            security_module.API_RATE_LIMIT_ENABLED = old_sec_enabled
+            security_module.API_RATE_LIMIT_WINDOW_SECONDS = old_window
+            security_module.API_RATE_LIMIT_MAX_REQUESTS = old_max
+            security_module._RATE_LIMIT_STATE.clear()
+            security_module._RATE_LIMIT_LAST_CLEANUP_AT = 0
+
     def test_admin_overview_cache_reuses_payload_within_ttl(self) -> None:
         original_builder = admin_router_module.build_admin_overview_payload
         call_counter = {"count": 0}

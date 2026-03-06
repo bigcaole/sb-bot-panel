@@ -596,6 +596,7 @@ scp root@旧IP:/var/backups/sb-migrate/sb-migrate-xxxx.tar.gz root@新IP:/root/
 - `API_RATE_LIMIT_ENABLED=1`（可选；controller 轻量限流开关，默认开启）
 - `API_RATE_LIMIT_WINDOW_SECONDS=60`（可选；限流窗口）
 - `API_RATE_LIMIT_MAX_REQUESTS=120`（可选；单个 IP+路径窗口内请求上限）
+- `API_RATE_LIMIT_TRUSTED_LOOPBACK_ACTORS=sb-bot,sb-admin`（可选；本机回环 + 已鉴权 + `X-Actor` 命中名单时可跳过限流，避免 bot 连点误触发 429）
 - `ADMIN_OVERVIEW_CACHE_TTL_SECONDS=5`（可选；`/admin/overview` 缓存秒数，0=关闭缓存）
 - `ADMIN_SECURITY_STATUS_CACHE_TTL_SECONDS=5`（可选；`/admin/security/status` 缓存秒数，0=关闭缓存）
 - `ADMIN_SECURITY_EVENTS_CACHE_TTL_SECONDS=5`（可选；`/admin/security/events` 缓存秒数，0=关闭缓存）
@@ -729,6 +730,7 @@ bash /root/sb-bot-panel/scripts/admin/smoke_test.sh --require-api --require-toke
   - 开启 `SUB_LINK_REQUIRE_SIGNATURE=1` 后，`/sub/*` 必须携带 `exp` + `sig`
 - 支持轻量限流（默认开启）：
   - `API_RATE_LIMIT_ENABLED=1` 后，会对高风险管理路径按 `IP+路径+鉴权桶(auth/anon/open)` 限流，超限返回 429
+  - 对 `127.0.0.1/::1` 且已鉴权并携带受信 `X-Actor`（默认 `sb-bot,sb-admin`）的调用，默认放宽限流，避免 bot 高频交互误伤
 - 节点任务接口的管理侧返回已对敏感字段做脱敏（如 `auth_token`、`Authorization: Bearer ...` 显示为 `***`），避免误泄露；节点拉取任务时仍使用真实值。
 - 安全状态检查：
   - `GET /admin/security/status` 可查看当前鉴权、订阅签名、XFF 信任、限流等配置状态与告警提示

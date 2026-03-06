@@ -43,6 +43,7 @@ from controller.security import (
     NODE_AUTH_TOKEN as SECURITY_NODE_AUTH_TOKEN,
     API_RATE_LIMIT_ENABLED,
     API_RATE_LIMIT_MAX_REQUESTS,
+    API_RATE_LIMIT_TRUSTED_LOOPBACK_ACTORS,
     API_RATE_LIMIT_WINDOW_SECONDS,
     TRUSTED_PROXY_IPS,
     TRUST_X_FORWARDED_FOR,
@@ -710,6 +711,8 @@ def build_security_status_payload(
         warnings.append("已启用 XFF 信任，但 TRUSTED_PROXY_IPS 为空")
     if not API_RATE_LIMIT_ENABLED:
         warnings.append("轻量限流未启用")
+    elif API_RATE_LIMIT_MAX_REQUESTS < 20:
+        warnings.append("轻量限流阈值偏低（低于 20/窗口），Bot 连续操作时可能触发 429")
     if ADMIN_API_WHITELIST_SOURCE == "controller_port_whitelist_fallback":
         warnings.append(
             "ADMIN_API_WHITELIST 未显式设置：当前使用 CONTROLLER_PORT_WHITELIST 回退（建议显式配置）"
@@ -764,6 +767,8 @@ def build_security_status_payload(
         "api_rate_limit_enabled": API_RATE_LIMIT_ENABLED,
         "api_rate_limit_window_seconds": API_RATE_LIMIT_WINDOW_SECONDS,
         "api_rate_limit_max_requests": API_RATE_LIMIT_MAX_REQUESTS,
+        "api_rate_limit_trusted_loopback_actors": sorted(API_RATE_LIMIT_TRUSTED_LOOPBACK_ACTORS),
+        "api_rate_limit_trusted_loopback_actor_count": len(API_RATE_LIMIT_TRUSTED_LOOPBACK_ACTORS),
         "admin_overview_cache_ttl_seconds": int(_ADMIN_OVERVIEW_CACHE_TTL_SECONDS),
         "admin_security_status_cache_ttl_seconds": int(_SECURITY_STATUS_CACHE_TTL_SECONDS),
         "admin_security_events_cache_ttl_seconds": int(_SECURITY_EVENTS_CACHE_TTL_SECONDS),
