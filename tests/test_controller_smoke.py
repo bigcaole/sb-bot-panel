@@ -1132,6 +1132,105 @@ class ControllerSmokeTestCase(unittest.TestCase):
             payload = create_resp.json()
             self.assertIsNone(payload.get("tuic_server_name"))
 
+    def test_delete_node_succeeds_with_finished_tasks_history(self) -> None:
+        with TestClient(app_module.app) as client:
+            create_resp = client.post(
+                "/nodes/create",
+                headers=self._auth_header(),
+                json={
+                    "node_code": "DEL1",
+                    "region": "JP",
+                    "host": "del1.example.com",
+                    "tuic_port_start": 24000,
+                    "tuic_port_end": 24010,
+                    "enabled": 0,
+                },
+            )
+            self.assertEqual(200, create_resp.status_code)
+
+            now_ts = int(time.time())
+            with db_module.get_connection() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO node_tasks(
+                        node_code, task_type, payload_json, payload_hash, status,
+                        attempts, max_attempts, created_at, updated_at, result_text
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "DEL1",
+                        "status_agent",
+                        "{}",
+                        "",
+                        "success",
+                        1,
+                        1,
+                        now_ts,
+                        now_ts,
+                        "ok",
+                    ),
+                )
+                conn.commit()
+
+            delete_resp = client.delete("/nodes/DEL1", headers=self._auth_header())
+            self.assertEqual(200, delete_resp.status_code)
+            self.assertTrue(bool(delete_resp.json().get("ok")))
+
+            get_resp = client.get("/nodes/DEL1", headers=self._auth_header())
+            self.assertEqual(404, get_resp.status_code)
+            with db_module.get_connection() as conn:
+                task_count_row = conn.execute(
+                    "SELECT COUNT(*) AS c FROM node_tasks WHERE node_code = ?",
+                    ("DEL1",),
+                ).fetchone()
+            self.assertEqual(0, int(task_count_row["c"] or 0))
+
+    def test_delete_node_rejects_when_pending_task_exists(self) -> None:
+        with TestClient(app_module.app) as client:
+            create_resp = client.post(
+                "/nodes/create",
+                headers=self._auth_header(),
+                json={
+                    "node_code": "DEL2",
+                    "region": "JP",
+                    "host": "del2.example.com",
+                    "tuic_port_start": 24100,
+                    "tuic_port_end": 24110,
+                    "enabled": 0,
+                },
+            )
+            self.assertEqual(200, create_resp.status_code)
+
+            now_ts = int(time.time())
+            with db_module.get_connection() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO node_tasks(
+                        node_code, task_type, payload_json, payload_hash, status,
+                        attempts, max_attempts, created_at, updated_at, result_text
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "DEL2",
+                        "status_agent",
+                        "{}",
+                        "",
+                        "pending",
+                        0,
+                        1,
+                        now_ts,
+                        now_ts,
+                        "",
+                    ),
+                )
+                conn.commit()
+
+            delete_resp = client.delete("/nodes/DEL2", headers=self._auth_header())
+            self.assertEqual(400, delete_resp.status_code)
+            self.assertIn("进行中的任务", str(delete_resp.json().get("detail", "")))
+
     def test_security_block_unblock_smoke(self) -> None:
         with TestClient(app_module.app) as client:
             block_resp = client.post(

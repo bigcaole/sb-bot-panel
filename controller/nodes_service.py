@@ -393,13 +393,30 @@ def delete_node_service(node_code: str, request: Request) -> Dict[str, bool]:
         if bound_row is not None:
             raise HTTPException(status_code=400, detail="该节点仍有用户绑定，请先解绑后再删除")
 
+        running_task_row = conn.execute(
+            """
+            SELECT 1
+            FROM node_tasks
+            WHERE node_code = ? AND status IN ('pending', 'running')
+            LIMIT 1
+            """,
+            (node_code,),
+        ).fetchone()
+        if running_task_row is not None:
+            raise HTTPException(status_code=400, detail="该节点仍有进行中的任务，请稍后重试")
+
+        task_delete_cursor = conn.execute(
+            "DELETE FROM node_tasks WHERE node_code = ?",
+            (node_code,),
+        )
+        deleted_task_count = int(task_delete_cursor.rowcount or 0)
         conn.execute("DELETE FROM nodes WHERE node_code = ?", (node_code,))
         write_audit_log(
             conn,
             action="node.delete",
             resource_type="node",
             resource_id=node_code,
-            detail={"ok": True},
+            detail={"ok": True, "deleted_node_tasks": deleted_task_count},
             actor=get_request_actor(request),
             source_ip=get_source_ip_for_audit(request),
         )
