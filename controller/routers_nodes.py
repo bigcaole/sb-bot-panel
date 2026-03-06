@@ -14,6 +14,7 @@ from controller.node_runtime_service import (
 from controller.nodes_service import (
     create_node_service,
     delete_node_service,
+    list_node_bindings_service,
     get_node_service,
     get_node_stats_service,
     list_nodes_service,
@@ -58,6 +59,18 @@ def get_node(node_code: str) -> Dict[str, Union[int, str, None]]:
 @router.get("/nodes/{node_code}/stats")
 def get_node_stats(node_code: str) -> Dict[str, Union[int, str]]:
     return get_node_stats_service(node_code)
+
+
+@router.get("/nodes/{node_code}/bindings", response_model=None)
+def list_node_bindings(
+    node_code: str,
+    limit: int = 50,
+    authorization: Optional[str] = Header(default=None, alias="Authorization"),
+) -> Union[List[Dict[str, Union[int, str, None]]], JSONResponse]:
+    auth_error = verify_admin_authorization(authorization)
+    if auth_error is not None:
+        return auth_error
+    return list_node_bindings_service(node_code, limit=limit)
 
 
 @router.post("/nodes/{node_code}/tasks/create", response_model=None)

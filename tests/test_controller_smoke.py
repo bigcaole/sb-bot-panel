@@ -290,6 +290,13 @@ class ControllerSmokeTestCase(unittest.TestCase):
             self.assertEqual(200, users_resp.status_code)
             self.assertEqual("u1001", users_resp.json()[0]["user_code"])
 
+            bindings_resp = client.get("/nodes/JP1/bindings?limit=20", headers=self._auth_header())
+            self.assertEqual(200, bindings_resp.status_code)
+            bindings_payload = bindings_resp.json()
+            self.assertTrue(isinstance(bindings_payload, list))
+            self.assertEqual("u1001", str(bindings_payload[0].get("user_code", "")))
+            self.assertEqual("JP1", str(bindings_payload[0].get("node_code", "")))
+
             set_mode_resp = client.post(
                 "/users/u1001/set_limit_mode",
                 headers=self._auth_header(),

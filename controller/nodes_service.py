@@ -220,6 +220,45 @@ def get_node_stats_service(node_code: str) -> Dict[str, Union[int, str]]:
     return {"node_code": node_code, "bound_users": int(count_row["bound_users"])}
 
 
+def list_node_bindings_service(
+    node_code: str, limit: int = 50
+) -> List[Dict[str, Union[int, str, None]]]:
+    if limit < 1:
+        limit = 1
+    if limit > 200:
+        limit = 200
+
+    with get_connection() as conn:
+        node_row = conn.execute(
+            "SELECT node_code FROM nodes WHERE node_code = ?",
+            (node_code,),
+        ).fetchone()
+        if node_row is None:
+            raise HTTPException(status_code=404, detail="Node not found")
+
+        rows = conn.execute(
+            """
+            SELECT
+                un.user_code,
+                un.node_code,
+                un.tuic_port,
+                un.created_at AS bound_at,
+                u.display_name,
+                u.status,
+                u.expire_at,
+                u.speed_mbps,
+                u.limit_mode
+            FROM user_nodes un
+            JOIN users u ON u.user_code = un.user_code
+            WHERE un.node_code = ?
+            ORDER BY un.created_at DESC, un.user_code ASC
+            LIMIT ?
+            """,
+            (node_code, limit),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
 def update_node_service(
     node_code: str, payload: UpdateNodeRequest, request: Request
 ) -> Dict[str, Union[int, str, None]]:

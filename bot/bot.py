@@ -3142,6 +3142,61 @@ async def create_node_task(
     return result, error_message, status_code
 
 
+async def build_node_delete_failure_notice(
+    node_code: str, localized_error: str, status_code: int
+) -> str:
+    lines = [f"删除失败：{localized_error}"]
+    if status_code != 400:
+        return "\n".join(lines)
+
+    if "进行中的任务" in localized_error:
+        tasks, task_error, _ = await controller_request(
+            "GET", f"/nodes/{node_code}/tasks?limit=12"
+        )
+        if task_error:
+            lines.append(f"进行中任务详情读取失败：{localize_controller_error(task_error)}")
+        else:
+            active = []
+            if isinstance(tasks, list):
+                for item in tasks:
+                    if not isinstance(item, dict):
+                        continue
+                    status_value = str(item.get("status", "")).strip().lower()
+                    if status_value not in ("pending", "running"):
+                        continue
+                    task_id = int(item.get("id", 0) or 0)
+                    task_type = str(item.get("task_type", "") or "-")
+                    active.append((task_id, task_type, status_value))
+            if active:
+                lines.append("进行中任务：")
+                for task_id, task_type, task_status in active[:6]:
+                    lines.append(f"- #{task_id} {task_type} ({task_status})")
+            else:
+                lines.append("进行中任务：暂无可展示记录（可能刚完成）")
+
+    if "用户绑定" in localized_error:
+        bindings, bind_error, _ = await controller_request(
+            "GET", f"/nodes/{node_code}/bindings?limit=20"
+        )
+        if bind_error:
+            lines.append(f"绑定用户读取失败：{localize_controller_error(bind_error)}")
+        else:
+            items = bindings if isinstance(bindings, list) else []
+            if items:
+                lines.append("绑定用户：")
+                for item in items[:10]:
+                    user_code = str(item.get("user_code", "") or "").strip() or "-"
+                    display_name = str(item.get("display_name", "") or "").strip()
+                    tuic_port = int(item.get("tuic_port", 0) or 0)
+                    status_text = str(item.get("status", "") or "").strip() or "-"
+                    user_label = f"{display_name}({user_code})" if display_name else user_code
+                    lines.append(f"- {user_label} | 状态:{status_text} | 端口:{tuic_port}")
+            else:
+                lines.append("绑定用户：暂无（可重试删除）")
+
+    return "\n".join(lines)
+
+
 async def render_node_ops_picker(query, notice: str = "") -> None:
     nodes, error_message, _ = await controller_request("GET", "/nodes")
     if error_message:
@@ -8496,13 +8551,19 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             "DELETE", f"/nodes/{node_code}"
         )
         if error_message:
+            localized = localize_controller_error(error_message)
             if status_code == 400:
-                await render_node_detail(query, node_code, notice=f"删除失败：{error_message}")
+                notice = await build_node_delete_failure_notice(
+                    node_code=node_code,
+                    localized_error=localized,
+                    status_code=status_code,
+                )
+                await render_node_detail(query, node_code, notice=notice)
                 return
             if status_code == 404:
                 await render_nodes_list(query, notice=f"节点不存在：{node_code}")
                 return
-            await render_node_detail(query, node_code, notice=f"删除失败：{error_message}")
+            await render_node_detail(query, node_code, notice=f"删除失败：{localized}")
             return
 
         if delete_result and delete_result.get("ok"):
