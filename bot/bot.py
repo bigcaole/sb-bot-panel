@@ -3149,7 +3149,7 @@ async def build_node_delete_failure_notice(
     if status_code != 400:
         return "\n".join(lines)
 
-    if "进行中的任务" in localized_error:
+    if "进行中的任务" in localized_error or "运行中的任务" in localized_error:
         tasks, task_error, _ = await controller_request(
             "GET", f"/nodes/{node_code}/tasks?limit=12"
         )

@@ -1193,7 +1193,7 @@ class ControllerSmokeTestCase(unittest.TestCase):
                 ).fetchone()
             self.assertEqual(0, int(task_count_row["c"] or 0))
 
-    def test_delete_node_rejects_when_pending_task_exists(self) -> None:
+    def test_delete_node_rejects_when_running_task_exists(self) -> None:
         with TestClient(app_module.app) as client:
             create_resp = client.post(
                 "/nodes/create",
@@ -1224,8 +1224,8 @@ class ControllerSmokeTestCase(unittest.TestCase):
                         "status_agent",
                         "{}",
                         "",
-                        "pending",
-                        0,
+                        "running",
+                        1,
                         1,
                         now_ts,
                         now_ts,
@@ -1236,7 +1236,59 @@ class ControllerSmokeTestCase(unittest.TestCase):
 
             delete_resp = client.delete("/nodes/DEL2", headers=self._auth_header())
             self.assertEqual(400, delete_resp.status_code)
-            self.assertIn("进行中的任务", str(delete_resp.json().get("detail", "")))
+            self.assertIn("运行中的任务", str(delete_resp.json().get("detail", "")))
+
+    def test_delete_node_allows_pending_task_and_cleans_history(self) -> None:
+        with TestClient(app_module.app) as client:
+            create_resp = client.post(
+                "/nodes/create",
+                headers=self._auth_header(),
+                json={
+                    "node_code": "DEL3",
+                    "region": "JP",
+                    "host": "del3.example.com",
+                    "tuic_port_start": 24200,
+                    "tuic_port_end": 24210,
+                    "enabled": 0,
+                },
+            )
+            self.assertEqual(200, create_resp.status_code)
+
+            now_ts = int(time.time())
+            with db_module.get_connection() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO node_tasks(
+                        node_code, task_type, payload_json, payload_hash, status,
+                        attempts, max_attempts, created_at, updated_at, result_text
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "DEL3",
+                        "status_agent",
+                        "{}",
+                        "",
+                        "pending",
+                        0,
+                        1,
+                        now_ts,
+                        now_ts,
+                        "",
+                    ),
+                )
+                conn.commit()
+
+            delete_resp = client.delete("/nodes/DEL3", headers=self._auth_header())
+            self.assertEqual(200, delete_resp.status_code)
+            self.assertTrue(bool(delete_resp.json().get("ok")))
+
+            with db_module.get_connection() as conn:
+                task_count_row = conn.execute(
+                    "SELECT COUNT(*) AS c FROM node_tasks WHERE node_code = ?",
+                    ("DEL3",),
+                ).fetchone()
+            self.assertEqual(0, int(task_count_row["c"] or 0))
 
     def test_security_block_unblock_smoke(self) -> None:
         with TestClient(app_module.app) as client:

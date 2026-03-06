@@ -436,13 +436,13 @@ def delete_node_service(node_code: str, request: Request) -> Dict[str, bool]:
             """
             SELECT 1
             FROM node_tasks
-            WHERE node_code = ? AND status IN ('pending', 'running')
+            WHERE node_code = ? AND status = 'running'
             LIMIT 1
             """,
             (node_code,),
         ).fetchone()
         if running_task_row is not None:
-            raise HTTPException(status_code=400, detail="该节点仍有进行中的任务，请稍后重试")
+            raise HTTPException(status_code=400, detail="该节点仍有运行中的任务，请稍后重试")
 
         task_delete_cursor = conn.execute(
             "DELETE FROM node_tasks WHERE node_code = ?",
