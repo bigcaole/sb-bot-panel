@@ -257,6 +257,16 @@ REALITY 密钥策略：
 - `ufw allow 24443/udp`（或你的 TUIC 端口）
 - `ufw status`
 
+### 5) Caddy 启动失败：`:443 address already in use`
+
+- 这通常不是证书问题，而是 443 端口已被其他进程占用。
+- 排查：
+  - `ss -lntp | grep ':443'`
+  - `systemctl status nginx apache2 caddy --no-pager`
+- 处理：
+  - 临时不启 HTTPS：将 `ENABLE_HTTPS=0`，先保证 controller/bot 正常迁移；
+  - 需要 HTTPS：停掉占用 443 的服务后再 `systemctl restart caddy`。
+
 ## 管理服务器：一键安装（controller + bot）
 
 执行位置：`管理服务器` 终端
@@ -269,7 +279,7 @@ REALITY 密钥策略：
 git clone <你的仓库地址> sb-bot-panel && cd sb-bot-panel && sudo bash scripts/admin/menu_admin.sh
 ```
 
-菜单里选择 `17) 安装/更新` 即可完成：
+菜单里选择 `22) 安装/更新` 即可完成：
 
 - 依赖安装（apt）
 - venv 创建与 `pip install -r requirements.txt`
@@ -281,7 +291,7 @@ git clone <你的仓库地址> sb-bot-panel && cd sb-bot-panel && sudo bash scri
 - 若安装/更新失败，默认自动导出 AI 诊断包到 `/tmp/sb-install-admin-ai-context-on-fail-*.md`
   - 可用 `INSTALL_ADMIN_EXPORT_AI_CONTEXT_ON_FAIL=0` 关闭
 
-说明：菜单 `17) 安装/更新` 默认复用现有 `.env` 配置，不会每次重复询问端口/域名/token/chat_id。需要改参数时使用菜单 `1) 配置（快速默认 / 高级变量向导）`。
+说明：菜单 `22) 安装/更新` 默认复用现有 `.env` 配置，不会每次重复询问端口/域名/token/chat_id。需要改参数时使用菜单 `1) 配置（快速默认 / 高级变量向导）`。
 
 ### 仅重新配置（改 token/chat id）
 
@@ -340,7 +350,7 @@ sudo bash scripts/admin/menu_admin.sh
 - 日志归档（打包最近日志到服务器本地，支持保留策略）
 - 运维审计（仅看 `ops.*` 脚本运维事件）
 - HTTPS 证书状态 / 刷新
-- 迁移导出 / 迁移导入（导入走非交互模式）
+- 迁移导出 / 迁移导入（导入为交互向导，逐项给出推荐值）
 - 操作日志（`/admin/audit`，查看最近审计记录）
 - 访问安全（整合节点来源 IP 白名单状态 + 全局安全配置状态）
 - 订阅安全预设（签名+限流 / 仅签名 / 开放测试）
