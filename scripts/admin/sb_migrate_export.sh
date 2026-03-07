@@ -6,6 +6,7 @@ ENV_FILE="${PROJECT_DIR}/.env"
 MIGRATE_DIR="/var/backups/sb-migrate"
 MIGRATE_RETENTION_COUNT="20"
 INCLUDE_CONTROLLER_BACKUPS="N"
+INCLUDE_PROJECT_CODE="Y"
 
 msg() { echo -e "\033[1;32m[信息]\033[0m $*"; }
 warn() { echo -e "\033[1;33m[警告]\033[0m $*"; }
@@ -97,6 +98,11 @@ main() {
   if ask_yes_no "是否包含 /var/backups/sb-controller 历史备份（可能较大）？" "N"; then
     INCLUDE_CONTROLLER_BACKUPS="Y"
   fi
+  if ask_yes_no "是否包含项目代码快照（推荐，便于新机免 git clone 直接导入）？" "Y"; then
+    INCLUDE_PROJECT_CODE="Y"
+  else
+    INCLUDE_PROJECT_CODE="N"
+  fi
 
   msg "停止服务，避免导出期间数据变更..."
   stop_services
@@ -118,6 +124,20 @@ main() {
   fi
   if [[ -d "${PROJECT_DIR}/scripts" ]]; then
     cp -a "${PROJECT_DIR}/scripts" "${stage_dir}/sb-bot-panel/"
+  fi
+  if [[ "$INCLUDE_PROJECT_CODE" == "Y" ]]; then
+    local code_snapshot
+    code_snapshot="${stage_dir}/sb-bot-panel/project-code.tar.gz"
+    msg "打包项目代码快照（排除 .git/venv/data/.env）..."
+    tar \
+      --exclude='.git' \
+      --exclude='venv' \
+      --exclude='data' \
+      --exclude='.env' \
+      --exclude='__pycache__' \
+      --exclude='.pytest_cache' \
+      --exclude='.mypy_cache' \
+      -czf "$code_snapshot" -C "$PROJECT_DIR" .
   fi
 
   mkdir -p "${stage_dir}/systemd"

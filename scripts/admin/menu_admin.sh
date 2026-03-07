@@ -825,6 +825,71 @@ show_config_guide() {
   echo ""
 }
 
+get_env_value_local() {
+  local key="$1"
+  local env_file="${PROJECT_DIR}/.env"
+  if [[ -f "$env_file" ]]; then
+    grep -E "^${key}=" "$env_file" | tail -n1 | cut -d= -f2- || true
+  fi
+}
+
+mask_secret_local() {
+  local value="$1"
+  local n
+  n="${#value}"
+  if [[ -z "$value" ]]; then
+    echo "未设置"
+    return
+  fi
+  if (( n <= 8 )); then
+    echo "$value"
+    return
+  fi
+  echo "${value:0:4}****${value:n-4:4}"
+}
+
+show_current_config_overview() {
+  local env_file="${PROJECT_DIR}/.env"
+  if [[ ! -f "$env_file" ]]; then
+    warn "未检测到 ${env_file}，请先执行配置。"
+    return
+  fi
+  local controller_port controller_url controller_public panel_base enable_https https_domain
+  local admin_token node_token auth_token bot_token super_admin admin_whitelist port_whitelist
+  controller_port="$(get_env_value_local CONTROLLER_PORT)"; controller_port="${controller_port:-8080}"
+  controller_url="$(get_env_value_local CONTROLLER_URL)"
+  controller_public="$(get_env_value_local CONTROLLER_PUBLIC_URL)"
+  panel_base="$(get_env_value_local PANEL_BASE_URL)"
+  enable_https="$(get_env_value_local ENABLE_HTTPS)"; enable_https="${enable_https:-0}"
+  https_domain="$(get_env_value_local HTTPS_DOMAIN)"
+  admin_token="$(get_env_value_local ADMIN_AUTH_TOKEN)"
+  node_token="$(get_env_value_local NODE_AUTH_TOKEN)"
+  auth_token="$(get_env_value_local AUTH_TOKEN)"
+  bot_token="$(get_env_value_local BOT_TOKEN)"
+  super_admin="$(get_env_value_local SUPER_ADMIN_CHAT_IDS)"
+  admin_whitelist="$(get_env_value_local ADMIN_API_WHITELIST)"
+  port_whitelist="$(get_env_value_local CONTROLLER_PORT_WHITELIST)"
+
+  echo "----- 当前关键配置（含建议） -----"
+  echo "CONTROLLER_PORT: ${controller_port}（建议保持 8080）"
+  echo "CONTROLLER_URL: ${controller_url:-未设置}（建议同机部署用 http://127.0.0.1:${controller_port}）"
+  echo "CONTROLLER_PUBLIC_URL: ${controller_public:-未设置}（建议填节点可访问地址，优先域名）"
+  echo "PANEL_BASE_URL: ${panel_base:-未设置}（建议填用户实际访问地址，避免 127.0.0.1）"
+  echo "ENABLE_HTTPS: ${enable_https}（1=启用；未切DNS前建议 0）"
+  echo "HTTPS_DOMAIN: ${https_domain:-未设置}"
+  echo "CONTROLLER_PORT_WHITELIST: ${port_whitelist:-未设置（建议配置）}"
+  echo "ADMIN_API_WHITELIST: ${admin_whitelist:-未设置（建议配置）}"
+  echo "ADMIN_AUTH_TOKEN: $(mask_secret_local "$admin_token")（建议设置）"
+  echo "NODE_AUTH_TOKEN: $(mask_secret_local "$node_token")（建议设置）"
+  echo "AUTH_TOKEN(兼容): $(mask_secret_local "$auth_token")（建议留空或仅过渡）"
+  if [[ -n "$bot_token" && "$bot_token" != "__REPLACE_WITH_TELEGRAM_BOT_TOKEN__" ]]; then
+    echo "BOT_TOKEN: 已设置（建议）"
+  else
+    echo "BOT_TOKEN: 未设置/占位（将无法启动 bot）"
+  fi
+  echo "SUPER_ADMIN_CHAT_IDS: ${super_admin:-未设置（建议至少填你的 chat id）}"
+}
+
 show_menu() {
   clear
   cat <<'EOF'
@@ -891,10 +956,13 @@ configure_only() {
     msg "配置模式选择："
     echo "  1) 快速配置（推荐默认值，最少提问）"
     echo "  2) 高级变量设置向导（逐项说明，全部可调）"
+    echo "  3) 查看当前关键配置（只读，含建议）"
     local cfg_mode
-    read -r -p "请选择 [1/2]（默认 1）: " cfg_mode
+    read -r -p "请选择 [1/2/3]（默认 1）: " cfg_mode
     cfg_mode="${cfg_mode:-1}"
-    if [[ "$cfg_mode" == "2" ]]; then
+    if [[ "$cfg_mode" == "3" ]]; then
+      show_current_config_overview
+    elif [[ "$cfg_mode" == "2" ]]; then
       msg "即将进入高级变量设置向导（修改参数并重启服务）。"
       show_config_guide
       bash "$INSTALL_SCRIPT" --configure-only

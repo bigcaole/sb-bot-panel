@@ -18,6 +18,8 @@ ENABLE_HTTPS="0"
 HTTPS_DOMAIN=""
 HTTPS_ACME_EMAIL=""
 AUTH_TOKEN=""
+ADMIN_AUTH_TOKEN=""
+NODE_AUTH_TOKEN=""
 BOT_TOKEN=""
 ADMIN_CHAT_IDS=""
 VIEW_ADMIN_CHAT_IDS=""
@@ -43,7 +45,9 @@ SUB_LINK_DEFAULT_TTL_SECONDS="604800"
 API_RATE_LIMIT_ENABLED="0"
 API_RATE_LIMIT_WINDOW_SECONDS="60"
 API_RATE_LIMIT_MAX_REQUESTS="120"
+API_RATE_LIMIT_TRUSTED_LOOPBACK_ACTORS="sb-bot,sb-admin"
 SECURITY_EVENTS_EXCLUDE_LOCAL="1"
+SECURITY_BLOCK_PROTECTED_IPS=""
 SECURITY_AUTO_BLOCK_ENABLED="0"
 SECURITY_AUTO_BLOCK_INTERVAL_SECONDS="60"
 SECURITY_AUTO_BLOCK_WINDOW_SECONDS="3600"
@@ -54,6 +58,7 @@ CONTROLLER_HTTP_TIMEOUT="10"
 BOT_ACTOR_LABEL="sb-bot"
 NON_INTERACTIVE="0"
 PACKAGE_PATH=""
+PROJECT_CODE_SNAPSHOT_RESTORED="0"
 
 msg() { echo -e "\033[1;32m[信息]\033[0m $*"; }
 warn() { echo -e "\033[1;33m[警告]\033[0m $*"; }
@@ -126,6 +131,44 @@ generate_auth_token() {
   echo "$token"
 }
 
+mask_token_brief() {
+  local token="$1"
+  local n
+  n="${#token}"
+  if [[ -z "$token" ]]; then
+    echo "未设置"
+    return
+  fi
+  if (( n <= 8 )); then
+    echo "$token"
+    return
+  fi
+  echo "${token:0:4}****${token:n-4:4}"
+}
+
+print_post_import_checklist() {
+  echo ""
+  msg "迁移后关键配置检查（含建议）"
+  echo "1) CONTROLLER_URL（bot->controller 本机访问）: ${CONTROLLER_URL}"
+  echo "   建议：同机部署保持 http://127.0.0.1:${CONTROLLER_PORT}"
+  echo "2) CONTROLLER_PUBLIC_URL（节点/外部访问）: ${CONTROLLER_PUBLIC_URL:-未设置}"
+  echo "   建议：生产填可被节点访问的公网地址（优先域名）"
+  echo "3) PANEL_BASE_URL（bot 返回订阅链接域名）: ${PANEL_BASE_URL:-未设置}"
+  echo "   建议：填用户实际访问的域名，避免出现 127.0.0.1 链接"
+  echo "4) HTTPS 开关: ENABLE_HTTPS=${ENABLE_HTTPS}, HTTPS_DOMAIN=${HTTPS_DOMAIN:-未设置}"
+  echo "   建议：DNS 已切到新机且 80/443 放行后再启用"
+  echo "5) 管理/节点 token:"
+  echo "   - ADMIN_AUTH_TOKEN=$(mask_token_brief "$ADMIN_AUTH_TOKEN")"
+  echo "   - NODE_AUTH_TOKEN=$(mask_token_brief "$NODE_AUTH_TOKEN")"
+  echo "   - AUTH_TOKEN=$(mask_token_brief "$AUTH_TOKEN")（兼容回退）"
+  echo "   建议：优先使用 ADMIN/NODE 拆分 token，AUTH_TOKEN 保持空或仅过渡使用"
+  echo "6) Telegram 管理权限:"
+  echo "   - SUPER_ADMIN_CHAT_IDS=${SUPER_ADMIN_CHAT_IDS:-未设置}"
+  echo "   建议：至少配置你的 chat id，避免误开放"
+  echo ""
+  echo "可随时执行：bash ${PROJECT_DIR}/scripts/admin/install_admin.sh --configure-only"
+}
+
 write_env_file() {
   cat >"$ENV_FILE" <<EOF
 # 给 bot 调用 controller 的地址
@@ -155,6 +198,12 @@ ADMIN_API_WHITELIST=${ADMIN_API_WHITELIST}
 
 # 轻量鉴权 token（可用逗号分隔做轮换过渡）
 AUTH_TOKEN=${AUTH_TOKEN}
+
+# 管理接口鉴权 token（推荐）
+ADMIN_AUTH_TOKEN=${ADMIN_AUTH_TOKEN}
+
+# 节点接口鉴权 token（推荐）
+NODE_AUTH_TOKEN=${NODE_AUTH_TOKEN}
 
 # Telegram Bot token（必填）
 BOT_TOKEN=${BOT_TOKEN}
@@ -226,9 +275,11 @@ SUB_LINK_DEFAULT_TTL_SECONDS=${SUB_LINK_DEFAULT_TTL_SECONDS}
 API_RATE_LIMIT_ENABLED=${API_RATE_LIMIT_ENABLED}
 API_RATE_LIMIT_WINDOW_SECONDS=${API_RATE_LIMIT_WINDOW_SECONDS}
 API_RATE_LIMIT_MAX_REQUESTS=${API_RATE_LIMIT_MAX_REQUESTS}
+API_RATE_LIMIT_TRUSTED_LOOPBACK_ACTORS=${API_RATE_LIMIT_TRUSTED_LOOPBACK_ACTORS}
 
 # 安全事件统计是否默认过滤本机来源（1=过滤，0=不过滤）
 SECURITY_EVENTS_EXCLUDE_LOCAL=${SECURITY_EVENTS_EXCLUDE_LOCAL}
+SECURITY_BLOCK_PROTECTED_IPS=${SECURITY_BLOCK_PROTECTED_IPS}
 
 # 自动封禁开关（1=启用，0=关闭）
 SECURITY_AUTO_BLOCK_ENABLED=${SECURITY_AUTO_BLOCK_ENABLED}
@@ -392,6 +443,11 @@ ensure_python_311_runtime() {
 setup_venv() {
   if [[ ! -f "$PROJECT_DIR/requirements.txt" ]]; then
     err "缺少 requirements.txt，请先确保项目代码完整。"
+    if [[ "$PROJECT_CODE_SNAPSHOT_RESTORED" != "1" ]]; then
+      err "当前迁移包未包含项目代码快照。请先执行："
+      err "  cd $(dirname "$PROJECT_DIR") && git clone https://github.com/bigcaole/sb-bot-panel.git $(basename "$PROJECT_DIR")"
+      err "然后重新运行“迁移：导入迁移包”。"
+    fi
     exit 1
   fi
   if [[ -z "$PYTHON_BIN" ]]; then
@@ -563,6 +619,12 @@ main() {
   tar -xzf "$pkg_path" -C "$extract_dir"
 
   mkdir -p "$PROJECT_DIR"
+  if [[ -f "$extract_dir/sb-bot-panel/project-code.tar.gz" ]]; then
+    msg "检测到项目代码快照，开始恢复项目代码..."
+    tar -xzf "$extract_dir/sb-bot-panel/project-code.tar.gz" -C "$PROJECT_DIR"
+    PROJECT_CODE_SNAPSHOT_RESTORED="1"
+    msg "已恢复项目代码快照"
+  fi
   if [[ -d "$extract_dir/sb-bot-panel/data" ]]; then
     rm -rf "$PROJECT_DIR/data"
     cp -a "$extract_dir/sb-bot-panel/data" "$PROJECT_DIR/"
@@ -603,6 +665,16 @@ main() {
     AUTH_TOKEN="${AUTH_TOKEN:-}"
   else
     AUTH_TOKEN="$(generate_auth_token)"
+  fi
+  ADMIN_AUTH_TOKEN="$(get_env_value ADMIN_AUTH_TOKEN)"
+  ADMIN_AUTH_TOKEN="${ADMIN_AUTH_TOKEN:-}"
+  NODE_AUTH_TOKEN="$(get_env_value NODE_AUTH_TOKEN)"
+  NODE_AUTH_TOKEN="${NODE_AUTH_TOKEN:-}"
+  if [[ -z "$ADMIN_AUTH_TOKEN" ]]; then
+    ADMIN_AUTH_TOKEN="$AUTH_TOKEN"
+  fi
+  if [[ -z "$NODE_AUTH_TOKEN" ]]; then
+    NODE_AUTH_TOKEN="$AUTH_TOKEN"
   fi
   BOT_TOKEN="$(get_env_value BOT_TOKEN)"
   ADMIN_CHAT_IDS="$(get_env_value ADMIN_CHAT_IDS)"
@@ -654,8 +726,12 @@ main() {
   API_RATE_LIMIT_WINDOW_SECONDS="${API_RATE_LIMIT_WINDOW_SECONDS:-60}"
   API_RATE_LIMIT_MAX_REQUESTS="$(get_env_value API_RATE_LIMIT_MAX_REQUESTS)"
   API_RATE_LIMIT_MAX_REQUESTS="${API_RATE_LIMIT_MAX_REQUESTS:-120}"
+  API_RATE_LIMIT_TRUSTED_LOOPBACK_ACTORS="$(get_env_value API_RATE_LIMIT_TRUSTED_LOOPBACK_ACTORS)"
+  API_RATE_LIMIT_TRUSTED_LOOPBACK_ACTORS="${API_RATE_LIMIT_TRUSTED_LOOPBACK_ACTORS:-sb-bot,sb-admin}"
   SECURITY_EVENTS_EXCLUDE_LOCAL="$(get_env_value SECURITY_EVENTS_EXCLUDE_LOCAL)"
   SECURITY_EVENTS_EXCLUDE_LOCAL="${SECURITY_EVENTS_EXCLUDE_LOCAL:-1}"
+  SECURITY_BLOCK_PROTECTED_IPS="$(get_env_value SECURITY_BLOCK_PROTECTED_IPS)"
+  SECURITY_BLOCK_PROTECTED_IPS="${SECURITY_BLOCK_PROTECTED_IPS:-}"
   SECURITY_AUTO_BLOCK_ENABLED="$(get_env_value SECURITY_AUTO_BLOCK_ENABLED)"
   SECURITY_AUTO_BLOCK_ENABLED="${SECURITY_AUTO_BLOCK_ENABLED:-0}"
   SECURITY_AUTO_BLOCK_INTERVAL_SECONDS="$(get_env_value SECURITY_AUTO_BLOCK_INTERVAL_SECONDS)"
@@ -682,7 +758,14 @@ main() {
   CONTROLLER_URL="$(get_env_value CONTROLLER_URL)"
   CONTROLLER_URL="${CONTROLLER_URL:-$default_controller_url}"
   if [[ "$NON_INTERACTIVE" != "1" ]]; then
-    read -r -p "CONTROLLER_URL [${CONTROLLER_URL}]（支持省略 http/https）: " input_url
+    msg "参数填写建议："
+    echo "  - CONTROLLER_URL 建议使用本机地址（同机部署）：http://127.0.0.1:${CONTROLLER_PORT}"
+    echo "  - CONTROLLER_PUBLIC_URL 建议填节点可访问的公网地址（优先域名）"
+    echo "  - PANEL_BASE_URL 建议填用户实际访问订阅链接的地址（避免 127.0.0.1）"
+    echo "  - BOT_TOKEN 必填；ADMIN/SUPER_CHAT_IDS 建议至少保留你的账号"
+    echo ""
+
+    read -r -p "CONTROLLER_URL [${CONTROLLER_URL}]（推荐: http://127.0.0.1:${CONTROLLER_PORT}）: " input_url
     CONTROLLER_URL="${input_url:-$CONTROLLER_URL}"
     local controller_host controller_scheme
     controller_host="$(extract_url_host "$CONTROLLER_URL")"
@@ -692,20 +775,20 @@ main() {
     fi
     CONTROLLER_URL="$(normalize_input_url "$CONTROLLER_URL" "$controller_scheme")"
 
-    read -r -p "BOT_TOKEN [保持现值请回车]: " input_bot
+    read -r -p "BOT_TOKEN [保持现值请回车]（必填）: " input_bot
     BOT_TOKEN="${input_bot:-$BOT_TOKEN}"
     while [[ -z "$BOT_TOKEN" ]]; do
       warn "BOT_TOKEN 不能为空。"
       read -r -p "请重新输入 BOT_TOKEN: " BOT_TOKEN
     done
 
-    read -r -p "ADMIN_CHAT_IDS [${ADMIN_CHAT_IDS}]: " input_admin
+    read -r -p "ADMIN_CHAT_IDS [${ADMIN_CHAT_IDS}]（建议填你的 chat id）: " input_admin
     ADMIN_CHAT_IDS="${input_admin:-$ADMIN_CHAT_IDS}"
     read -r -p "VIEW_ADMIN_CHAT_IDS [${VIEW_ADMIN_CHAT_IDS}]: " input_view_admin
     VIEW_ADMIN_CHAT_IDS="${input_view_admin:-$VIEW_ADMIN_CHAT_IDS}"
     read -r -p "OPS_ADMIN_CHAT_IDS [${OPS_ADMIN_CHAT_IDS}]: " input_ops_admin
     OPS_ADMIN_CHAT_IDS="${input_ops_admin:-$OPS_ADMIN_CHAT_IDS}"
-    read -r -p "SUPER_ADMIN_CHAT_IDS [${SUPER_ADMIN_CHAT_IDS}]: " input_super_admin
+    read -r -p "SUPER_ADMIN_CHAT_IDS [${SUPER_ADMIN_CHAT_IDS}]（建议至少含你的 chat id）: " input_super_admin
     SUPER_ADMIN_CHAT_IDS="${input_super_admin:-$SUPER_ADMIN_CHAT_IDS}"
 
     read -r -p "ENABLE_HTTPS（1=启用 caddy 自动证书，0=关闭） [${ENABLE_HTTPS}]: " input_https_switch
@@ -729,6 +812,23 @@ main() {
       HTTPS_DOMAIN=""
       HTTPS_ACME_EMAIL=""
     fi
+
+    local default_public_url
+    if [[ "$ENABLE_HTTPS" == "1" && -n "$HTTPS_DOMAIN" ]]; then
+      default_public_url="https://${HTTPS_DOMAIN}"
+    elif [[ -n "$public_ip" ]]; then
+      default_public_url="http://${public_ip}:${CONTROLLER_PORT}"
+    else
+      default_public_url="http://127.0.0.1:${CONTROLLER_PORT}"
+    fi
+    CONTROLLER_PUBLIC_URL="${CONTROLLER_PUBLIC_URL:-$default_public_url}"
+    read -r -p "CONTROLLER_PUBLIC_URL [${CONTROLLER_PUBLIC_URL}]（建议: 节点可访问地址）: " input_public_url
+    CONTROLLER_PUBLIC_URL="${input_public_url:-$CONTROLLER_PUBLIC_URL}"
+
+    local default_panel_base
+    default_panel_base="${PANEL_BASE_URL:-$CONTROLLER_PUBLIC_URL}"
+    read -r -p "PANEL_BASE_URL [${default_panel_base}]（建议: 用户实际访问域名）: " input_panel_base
+    PANEL_BASE_URL="${input_panel_base:-$default_panel_base}"
   fi
 
   if [[ -z "$BOT_TOKEN" ]]; then
@@ -786,6 +886,7 @@ main() {
     warn "controller /health 检查失败，请查看日志。"
   fi
   systemctl status sb-bot --no-pager || true
+  print_post_import_checklist
 }
 
 main "$@"

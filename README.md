@@ -546,11 +546,13 @@ bash /root/sb-bot-panel/scripts/admin/db_consistency_check.sh
 
 - 进入菜单后执行：`10) 迁移：导出迁移包`
 - 脚本会停止 `sb-controller` 与 `sb-bot`，导出完成后可选是否自动拉起
+- 可选包含 `项目代码快照`（推荐开启；新机可免 `git clone` 直接导入）
 - 生成文件名示例：`sb-migrate-YYYYmmdd-HHMMSS.tar.gz`
 - 导出内容：
   - `data/`（必须）
   - `.env`（必须）
   - `scripts/`（建议）
+  - `project-code.tar.gz`（可选；项目代码快照，排除 `.git/venv/data/.env`）
   - `sb-controller.service` / `sb-bot.service`（如果存在则附带）
 
 ### 传输迁移包
@@ -561,14 +563,16 @@ scp root@旧IP:/var/backups/sb-migrate/sb-migrate-xxxx.tar.gz root@新IP:/root/
 
 ### 新机导入
 
-- 在新机先准备项目目录（建议先 `git clone`）
+- 新机两种方式：
+  - 若迁移包包含 `project-code.tar.gz`：无需先 `git clone`，可直接导入
+  - 若迁移包不含代码快照：需先准备项目目录（建议先 `git clone`）
 - 进入菜单执行：`11) 迁移：导入迁移包`
 - 导入脚本会：
   - 备份旧项目目录到 `/var/backups/sb-migrate/restore-backup-*.tar.gz`
-  - 恢复 `data/.env/scripts`
-  - 进入参数修正向导（CONTROLLER_URL / BOT_TOKEN / ADMIN_CHAT_IDS）
+  - 恢复 `data/.env/scripts`（如包含代码快照会先恢复代码）
+  - 进入参数修正向导（每项带推荐值）
   - 自动安装依赖、重建 venv、重写 systemd、重启服务
-  - 自检 `/health` 与 bot 服务状态
+  - 自检 `/health` 与 bot 服务状态，并输出“迁移后必须检查参数”清单
 
 ## .env 配置项（管理服务器）
 
