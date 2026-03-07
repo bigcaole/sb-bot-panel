@@ -424,7 +424,7 @@ sb-admin
 3. 停止 controller
 4. 启动 bot
 5. 停止 bot
-6. 状态查看（controller/bot）
+6. 状态查看（controller/bot + 节点连接统计）
 7. 查看日志（controller/bot/归档/运维审计）
 8. HTTPS 证书状态（Caddy）
 9. HTTPS 证书刷新（重载 Caddy）
@@ -432,9 +432,9 @@ sb-admin
 11. 迁移：导入迁移包
 12. 一键验收自检（语法/单测/API）
 13. 数据库一致性校验（迁移前建议）
-14. 节点同步（默认参数 / Token / 时间）
+14. 节点同步（默认参数 / Token / 时间 / 对齐参数）
 15. 安全加固向导（token 轮换 + 8080 收敛）
-16. Token 工具（收敛 token / 拆分迁移）
+16. Token 工具（收敛 token / 拆分迁移 / 完整显示）
 17. 手动安全清理（过期封禁 + 审计日志）
 18. SSH 安全状态总览（只读）
 19. SSH 一键安全修复（半自动）
@@ -447,10 +447,14 @@ sb-admin
 25. 深度卸载
 26. 退出
 
-说明：菜单 `14` 支持两类同步：  
+说明：菜单 `14` 支持四类操作：  
 1) 默认参数同步（`/admin/nodes/sync_agent_defaults`）  
 2) 节点 Token 同步（`/admin/auth/sync_node_tokens`）  
+3) 节点时间同步（`/admin/nodes/sync_time`）  
+4) 节点部署对齐参数查看（输出 `controller_url/auth_token/poll_interval` 建议值）  
 用于节点参数或 token 快速对齐。  
+菜单 `6` 会附带输出节点连接统计（含 `last_seen` 视角），用于判断新节点是否已接入管理端。  
+菜单 `16 -> 3` 支持查看完整 token（有二次确认，高风险操作）。  
 管理端排障时，可使用 `GET /admin/nodes/{node_code}/sync_preview` 预览该节点下发内容（不受 `agent_ip` 限制，且不刷新 `last_seen_at`）。  
 执行 `安全加固向导` 并轮换 token 后，脚本会自动触发一次节点 token 同步（默认包含禁用节点并强制新建），降低节点鉴权不同步风险。  
 同样地，执行 `Token 收敛` 后也会自动触发一次节点 token 同步任务，进一步降低节点掉线风险。  

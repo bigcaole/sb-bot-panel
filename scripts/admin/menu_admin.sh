@@ -148,6 +148,19 @@ pick_working_auth_token() {
   return 1
 }
 
+resolve_admin_auth_token() {
+  local controller_port="$1"
+  local auth_token_raw auth_token
+  auth_token_raw="$(get_admin_token_raw_from_env)"
+  auth_token="$(pick_working_auth_token "$controller_port" "$auth_token_raw")" || {
+    warn "管理 token 多值模式下未探测到可用 token，回退使用第一个 token。"
+  }
+  if [[ -z "$auth_token" ]]; then
+    auth_token="$(first_auth_token "$auth_token_raw")"
+  fi
+  echo "$auth_token"
+}
+
 detect_ssh_service() {
   if systemd_unit_exists "sshd.service"; then
     echo "sshd"
@@ -560,7 +573,8 @@ run_sync_menu() {
   echo "  1) 同步节点默认参数（auth/url/poll）"
   echo "  2) 仅同步节点 Token（auth）"
   echo "  3) 同步节点系统时间（以管理服务器为准）"
-  read -r -p "请选择 [1/2/3]（默认 1）: " sync_choice
+  echo "  4) 查看节点部署对齐参数（给新节点抄写）"
+  read -r -p "请选择 [1/2/3/4]（默认 1）: " sync_choice
   sync_choice="${sync_choice:-1}"
   case "$sync_choice" in
     2)
@@ -569,10 +583,231 @@ run_sync_menu() {
     3)
       run_sync_node_time
       ;;
+    4)
+      show_node_alignment_params
+      ;;
     *)
       run_sync_node_defaults
       ;;
   esac
+}
+
+show_full_auth_tokens() {
+  local env_file="${PROJECT_DIR}/.env"
+  local admin_token node_token auth_token
+  local admin_primary node_primary auth_primary
+  local confirm_text=""
+  local controller_port auth_token_for_api status_response status_http status_body
+  if [[ ! -f "$env_file" ]]; then
+    warn "未检测到 ${env_file}，请先完成安装/配置。"
+    return 1
+  fi
+  if ! confirm_action "将显示完整 token（终端历史可见），是否继续？" "N"; then
+    warn "已取消显示完整 token。"
+    return 0
+  fi
+  read -r -p "请输入 SHOW 确认显示: " confirm_text
+  if [[ "$confirm_text" != "SHOW" ]]; then
+    warn "确认口令不匹配，已取消。"
+    return 1
+  fi
+
+  admin_token="$(get_env_value_local ADMIN_AUTH_TOKEN)"
+  node_token="$(get_env_value_local NODE_AUTH_TOKEN)"
+  auth_token="$(get_env_value_local AUTH_TOKEN)"
+  admin_primary="$(first_auth_token "$admin_token")"
+  node_primary="$(first_auth_token "$node_token")"
+  auth_primary="$(first_auth_token "$auth_token")"
+
+  echo "----- 完整 Token（敏感） -----"
+  echo "ADMIN_AUTH_TOKEN=${admin_token:-<empty>}"
+  echo "NODE_AUTH_TOKEN=${node_token:-<empty>}"
+  echo "AUTH_TOKEN=${auth_token:-<empty>}"
+  echo ""
+  echo "主值（逗号前第一段）："
+  echo "ADMIN_PRIMARY=${admin_primary:-<empty>}"
+  echo "NODE_PRIMARY=${node_primary:-<empty>}"
+  echo "AUTH_PRIMARY=${auth_primary:-<empty>}"
+  echo ""
+  echo "节点推荐对齐："
+  echo "  - /etc/sb-agent/config.json 的 auth_token 应使用 NODE_PRIMARY"
+  echo "  - 管理接口调用应使用 ADMIN_PRIMARY"
+
+  controller_port="$(get_controller_port)"
+  auth_token_for_api="$(resolve_admin_auth_token "$controller_port")"
+  if [[ -n "$auth_token_for_api" ]]; then
+    status_response="$(
+      curl -sS --max-time 8 \
+        "http://127.0.0.1:${controller_port}/admin/security/status" \
+        -H "Authorization: Bearer ${auth_token_for_api}" \
+        -H "X-Actor: ${ADMIN_SCRIPT_ACTOR}" \
+        -w $'\n%{http_code}' 2>/dev/null || true
+    )"
+    status_http="${status_response##*$'\n'}"
+    status_body="${status_response%$'\n'*}"
+    if [[ "$status_http" == "200" ]] && command -v jq >/dev/null 2>&1; then
+      echo ""
+      echo "拆分状态（来自 /admin/security/status）："
+      echo "$status_body" | jq '{auth_token_split_active,admin_auth_source,node_auth_source,admin_auth_token_count,node_auth_token_count}'
+    fi
+  fi
+}
+
+show_node_alignment_params() {
+  local env_file="${PROJECT_DIR}/.env"
+  local controller_port controller_public controller_url poll_interval
+  local admin_token node_token auth_token node_primary
+  if [[ ! -f "$env_file" ]]; then
+    warn "未检测到 ${env_file}，请先完成安装/配置。"
+    return 1
+  fi
+  controller_port="$(get_env_value_local CONTROLLER_PORT)"
+  controller_port="${controller_port:-8080}"
+  controller_public="$(get_env_value_local CONTROLLER_PUBLIC_URL)"
+  controller_url="$(get_env_value_local CONTROLLER_URL)"
+  poll_interval="$(get_env_value_local AGENT_DEFAULT_POLL_INTERVAL)"
+  poll_interval="${poll_interval:-15}"
+  admin_token="$(get_env_value_local ADMIN_AUTH_TOKEN)"
+  node_token="$(get_env_value_local NODE_AUTH_TOKEN)"
+  auth_token="$(get_env_value_local AUTH_TOKEN)"
+  node_primary="$(first_auth_token "$node_token")"
+  if [[ -z "$node_primary" ]]; then
+    node_primary="$(first_auth_token "$auth_token")"
+  fi
+
+  echo "----- 节点部署对齐参数（管理端 -> 节点端） -----"
+  echo "1) 节点 config.json 必填项："
+  if [[ -n "$controller_public" ]]; then
+    echo "   controller_url: ${controller_public}"
+  else
+    echo "   controller_url: <未设置 CONTROLLER_PUBLIC_URL>"
+    echo "   建议：在菜单 1 配置 CONTROLLER_PUBLIC_URL（填节点可访问地址），再执行菜单 14 同步默认参数。"
+  fi
+  echo "   auth_token: ${node_primary:-<未设置 NODE_AUTH_TOKEN/AUTH_TOKEN>}"
+  echo "   poll_interval: ${poll_interval}"
+  echo "   node_code: 与管理端节点编码完全一致（区分大小写）"
+  echo ""
+  echo "2) 管理端关键字段："
+  echo "   CONTROLLER_PORT=${controller_port}"
+  echo "   CONTROLLER_URL=${controller_url:-未设置}"
+  echo "   CONTROLLER_PUBLIC_URL=${controller_public:-未设置}"
+  echo "   ADMIN_AUTH_TOKEN=$(mask_secret_local "$admin_token")"
+  echo "   NODE_AUTH_TOKEN=$(mask_secret_local "$node_token")"
+  echo "   AUTH_TOKEN(兼容)=$(mask_secret_local "$auth_token")"
+  echo ""
+  echo "3) 建议流程："
+  echo "   - 菜单 14 -> 1（同步默认参数）批量下发 auth_token/controller_url/poll_interval"
+  echo "   - 菜单 14 -> 2（仅同步节点 Token）在 token 轮换后执行"
+  echo "   - 菜单 6（状态查看）检查节点连接统计，确认新节点已上报 last_seen"
+}
+
+show_node_connection_overview() {
+  local controller_port auth_token
+  local overview_response overview_http overview_body
+  local nodes_response nodes_http nodes_body
+  local node_access_response node_access_http node_access_body
+  local now_ts threshold
+  controller_port="$(get_controller_port)"
+  auth_token="$(resolve_admin_auth_token "$controller_port")"
+
+  if [[ -n "$auth_token" ]]; then
+    overview_response="$(
+      curl -sS --max-time 8 \
+        "http://127.0.0.1:${controller_port}/admin/overview" \
+        -H "Authorization: Bearer ${auth_token}" \
+        -H "X-Actor: ${ADMIN_SCRIPT_ACTOR}" \
+        -w $'\n%{http_code}' 2>/dev/null || true
+    )"
+    nodes_response="$(
+      curl -sS --max-time 8 \
+        "http://127.0.0.1:${controller_port}/nodes" \
+        -H "Authorization: Bearer ${auth_token}" \
+        -H "X-Actor: ${ADMIN_SCRIPT_ACTOR}" \
+        -w $'\n%{http_code}' 2>/dev/null || true
+    )"
+    node_access_response="$(
+      curl -sS --max-time 8 \
+        "http://127.0.0.1:${controller_port}/admin/node_access/status" \
+        -H "Authorization: Bearer ${auth_token}" \
+        -H "X-Actor: ${ADMIN_SCRIPT_ACTOR}" \
+        -w $'\n%{http_code}' 2>/dev/null || true
+    )"
+  else
+    overview_response="$(
+      curl -sS --max-time 8 \
+        "http://127.0.0.1:${controller_port}/admin/overview" \
+        -H "X-Actor: ${ADMIN_SCRIPT_ACTOR}" \
+        -w $'\n%{http_code}' 2>/dev/null || true
+    )"
+    nodes_response="$(
+      curl -sS --max-time 8 \
+        "http://127.0.0.1:${controller_port}/nodes" \
+        -H "X-Actor: ${ADMIN_SCRIPT_ACTOR}" \
+        -w $'\n%{http_code}' 2>/dev/null || true
+    )"
+    node_access_response="$(
+      curl -sS --max-time 8 \
+        "http://127.0.0.1:${controller_port}/admin/node_access/status" \
+        -H "X-Actor: ${ADMIN_SCRIPT_ACTOR}" \
+        -w $'\n%{http_code}' 2>/dev/null || true
+    )"
+  fi
+
+  overview_http="${overview_response##*$'\n'}"
+  overview_body="${overview_response%$'\n'*}"
+  nodes_http="${nodes_response##*$'\n'}"
+  nodes_body="${nodes_response%$'\n'*}"
+  node_access_http="${node_access_response##*$'\n'}"
+  node_access_body="${node_access_response%$'\n'*}"
+
+  echo "----- 节点连接统计（管理视角） -----"
+  if [[ "$overview_http" != "200" || "$nodes_http" != "200" ]]; then
+    warn "读取节点连接统计失败：/admin/overview HTTP=${overview_http} /nodes HTTP=${nodes_http}"
+    if [[ -n "$overview_body" ]]; then
+      echo "$overview_body"
+    fi
+    return 1
+  fi
+  if ! command -v jq >/dev/null 2>&1; then
+    warn "未安装 jq，输出原始概览："
+    echo "$overview_body"
+    return 0
+  fi
+
+  threshold="$(echo "$overview_body" | jq -r '.monitor.threshold_seconds // 120' 2>/dev/null || echo "120")"
+  if [[ ! "$threshold" =~ ^[0-9]+$ ]]; then
+    threshold="120"
+  fi
+  now_ts="$(date +%s)"
+
+  echo "$nodes_body" | jq -r --argjson now "$now_ts" --argjson threshold "$threshold" '
+    def last_seen_num: ((.last_seen_at // 0) | tonumber);
+    def online: (last_seen_num > 0 and (($now - last_seen_num) <= $threshold));
+    "总节点: \((length))",
+    "启用节点: \((map(select((.enabled // 0 | tonumber)==1)) | length))",
+    "在线阈值: \($threshold) 秒",
+    "已连接节点(last_seen 在阈值内): \((map(select(online)) | length))",
+    "启用且已连接: \((map(select((.enabled // 0 | tonumber)==1 and online)) | length))",
+    "启用但未连接: \((map(select((.enabled // 0 | tonumber)==1 and (online|not))) | length))"
+  '
+  echo ""
+  echo "节点明细（按节点编码）："
+  echo "$nodes_body" | jq -r --argjson now "$now_ts" --argjson threshold "$threshold" '
+    def last_seen_num: ((.last_seen_at // 0) | tonumber);
+    def online: (last_seen_num > 0 and (($now - last_seen_num) <= $threshold));
+    sort_by(.node_code)[] |
+    . as $n |
+    " - \($n.node_code) | enabled=\(($n.enabled // 0)|tonumber) | monitor=\(($n.monitor_enabled // 0)|tonumber) | " +
+    (if online then "connected" else "disconnected" end) +
+    " | last_seen=" +
+    (if last_seen_num > 0 then (last_seen_num | strftime("%Y-%m-%d %H:%M:%S")) else "never" end)
+  '
+
+  if [[ "$node_access_http" == "200" ]]; then
+    echo ""
+    echo "访问收敛（/admin/node_access/status）："
+    echo "$node_access_body" | jq -r '"启用总数=\(.enabled_nodes) | 已锁定启用=\(.locked_enabled_nodes) | 未锁定启用=\(.unlocked_enabled_nodes) | 白名单缺口=\(.whitelist_missing_count)"'
+  fi
 }
 
 show_ops_audit_events() {
@@ -909,6 +1144,7 @@ show_current_config_overview() {
     echo "BOT_TOKEN: 未设置/占位（将无法启动 bot）"
   fi
   echo "SUPER_ADMIN_CHAT_IDS: ${super_admin:-未设置（建议至少填你的 chat id）}"
+  echo "提示：如需查看完整 token，请使用菜单 16 -> 3（有二次确认）。"
 }
 
 show_menu() {
@@ -933,7 +1169,7 @@ show_menu() {
 13. 数据库一致性校验（迁移前建议）
 14. 节点同步（默认参数 / Token / 时间）
 15. 安全加固向导（token轮换 + 8080收敛）
-16. Token 工具（收敛 token / 拆分迁移）
+16. Token 工具（收敛 token / 拆分迁移 / 显示完整）
 17. 手动安全清理（过期封禁 + 审计日志）
 18. SSH 安全状态总览（只读）
 19. SSH 一键安全修复（半自动）
@@ -1003,6 +1239,8 @@ show_status() {
   echo ""
   echo "----- sb-bot -----"
   systemctl status sb-bot --no-pager || true
+  echo ""
+  show_node_connection_overview || true
 }
 
 show_logs() {
@@ -1389,9 +1627,12 @@ main() {
         echo "请选择 token 操作："
         echo "  1) 收敛 token（AUTH/ADMIN/NODE 多值 -> 单值）"
         echo "  2) 拆分迁移（兼容模式 -> ADMIN/NODE 拆分过渡）"
-        read -r -p "请输入 [1/2]（默认 1）: " token_action
+        echo "  3) 查看完整 token（高风险，二次确认）"
+        read -r -p "请输入 [1/2/3]（默认 1）: " token_action
         token_action="${token_action:-1}"
-        if [[ "$token_action" == "2" ]]; then
+        if [[ "$token_action" == "3" ]]; then
+          show_full_auth_tokens
+        elif [[ "$token_action" == "2" ]]; then
           if [[ -f "$TOKEN_SPLIT_MIGRATE_SCRIPT" ]]; then
             bash "$TOKEN_SPLIT_MIGRATE_SCRIPT"
           else
