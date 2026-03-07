@@ -34,6 +34,13 @@ require_root() {
   fi
 }
 
+systemd_unit_exists() {
+  local unit_name="$1"
+  local load_state
+  load_state="$(systemctl show -p LoadState --value "$unit_name" 2>/dev/null || true)"
+  [[ -n "$load_state" && "$load_state" != "not-found" ]]
+}
+
 pause() {
   echo ""
   read -r -p "按回车继续..." _
@@ -142,7 +149,7 @@ pick_working_auth_token() {
 }
 
 detect_ssh_service() {
-  if systemctl list-unit-files | grep -q '^sshd\.service'; then
+  if systemd_unit_exists "sshd.service"; then
     echo "sshd"
   else
     echo "ssh"
@@ -871,7 +878,7 @@ show_current_config_overview() {
   super_admin="$(get_env_value_local SUPER_ADMIN_CHAT_IDS)"
   admin_whitelist="$(get_env_value_local ADMIN_API_WHITELIST)"
   port_whitelist="$(get_env_value_local CONTROLLER_PORT_WHITELIST)"
-  if systemctl list-unit-files 2>/dev/null | grep -q '^caddy\.service'; then
+  if systemd_unit_exists "caddy.service"; then
     caddy_installed="是"
   else
     caddy_installed="否"
@@ -1018,7 +1025,7 @@ show_logs() {
 }
 
 show_https_status() {
-  if ! systemctl list-unit-files | grep -q '^caddy.service'; then
+  if ! systemd_unit_exists "caddy.service"; then
     warn "系统未安装 caddy.service。"
     return
   fi
@@ -1037,7 +1044,7 @@ show_https_status() {
 }
 
 reload_https_cert() {
-  if ! systemctl list-unit-files | grep -q '^caddy.service'; then
+  if ! systemd_unit_exists "caddy.service"; then
     warn "系统未安装 caddy.service。"
     return
   fi
@@ -1074,14 +1081,14 @@ run_component_self_check_and_repair() {
     msg "venv Python 已存在。"
   fi
 
-  if ! systemctl list-unit-files | grep -q '^sb-controller\.service'; then
+  if ! systemd_unit_exists "sb-controller.service"; then
     warn "未检测到 sb-controller.service"
     need_repair=1
   else
     msg "sb-controller.service 已安装。"
   fi
 
-  if ! systemctl list-unit-files | grep -q '^sb-bot\.service'; then
+  if ! systemd_unit_exists "sb-bot.service"; then
     warn "未检测到 sb-bot.service"
     need_repair=1
   else
@@ -1089,7 +1096,7 @@ run_component_self_check_and_repair() {
   fi
 
   if [[ "$enable_https" == "1" ]]; then
-    if ! command -v caddy >/dev/null 2>&1 || ! systemctl list-unit-files | grep -q '^caddy\.service'; then
+    if ! command -v caddy >/dev/null 2>&1 || ! systemd_unit_exists "caddy.service"; then
       warn "ENABLE_HTTPS=1 但 caddy/caddy.service 缺失。"
       need_repair=1
     else

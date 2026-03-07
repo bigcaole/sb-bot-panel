@@ -139,6 +139,13 @@ require_root() {
   fi
 }
 
+systemd_unit_exists() {
+  local unit_name="$1"
+  local load_state
+  load_state="$(systemctl show -p LoadState --value "$unit_name" 2>/dev/null || true)"
+  [[ -n "$load_state" && "$load_state" != "not-found" ]]
+}
+
 ask_yes_no() {
   local prompt="$1"
   local default="${2:-Y}"
@@ -1287,7 +1294,7 @@ install_caddy_if_needed() {
   if command -v caddy >/dev/null 2>&1; then
     has_caddy_bin="1"
   fi
-  if systemctl list-unit-files 2>/dev/null | grep -q '^caddy\.service'; then
+  if systemd_unit_exists "caddy.service"; then
     has_caddy_service="1"
   fi
   if [[ "$has_caddy_bin" == "1" && "$has_caddy_service" == "1" ]]; then
