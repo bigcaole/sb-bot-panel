@@ -1278,14 +1278,31 @@ setup_venv_and_requirements() {
 }
 
 install_caddy_if_needed() {
+  local has_caddy_bin has_caddy_service
   if [[ "$ENABLE_HTTPS" != "1" ]]; then
     return
   fi
+  has_caddy_bin="0"
+  has_caddy_service="0"
   if command -v caddy >/dev/null 2>&1; then
+    has_caddy_bin="1"
+  fi
+  if systemctl list-unit-files 2>/dev/null | grep -q '^caddy\.service'; then
+    has_caddy_service="1"
+  fi
+  if [[ "$has_caddy_bin" == "1" && "$has_caddy_service" == "1" ]]; then
     return
   fi
-  msg "启用 HTTPS 模式，安装 Caddy..."
+
   export DEBIAN_FRONTEND=noninteractive
+  if [[ "$has_caddy_bin" == "1" && "$has_caddy_service" == "0" ]]; then
+    msg "检测到 caddy 命令但缺少 caddy.service，执行重装修复..."
+    apt-get update -y
+    apt-get install -y --reinstall caddy
+    return
+  fi
+
+  msg "启用 HTTPS 模式，安装 Caddy..."
   apt-get update -y
   apt-get install -y caddy
 }

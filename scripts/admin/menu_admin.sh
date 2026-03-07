@@ -854,14 +854,16 @@ show_current_config_overview() {
     warn "未检测到 ${env_file}，请先执行配置。"
     return
   fi
-  local controller_port controller_url controller_public panel_base enable_https https_domain
+  local controller_port controller_url controller_public panel_base enable_https https_domain https_acme_email
   local admin_token node_token auth_token bot_token super_admin admin_whitelist port_whitelist
+  local caddy_installed caddy_active
   controller_port="$(get_env_value_local CONTROLLER_PORT)"; controller_port="${controller_port:-8080}"
   controller_url="$(get_env_value_local CONTROLLER_URL)"
   controller_public="$(get_env_value_local CONTROLLER_PUBLIC_URL)"
   panel_base="$(get_env_value_local PANEL_BASE_URL)"
   enable_https="$(get_env_value_local ENABLE_HTTPS)"; enable_https="${enable_https:-0}"
   https_domain="$(get_env_value_local HTTPS_DOMAIN)"
+  https_acme_email="$(get_env_value_local HTTPS_ACME_EMAIL)"
   admin_token="$(get_env_value_local ADMIN_AUTH_TOKEN)"
   node_token="$(get_env_value_local NODE_AUTH_TOKEN)"
   auth_token="$(get_env_value_local AUTH_TOKEN)"
@@ -869,6 +871,16 @@ show_current_config_overview() {
   super_admin="$(get_env_value_local SUPER_ADMIN_CHAT_IDS)"
   admin_whitelist="$(get_env_value_local ADMIN_API_WHITELIST)"
   port_whitelist="$(get_env_value_local CONTROLLER_PORT_WHITELIST)"
+  if systemctl list-unit-files 2>/dev/null | grep -q '^caddy\.service'; then
+    caddy_installed="是"
+  else
+    caddy_installed="否"
+  fi
+  if systemctl is-active caddy >/dev/null 2>&1; then
+    caddy_active="active"
+  else
+    caddy_active="inactive"
+  fi
 
   echo "----- 当前关键配置（含建议） -----"
   echo "CONTROLLER_PORT: ${controller_port}（建议保持 8080）"
@@ -877,6 +889,8 @@ show_current_config_overview() {
   echo "PANEL_BASE_URL: ${panel_base:-未设置}（建议填用户实际访问地址，避免 127.0.0.1）"
   echo "ENABLE_HTTPS: ${enable_https}（1=启用；未切DNS前建议 0）"
   echo "HTTPS_DOMAIN: ${https_domain:-未设置}"
+  echo "HTTPS_ACME_EMAIL: ${https_acme_email:-未设置}"
+  echo "Caddy组件: 已安装=${caddy_installed} 运行状态=${caddy_active}"
   echo "CONTROLLER_PORT_WHITELIST: ${port_whitelist:-未设置（建议配置）}"
   echo "ADMIN_API_WHITELIST: ${admin_whitelist:-未设置（建议配置）}"
   echo "ADMIN_AUTH_TOKEN: $(mask_secret_local "$admin_token")（建议设置）"
