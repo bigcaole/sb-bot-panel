@@ -17,6 +17,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -32,6 +34,7 @@ jobs:
 
       - name: Check Shell Script Syntax
         run: |
+          bash -n scripts/admin/check_docs_sync.sh
           bash -n scripts/admin/install_admin.sh
           bash -n scripts/admin/menu_admin.sh
           bash -n scripts/admin/sb_migrate_export.sh
@@ -40,6 +43,10 @@ jobs:
           bash -n scripts/install.sh
           bash -n scripts/menu.sh
           bash -n scripts/sb_cert_check.sh
+
+      - name: Enforce Docs Sync (README + 零基础手册)
+        run: |
+          bash scripts/admin/check_docs_sync.sh --ci-auto
 
       - name: Run Unit And Smoke Tests
         run: |

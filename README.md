@@ -556,9 +556,16 @@ bash /root/sb-bot-panel/scripts/admin/db_consistency_check.sh
 
 - 触发时机：`push main`、`pull request`
 - 检查内容：
+  - 文档同步检查（若改动功能代码，必须同步更新 `README.md` 与 `docs/零基础部署-测试-使用-排障手册.md`）
   - 管理/节点脚本 `bash -n` 语法检查
   - `scripts/admin/smoke_test.sh --skip-api`（语法 + 单元测试）
 - Python 版本：`3.11`、`3.12`
+
+本地也可手动执行同样检查：
+
+```bash
+bash scripts/admin/check_docs_sync.sh
+```
 
 ## Python 与系统兼容
 
