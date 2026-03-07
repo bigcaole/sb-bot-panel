@@ -544,6 +544,38 @@ ensure_dirs() {
   mkdir -p "$BACKUP_DIR"
 }
 
+resolve_singbox_run_user() {
+  local service_user
+  service_user="$(systemctl show -p User --value sing-box.service 2>/dev/null || true)"
+  service_user="$(echo "$service_user" | xargs)"
+  if [[ -n "$service_user" ]]; then
+    echo "$service_user"
+    return
+  fi
+  if id -u sing-box >/dev/null 2>&1; then
+    echo "sing-box"
+    return
+  fi
+  echo "root"
+}
+
+ensure_singbox_log_permissions() {
+  local run_user run_group
+  run_user="$(resolve_singbox_run_user)"
+  run_group="$(id -gn "$run_user" 2>/dev/null || echo "$run_user")"
+
+  mkdir -p "$SINGBOX_LOG_DIR"
+  touch "${SINGBOX_LOG_DIR}/sing-box.log"
+
+  if chown "${run_user}:${run_group}" "$SINGBOX_LOG_DIR" "${SINGBOX_LOG_DIR}/sing-box.log" >/dev/null 2>&1; then
+    :
+  else
+    warn "无法设置 sing-box 日志目录属主为 ${run_user}:${run_group}，将继续尝试启动。"
+  fi
+  chmod 0755 "$SINGBOX_LOG_DIR" || true
+  chmod 0644 "${SINGBOX_LOG_DIR}/sing-box.log" || true
+}
+
 setup_python_venv() {
   if [[ -z "$AGENT_PYTHON_BIN" ]]; then
     ensure_python_311_runtime
@@ -1067,6 +1099,7 @@ main() {
   fi
 
   install_singbox_service_if_missing
+  ensure_singbox_log_permissions
   install_sb_agent_service
   install_cert_check_timer_files
   install_menu_shortcuts
