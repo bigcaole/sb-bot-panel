@@ -49,8 +49,15 @@ require_root() {
   fi
 }
 
+systemd_unit_exists() {
+  local unit_name="$1"
+  local load_state
+  load_state="$(systemctl show -p LoadState --value "$unit_name" 2>/dev/null || true)"
+  [[ -n "$load_state" && "$load_state" != "not-found" ]]
+}
+
 detect_ssh_service() {
-  if systemctl list-unit-files 2>/dev/null | grep -q '^sshd.service'; then
+  if systemd_unit_exists "sshd.service"; then
     echo "sshd"
     return
   fi
@@ -743,11 +750,70 @@ run_reconfigure() {
   fi
 }
 
+install_or_update_singbox() {
+  msg "开始安装/更新 sing-box（官方脚本）..."
+  export DEBIAN_FRONTEND=noninteractive
+  if ! command -v curl >/dev/null 2>&1; then
+    apt-get update -y
+    apt-get install -y curl
+  fi
+  if ! curl -fsSL https://sing-box.app/install.sh | bash; then
+    err "sing-box 安装脚本执行失败。"
+    return 1
+  fi
+  if ! command -v sing-box >/dev/null 2>&1; then
+    err "sing-box 安装后仍未检测到可执行文件。"
+    return 1
+  fi
+  msg "sing-box 已安装：$(command -v sing-box)"
+
+  if [[ ! -f "$CONFIG_PATH" ]]; then
+    warn "未检测到节点配置 ${CONFIG_PATH}，请先执行菜单 1 完成配置。"
+    return 0
+  fi
+
+  if ! systemd_unit_exists "sing-box.service"; then
+    if [[ -f "$INSTALL_SCRIPT" ]]; then
+      msg "未检测到 sing-box.service，尝试使用 install.sh --sync-only 自动补齐服务..."
+      if ! bash "$INSTALL_SCRIPT" --sync-only; then
+        warn "通过 --sync-only 补齐服务失败，请执行菜单 1 重新配置。"
+        return 1
+      fi
+    else
+      warn "未找到 install.sh，无法自动补齐 sing-box.service。"
+      return 1
+    fi
+  fi
+
+  if systemd_unit_exists "sing-box.service"; then
+    systemctl daemon-reload
+    systemctl enable --now "$SINGBOX_SERVICE" >/dev/null 2>&1 || true
+    msg "sing-box 服务已启用并尝试启动。"
+  fi
+  return 0
+}
+
+ensure_singbox_installed_interactive() {
+  if command -v sing-box >/dev/null 2>&1 && systemd_unit_exists "sing-box.service"; then
+    return 0
+  fi
+  warn "检测到 sing-box 组件不完整（可执行文件或服务缺失）。"
+  if confirm_action "是否现在安装/更新 sing-box 并自动补齐服务？" "Y"; then
+    install_or_update_singbox
+    return $?
+  fi
+  warn "已取消 sing-box 安装/更新。"
+  return 1
+}
+
 show_agent_status() {
   systemctl status "$AGENT_SERVICE" --no-pager || true
 }
 
 show_singbox_status_logs() {
+  if ! ensure_singbox_installed_interactive; then
+    return 1
+  fi
   systemctl status "$SINGBOX_SERVICE" --no-pager || true
   echo ""
   msg "最近 80 行 sing-box 日志："
@@ -764,6 +830,9 @@ tail_agent_log() {
 }
 
 run_cert_check() {
+  if ! ensure_singbox_installed_interactive; then
+    return 1
+  fi
   if [[ -x "$SYSTEM_CERT_CHECK_SCRIPT" ]]; then
     "$SYSTEM_CERT_CHECK_SCRIPT"
     return
@@ -776,6 +845,9 @@ run_cert_check() {
 }
 
 refresh_certificate() {
+  if ! ensure_singbox_installed_interactive; then
+    return 1
+  fi
   msg "开始执行证书重新申请/刷新流程（安全模式：先备份）..."
   mkdir -p "$BACKUP_DIR"
   local ts backup_tar
@@ -916,7 +988,8 @@ show_menu() {
   echo "20) AI诊断包导出（可粘贴给任意AI）"
   echo "21) 更新同步（保留原配置，自动 git pull）"
   echo "22) 深度卸载"
-  echo "23) 退出"
+  echo "23) 安装/更新 sing-box（交互）"
+  echo "24) 退出"
   echo "========================================"
 }
 
@@ -924,7 +997,7 @@ main() {
   require_root
   while true; do
     show_menu
-    read -r -p "请选择操作 [1-23]: " choice
+    read -r -p "请选择操作 [1-24]: " choice
     case "$choice" in
       1)
         run_reconfigure
@@ -953,6 +1026,10 @@ main() {
         tail_agent_log
         ;;
       7)
+        if ! ensure_singbox_installed_interactive; then
+          pause
+          continue
+        fi
         systemctl restart "$SINGBOX_SERVICE" || true
         msg "已执行 sing-box 重启。"
         pause
@@ -1030,11 +1107,15 @@ main() {
         pause
         ;;
       23)
+        install_or_update_singbox
+        pause
+        ;;
+      24)
         msg "已退出。"
         exit 0
         ;;
       *)
-        warn "无效选项，请输入 1-23。"
+        warn "无效选项，请输入 1-24。"
         pause
         ;;
     esac
