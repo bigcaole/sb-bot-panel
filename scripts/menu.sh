@@ -8,6 +8,7 @@ LOCAL_CERT_CHECK_SCRIPT="$ROOT_DIR/scripts/sb_cert_check.sh"
 OPS_SNAPSHOT_SCRIPT="$ROOT_DIR/scripts/ops_snapshot.sh"
 AI_CONTEXT_SCRIPT="$ROOT_DIR/scripts/ai_context_export.sh"
 SYSTEM_CERT_CHECK_SCRIPT="/usr/local/bin/sb-cert-check.sh"
+MENU_VIEW_MODE="${MENU_VIEW_MODE:-basic}"
 
 AGENT_SERVICE="sb-agent"
 SINGBOX_SERVICE="sing-box"
@@ -976,47 +977,84 @@ uninstall_all() {
 
 show_menu() {
   clear
+  if [[ "$MENU_VIEW_MODE" == "advanced" ]]; then
+    echo "========================================"
+    echo " sb-agent 中文管理菜单"
+    echo "========================================"
+    echo "【运行与配置】"
+    echo " 1) 配置（快速默认 / 高级变量向导）"
+    echo " 2) 启动 sb-agent"
+    echo " 3) 停止 sb-agent"
+    echo " 4) 重启 sb-agent"
+    echo " 5) 查看 sb-agent 状态"
+    echo " 6) 查看 sb-agent 日志（tail -f）"
+    echo " 7) 重启 sing-box"
+    echo " 8) 查看 sing-box 状态与最近日志"
+    echo " 9) 证书状态检查"
+    echo "10) 触发证书重新申请/刷新（先备份）"
+    echo ""
+    echo "【安全工具】"
+    echo "11) 安装/启用 fail2ban（SSH 防爆破）"
+    echo "12) 查看 fail2ban 状态与封禁列表"
+    echo "13) 解封 fail2ban 封禁 IP"
+    echo "14) 生成 SSH 密钥（ed25519）"
+    echo "15) SSH 安全状态总览（只读）"
+    echo "16) 一键安全修复（半自动）"
+    echo "17) 启用 SSH 仅密钥登录（禁用密码）"
+    echo "18) 恢复 SSH 密码登录（应急）"
+    echo ""
+    echo "【系统级操作（谨慎）】"
+    echo "19) 节点运维快照（导出关键状态）"
+    echo "20) AI诊断包导出（可粘贴给任意AI）"
+    echo "21) 更新同步（保留原配置，自动 git pull）"
+    echo "22) 深度卸载"
+    echo "23) 安装/更新 sing-box（交互）"
+    echo "24) 退出"
+    echo "========================================"
+    echo "视图切换：输入 B 返回简化视图（仅常用项）"
+    return
+  fi
+
   echo "========================================"
-  echo " sb-agent 中文管理菜单"
+  echo " sb-agent 中文管理菜单（简化视图）"
   echo "========================================"
-  echo "【运行与配置】"
+  echo "【常用项】"
   echo " 1) 配置（快速默认 / 高级变量向导）"
-  echo " 2) 启动 sb-agent"
-  echo " 3) 停止 sb-agent"
-  echo " 4) 重启 sb-agent"
   echo " 5) 查看 sb-agent 状态"
   echo " 6) 查看 sb-agent 日志（tail -f）"
-  echo " 7) 重启 sing-box"
   echo " 8) 查看 sing-box 状态与最近日志"
   echo " 9) 证书状态检查"
-  echo "10) 触发证书重新申请/刷新（先备份）"
-  echo ""
-  echo "【安全工具】"
   echo "11) 安装/启用 fail2ban（SSH 防爆破）"
-  echo "12) 查看 fail2ban 状态与封禁列表"
-  echo "13) 解封 fail2ban 封禁 IP"
-  echo "14) 生成 SSH 密钥（ed25519）"
   echo "15) SSH 安全状态总览（只读）"
-  echo "16) 一键安全修复（半自动）"
-  echo "17) 启用 SSH 仅密钥登录（禁用密码）"
-  echo "18) 恢复 SSH 密码登录（应急）"
-  echo ""
-  echo "【系统级操作（谨慎）】"
-  echo "19) 节点运维快照（导出关键状态）"
-  echo "20) AI诊断包导出（可粘贴给任意AI）"
   echo "21) 更新同步（保留原配置，自动 git pull）"
-  echo "22) 深度卸载"
   echo "23) 安装/更新 sing-box（交互）"
   echo "24) 退出"
   echo "========================================"
+  echo "视图切换：输入 A 查看全部功能（高级视图）"
 }
 
 main() {
   require_root
   while true; do
     show_menu
-    read -r -p "请选择操作 [1-24]: " choice
+    local choice_prompt
+    if [[ "$MENU_VIEW_MODE" == "advanced" ]]; then
+      choice_prompt="请选择操作 [1-24/b]: "
+    else
+      choice_prompt="请选择操作 [常用编号/a]: "
+    fi
+    read -r -p "$choice_prompt" choice
     case "$choice" in
+      [Aa])
+        MENU_VIEW_MODE="advanced"
+        msg "已切换到高级视图。"
+        pause
+        ;;
+      [Bb])
+        MENU_VIEW_MODE="basic"
+        msg "已切换到简化视图。"
+        pause
+        ;;
       1)
         run_reconfigure
         pause
@@ -1133,7 +1171,11 @@ main() {
         exit 0
         ;;
       *)
-        warn "无效选项，请输入 1-24。"
+        if [[ "$MENU_VIEW_MODE" == "advanced" ]]; then
+          warn "无效选项，请输入 1-24 或 b。"
+        else
+          warn "无效选项，请输入简化视图中的编号，或输入 a 切换高级视图。"
+        fi
         pause
         ;;
     esac

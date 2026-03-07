@@ -22,6 +22,7 @@ LOG_ARCHIVE_SCRIPT="${PROJECT_DIR}/scripts/admin/log_archive.sh"
 OPS_SNAPSHOT_SCRIPT="${PROJECT_DIR}/scripts/admin/ops_snapshot.sh"
 AI_CONTEXT_SCRIPT="${PROJECT_DIR}/scripts/admin/ai_context_export.sh"
 ADMIN_SCRIPT_ACTOR="sb-admin"
+MENU_VIEW_MODE="${MENU_VIEW_MODE:-basic}"
 
 msg() { echo -e "\033[1;32m[信息]\033[0m $*"; }
 warn() { echo -e "\033[1;33m[警告]\033[0m $*"; }
@@ -1199,7 +1200,8 @@ show_current_config_overview() {
 
 show_menu() {
   clear
-  cat <<'EOF'
+  if [[ "$MENU_VIEW_MODE" == "advanced" ]]; then
+    cat <<'EOF'
 ========================================
  sb-bot-panel 管理服务器菜单
 ========================================
@@ -1209,8 +1211,8 @@ show_menu() {
 3. 停止 controller
 4. 启动 bot
 5. 停止 bot
-6. 状态查看（controller/bot）
-7. 查看日志（controller/bot/归档）
+6. 状态查看（controller/bot + 节点连接统计）
+7. 查看日志（controller/bot/归档/运维审计）
 8. HTTPS 证书状态（Caddy）
 9. HTTPS 证书刷新（重载 Caddy）
 10. 迁移：导出迁移包
@@ -1234,6 +1236,30 @@ show_menu() {
 26. 退出
 ========================================
 EOF
+    echo "视图切换：输入 B 返回简化视图（仅常用项）"
+    return
+  fi
+
+  cat <<'EOF'
+========================================
+ sb-bot-panel 管理服务器菜单（简化视图）
+========================================
+【常用项】
+1. 配置（快速默认 / 高级变量向导）
+6. 状态查看（含节点连接统计）
+7. 查看日志（controller/bot/归档/运维审计）
+12. 一键验收自检（语法/单测/API）
+14. 节点同步（默认参数 / Token / 时间 / 对齐参数）
+15. 安全加固向导（token轮换 + 8080收敛）
+16. Token 工具（收敛 token / 拆分迁移 / 显示完整）
+20. 运维快照（导出关键状态）
+21. AI诊断包导出（可粘贴给任意AI）
+22. 组件自检与自动修复（controller/bot/caddy）
+24. 更新（git pull + 复用现有配置 + 重启）
+26. 退出
+========================================
+EOF
+  echo "视图切换：输入 A 查看全部功能（高级视图）"
 }
 
 do_install() {
@@ -1569,8 +1595,24 @@ main() {
 
   while true; do
     show_menu
-    read -r -p "请输入选项 [1-26]: " action
+    local action_prompt
+    if [[ "$MENU_VIEW_MODE" == "advanced" ]]; then
+      action_prompt="请输入选项 [1-26/b]: "
+    else
+      action_prompt="请输入选项 [常用编号/a]: "
+    fi
+    read -r -p "$action_prompt" action
     case "$action" in
+      [Aa])
+        MENU_VIEW_MODE="advanced"
+        msg "已切换到高级视图。"
+        pause
+        ;;
+      [Bb])
+        MENU_VIEW_MODE="basic"
+        msg "已切换到简化视图。"
+        pause
+        ;;
       1)
         configure_only
         pause
@@ -1754,7 +1796,11 @@ main() {
         exit 0
         ;;
       *)
-        warn "无效选项，请输入 1-26。"
+        if [[ "$MENU_VIEW_MODE" == "advanced" ]]; then
+          warn "无效选项，请输入 1-26 或 b。"
+        else
+          warn "无效选项，请输入简化视图中的编号，或输入 a 切换高级视图。"
+        fi
         pause
         ;;
     esac
