@@ -492,9 +492,36 @@ ensure_dns_tools() {
   apt-get install -y dnsutils bind9-host
 }
 
+find_latest_singbox_deb() {
+  find "$PWD" /tmp -maxdepth 2 -type f -name 'sing-box_*_linux_*.deb' -printf '%T@ %p\n' 2>/dev/null \
+    | sort -nr \
+    | head -n1 \
+    | cut -d' ' -f2-
+}
+
+retry_singbox_install_keep_local_config() {
+  local deb_path
+  deb_path="$(find_latest_singbox_deb || true)"
+  if [[ -z "$deb_path" || ! -f "$deb_path" ]]; then
+    return 1
+  fi
+  warn "检测到 conffile 冲突，使用保留本地配置策略重试: ${deb_path}"
+  if ! dpkg -i --force-confdef --force-confold "$deb_path"; then
+    apt-get install -f -y || true
+    dpkg -i --force-confdef --force-confold "$deb_path"
+  fi
+}
+
 install_sing_box() {
   msg "安装/更新 sing-box（官方脚本）..."
-  curl -fsSL https://sing-box.app/install.sh | bash
+  export DEBIAN_FRONTEND=noninteractive
+  if ! curl -fsSL https://sing-box.app/install.sh | bash; then
+    warn "官方安装脚本返回失败，尝试非交互重试（保留本地 config.json）..."
+    if ! retry_singbox_install_keep_local_config; then
+      err "sing-box 安装失败，且未能自动完成非交互重试。"
+      exit 1
+    fi
+  fi
   if ! command -v sing-box >/dev/null 2>&1; then
     err "sing-box 安装失败，未检测到命令。"
     exit 1

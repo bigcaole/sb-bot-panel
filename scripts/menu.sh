@@ -758,8 +758,20 @@ install_or_update_singbox() {
     apt-get install -y curl
   fi
   if ! curl -fsSL https://sing-box.app/install.sh | bash; then
-    err "sing-box 安装脚本执行失败。"
-    return 1
+    local deb_path
+    warn "官方安装脚本返回失败，尝试非交互重试（保留本地 config.json）..."
+    deb_path="$(find "$PWD" /tmp -maxdepth 2 -type f -name 'sing-box_*_linux_*.deb' -printf '%T@ %p\n' 2>/dev/null | sort -nr | head -n1 | cut -d' ' -f2-)"
+    if [[ -z "$deb_path" || ! -f "$deb_path" ]]; then
+      err "sing-box 安装脚本执行失败，且未找到可重试的 deb 包。"
+      return 1
+    fi
+    if ! dpkg -i --force-confdef --force-confold "$deb_path"; then
+      apt-get install -f -y || true
+      if ! dpkg -i --force-confdef --force-confold "$deb_path"; then
+        err "sing-box 非交互重试失败。"
+        return 1
+      fi
+    fi
   fi
   if ! command -v sing-box >/dev/null 2>&1; then
     err "sing-box 安装后仍未检测到可执行文件。"
