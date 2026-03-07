@@ -55,6 +55,7 @@ bash scripts/install.sh --configure-quick
 - `auth_token`：用管理端给出的 NODE 主 token
 - `tuic_domain`：需要 TUIC 才填
 - `poll_interval`：默认 15 即可
+- 不需要在节点安装 Caddy；TUIC 证书由 sing-box 内置 ACME 自动申请/续期
 
 ### C. 回管理服务器收口
 

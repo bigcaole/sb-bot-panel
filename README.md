@@ -115,6 +115,11 @@ git clone <你的仓库地址> sb-bot-panel && cd sb-bot-panel && sudo bash scri
 6. `tuic_listen_port`（默认 `24443`，建议高位 UDP 端口）
 7. `poll_interval`（默认 `15` 秒）
 
+补充：
+
+- 快速配置模式也支持直接启用/修改 `tuic_domain + acme_email + tuic_listen_port`，不需要再切换到高级模式。
+- 节点侧 TUIC 证书由 `sing-box` 内置 ACME 处理，不依赖 Caddy；不建议在节点安装 Caddy 抢占 `443` 端口。
+
 若安装/配置失败，默认自动导出 AI 诊断包到 `/tmp/sb-install-node-ai-context-on-fail-*.md`（可用 `INSTALL_NODE_EXPORT_AI_CONTEXT_ON_FAIL=0` 关闭）。
 
 ## 节点服务器菜单管理
@@ -215,6 +220,7 @@ REALITY 密钥策略：
 ## 证书检查与续期
 
 - `sing-box` 使用内置 ACME（certmagic）自动申请/续期。
+- 节点侧不需要 Caddy 参与 TUIC 证书签发；若 Caddy 占用 `443`，可能影响 sing-box。
 - 安装脚本会创建：
   - `sb-cert-check.service`
   - `sb-cert-check.timer`（每日执行，可选启用）

@@ -711,6 +711,7 @@ prompt_config() {
 
 prompt_config_quick() {
   local old_controller old_node old_token old_domain old_email old_tuic_port old_poll
+  local enable_tuic_quick
   old_controller="$(read_old_config_value "controller_url")"
   old_node="$(read_old_config_value "node_code")"
   old_token="$(read_old_config_value "auth_token")"
@@ -746,9 +747,32 @@ prompt_config_quick() {
   read -r -p "auth_token（用于拉取 sync） [${old_token:-devtoken123}]: " AUTH_TOKEN
   AUTH_TOKEN="${AUTH_TOKEN:-${old_token:-devtoken123}}"
 
-  TUIC_DOMAIN="${old_domain:-}"
-  ACME_EMAIL="${old_email:-}"
-  TUIC_LISTEN_PORT="${old_tuic_port:-$TUIC_DEFAULT_PORT}"
+  if [[ -n "$old_domain" ]]; then
+    enable_tuic_quick="Y"
+  else
+    enable_tuic_quick="N"
+  fi
+  if ask_yes_no "是否在快速配置中启用/修改 TUIC 证书参数（tuic_domain/acme_email/端口）？" "$enable_tuic_quick"; then
+    read -r -p "tuic_domain（留空=关闭TUIC） [${old_domain}]: " TUIC_DOMAIN
+    TUIC_DOMAIN="${TUIC_DOMAIN:-$old_domain}"
+    TUIC_DOMAIN="$(echo "$TUIC_DOMAIN" | tr -d '[:space:]')"
+    if [[ -n "$TUIC_DOMAIN" ]]; then
+      read -r -p "acme_email（证书邮箱） [${old_email:-admin@example.com}]: " ACME_EMAIL
+      ACME_EMAIL="${ACME_EMAIL:-${old_email:-admin@example.com}}"
+      ACME_EMAIL="$(echo "$ACME_EMAIL" | tr -d '[:space:]')"
+      read -r -p "tuic_listen_port（默认 ${TUIC_DEFAULT_PORT}） [${old_tuic_port:-$TUIC_DEFAULT_PORT}]: " TUIC_LISTEN_PORT
+      TUIC_LISTEN_PORT="${TUIC_LISTEN_PORT:-${old_tuic_port:-$TUIC_DEFAULT_PORT}}"
+    else
+      ACME_EMAIL=""
+      TUIC_LISTEN_PORT="${old_tuic_port:-$TUIC_DEFAULT_PORT}"
+      warn "已按你的输入关闭 TUIC（tuic_domain 为空）。"
+    fi
+  else
+    TUIC_DOMAIN="${old_domain:-}"
+    ACME_EMAIL="${old_email:-}"
+    TUIC_LISTEN_PORT="${old_tuic_port:-$TUIC_DEFAULT_PORT}"
+  fi
+
   POLL_INTERVAL="${old_poll:-15}"
   if ! [[ "$TUIC_LISTEN_PORT" =~ ^[0-9]+$ ]] || (( TUIC_LISTEN_PORT < 1 || TUIC_LISTEN_PORT > 65535 )); then
     TUIC_LISTEN_PORT=$TUIC_DEFAULT_PORT
@@ -978,6 +1002,9 @@ show_summary() {
   echo "  systemctl status fail2ban"
   echo "  fail2ban-client status sshd"
   echo "  /usr/local/bin/sb-cert-check.sh"
+  if systemctl is-active caddy >/dev/null 2>&1; then
+    warn "检测到本机 caddy 处于运行中。节点侧一般不需要 caddy，若占用 443 可能影响 sing-box。"
+  fi
   if [[ -f "$SSH_HARDEN_FILE" ]]; then
     echo "SSH 登录策略: 仅密钥（密码登录已禁用）"
   else
