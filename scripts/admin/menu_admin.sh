@@ -920,28 +920,28 @@ show_menu() {
 21. AI诊断包导出（可粘贴给任意AI）
 
 【系统级操作（谨慎）】
-22. 安装/更新（git pull + 依赖 + venv + 重启）
-23. 卸载
-24. 退出
+22. 安装/重装（交互配置 + 依赖 + venv + 重启）
+23. 更新（git pull + 复用现有配置 + 重启）
+24. 卸载
+25. 退出
 ========================================
 EOF
 }
 
-install_or_update() {
+do_install() {
+  if [[ -f "$INSTALL_SCRIPT" ]]; then
+    bash "$INSTALL_SCRIPT"
+  else
+    err "未找到安装脚本: $INSTALL_SCRIPT"
+  fi
+}
+
+do_update_reuse_config() {
   if [[ -d "${PROJECT_DIR}/.git" ]]; then
     msg "检测到 Git 仓库，执行 git pull..."
     git -C "$PROJECT_DIR" pull --ff-only || warn "git pull 失败，请手动处理。"
   else
     warn "未检测到 .git，跳过 git pull。"
-  fi
-
-  if [[ -d "${PROJECT_DIR}/venv" ]]; then
-    read -r -p "是否重建 venv（推荐）？[Y/n]: " answer
-    answer="${answer:-Y}"
-    if [[ "$answer" =~ ^[Yy]$ ]]; then
-      rm -rf "${PROJECT_DIR}/venv"
-      msg "已删除旧 venv。"
-    fi
   fi
 
   if [[ -f "$INSTALL_SCRIPT" ]]; then
@@ -1066,7 +1066,7 @@ main() {
 
   while true; do
     show_menu
-    read -r -p "请输入选项 [1-24]: " action
+    read -r -p "请输入选项 [1-25]: " action
     case "$action" in
       1)
         configure_only
@@ -1220,23 +1220,31 @@ main() {
         pause
         ;;
       22)
-        if confirm_action "确认执行安装/更新？" "N"; then
-          install_or_update
+        if confirm_action "确认执行安装/重装？（会进入交互配置）" "N"; then
+          do_install
         else
-          warn "已取消安装/更新。"
+          warn "已取消安装/重装。"
         fi
         pause
         ;;
       23)
-        do_uninstall
+        if confirm_action "确认执行更新？（自动复用现有 .env 参数）" "Y"; then
+          do_update_reuse_config
+        else
+          warn "已取消更新。"
+        fi
         pause
         ;;
       24)
+        do_uninstall
+        pause
+        ;;
+      25)
         msg "已退出。"
         exit 0
         ;;
       *)
-        warn "无效选项，请输入 1-24。"
+        warn "无效选项，请输入 1-25。"
         pause
         ;;
     esac
