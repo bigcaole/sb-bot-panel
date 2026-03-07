@@ -944,7 +944,7 @@ show_menu() {
 【系统级操作（谨慎）】
 23. 安装/重装（交互配置 + 依赖 + venv + 重启）
 24. 更新（git pull + 复用现有配置 + 重启）
-25. 卸载
+25. 深度卸载
 26. 退出
 ========================================
 EOF
@@ -1192,28 +1192,88 @@ run_component_self_check_and_repair() {
 }
 
 do_uninstall() {
-  read -r -p "确认卸载服务？[y/N]: " answer
+  local answer remove_common_pkgs migrate_dir log_archive_dir s_ui_path
+  local caddy_pkg_installed
+
+  warn "将执行深度卸载（管理服务器）：controller/bot/caddy/快捷命令/项目目录/备份目录。"
+  warn "该操作不可逆，建议先确认迁移包与备份已保存到外部位置。"
+  read -r -p "确认继续深度卸载？[y/N]: " answer
   answer="${answer:-N}"
   if [[ ! "$answer" =~ ^[Yy]$ ]]; then
     warn "已取消。"
     return
   fi
 
+  migrate_dir="$(get_env_value_local MIGRATE_DIR)"
+  migrate_dir="${migrate_dir:-/var/backups/sb-migrate}"
+  log_archive_dir="$(get_env_value_local LOG_ARCHIVE_DIR)"
+  log_archive_dir="${log_archive_dir:-/var/backups/sb-controller/logs}"
+
   systemctl stop sb-bot 2>/dev/null || true
   systemctl stop sb-controller 2>/dev/null || true
   systemctl disable sb-bot 2>/dev/null || true
   systemctl disable sb-controller 2>/dev/null || true
+  if systemd_unit_exists "caddy.service"; then
+    systemctl stop caddy 2>/dev/null || true
+    systemctl disable caddy 2>/dev/null || true
+  fi
   rm -f /etc/systemd/system/sb-bot.service
   rm -f /etc/systemd/system/sb-controller.service
+  rm -f /etc/caddy/Caddyfile
   systemctl daemon-reload
-  msg "服务已卸载。"
+  msg "服务与 systemd 单元已移除。"
 
-  read -r -p "是否删除项目目录 ${PROJECT_DIR}？[y/N]: " remove_proj
-  remove_proj="${remove_proj:-N}"
-  if [[ "$remove_proj" =~ ^[Yy]$ ]]; then
-    rm -rf "$PROJECT_DIR"
-    msg "项目目录已删除。"
+  rm -f /usr/local/bin/sb-admin
+  if [[ -f /usr/local/bin/sb-bot-panel ]] && grep -q "sb-bot-panel-main-shortcut" /usr/local/bin/sb-bot-panel 2>/dev/null; then
+    rm -f /usr/local/bin/sb-bot-panel
   fi
+  s_ui_path="$(command -v s-ui || true)"
+  if [[ "$s_ui_path" == "/usr/local/bin/s-ui" ]] && grep -q "sb-bot-panel-admin-shortcut" /usr/local/bin/s-ui 2>/dev/null; then
+    rm -f /usr/local/bin/s-ui
+  fi
+  msg "菜单快捷命令已清理。"
+
+  if [[ -d "$PROJECT_DIR" && "$PROJECT_DIR" == */sb-bot-panel ]]; then
+    rm -rf "$PROJECT_DIR"
+  else
+    warn "已跳过删除非常规项目目录：${PROJECT_DIR}"
+  fi
+  rm -rf /var/backups/sb-controller
+  if [[ -n "$migrate_dir" && "$migrate_dir" == /var/backups/* ]]; then
+    rm -rf "$migrate_dir"
+  else
+    warn "已跳过删除非常规 MIGRATE_DIR：${migrate_dir}"
+  fi
+  if [[ -n "$log_archive_dir" && "$log_archive_dir" == /var/backups/* ]]; then
+    rm -rf "$log_archive_dir"
+  else
+    warn "已跳过删除非常规 LOG_ARCHIVE_DIR：${log_archive_dir}"
+  fi
+  msg "项目目录与备份归档目录已清理。"
+
+  caddy_pkg_installed=0
+  if dpkg -s caddy >/dev/null 2>&1; then
+    caddy_pkg_installed=1
+  fi
+  if (( caddy_pkg_installed == 1 )); then
+    if confirm_action "检测到 caddy 包，是否一并卸载？" "Y"; then
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get purge -y caddy >/dev/null 2>&1 || true
+      apt-get autoremove -y >/dev/null 2>&1 || true
+      msg "caddy 包已卸载。"
+    else
+      warn "已保留 caddy 包。"
+    fi
+  fi
+
+  if confirm_action "是否额外卸载通用系统依赖（python3.11/python3.11-venv/git/curl/jq/ufw/fail2ban）？" "N"; then
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get purge -y python3.11 python3.11-venv git curl jq ufw fail2ban >/dev/null 2>&1 || true
+    apt-get autoremove -y >/dev/null 2>&1 || true
+    msg "通用依赖卸载命令已执行。"
+  fi
+
+  msg "管理服务器深度卸载完成。"
 }
 
 main() {

@@ -813,7 +813,9 @@ refresh_certificate() {
 }
 
 uninstall_all() {
-  warn "将执行卸载：停止并移除 sb-agent、证书检查服务与配置文件。"
+  local answer remove_shared_pkgs s_ui_path
+  warn "将执行深度卸载（节点服务器）：sb-agent/sing-box/证书与日志目录/快捷命令/安全加固文件。"
+  warn "该操作不可逆，建议先确认备份已转移到外部位置。"
   read -r -p "确认继续？[y/N]: " answer
   answer="${answer:-N}"
   if [[ ! "$answer" =~ ^[Yy]$ ]]; then
@@ -823,33 +825,63 @@ uninstall_all() {
 
   systemctl stop "$AGENT_SERVICE" 2>/dev/null || true
   systemctl disable "$AGENT_SERVICE" 2>/dev/null || true
+  systemctl stop "$CERT_SERVICE" 2>/dev/null || true
+  systemctl disable "$CERT_SERVICE" 2>/dev/null || true
   systemctl stop "$CERT_TIMER" 2>/dev/null || true
   systemctl disable "$CERT_TIMER" 2>/dev/null || true
+  systemctl stop "$SINGBOX_SERVICE" 2>/dev/null || true
+  systemctl disable "$SINGBOX_SERVICE" 2>/dev/null || true
+  systemctl stop fail2ban 2>/dev/null || true
+  systemctl disable fail2ban 2>/dev/null || true
 
   rm -f /etc/systemd/system/sb-agent.service
   rm -f /etc/systemd/system/sb-cert-check.service
   rm -f /etc/systemd/system/sb-cert-check.timer
+  rm -f /etc/systemd/system/sing-box.service
   rm -f "$SYSTEM_CERT_CHECK_SCRIPT"
 
   rm -rf /opt/sb-agent
   rm -rf /etc/sb-agent
   rm -rf /var/log/sb-agent
+  rm -rf /etc/sing-box
+  rm -rf /var/log/sing-box
+  rm -rf /var/lib/sing-box
+  rm -rf "$BACKUP_DIR"
+  rm -f "$SSH_HARDEN_FILE"
+  rm -f "$FAIL2BAN_JAIL_FILE"
+  rm -f /usr/local/bin/sing-box
+  rm -f /usr/bin/sing-box
 
-  systemctl daemon-reload
-  msg "sb-agent 相关文件已移除。"
-
-  read -r -p "是否一并卸载 sing-box（仅二进制/服务，不删除证书数据）？[y/N]: " rm_sb
-  rm_sb="${rm_sb:-N}"
-  if [[ "$rm_sb" =~ ^[Yy]$ ]]; then
-    systemctl stop "$SINGBOX_SERVICE" 2>/dev/null || true
-    systemctl disable "$SINGBOX_SERVICE" 2>/dev/null || true
-    rm -f /etc/systemd/system/sing-box.service
-    rm -f /usr/local/bin/sing-box
-    systemctl daemon-reload
-    msg "sing-box 已卸载（如通过其他方式安装，请自行检查残留）。"
+  rm -f /usr/local/bin/sb-node
+  if [[ -f /usr/local/bin/sb-bot-panel ]] && grep -q "sb-node-main-shortcut" /usr/local/bin/sb-bot-panel 2>/dev/null; then
+    rm -f /usr/local/bin/sb-bot-panel
+  fi
+  s_ui_path="$(command -v s-ui || true)"
+  if [[ "$s_ui_path" == "/usr/local/bin/s-ui" ]] && grep -q "sb-node-menu-shortcut" /usr/local/bin/s-ui 2>/dev/null; then
+    rm -f /usr/local/bin/s-ui
   fi
 
-  msg "卸载完成。"
+  systemctl daemon-reload
+  msg "节点组件与相关文件已移除。"
+
+  if confirm_action "是否一并卸载脚本安装的系统组件包（fail2ban/ufw/qrencode）？" "Y"; then
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get purge -y fail2ban ufw qrencode >/dev/null 2>&1 || true
+    apt-get autoremove -y >/dev/null 2>&1 || true
+    msg "系统组件包卸载命令已执行。"
+  fi
+
+  remove_shared_pkgs="N"
+  read -r -p "是否额外卸载通用依赖包（python3-venv/git/curl/jq/socat）？[y/N]: " remove_shared_pkgs
+  remove_shared_pkgs="${remove_shared_pkgs:-N}"
+  if [[ "$remove_shared_pkgs" =~ ^[Yy]$ ]]; then
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get purge -y python3-venv git curl jq socat >/dev/null 2>&1 || true
+    apt-get autoremove -y >/dev/null 2>&1 || true
+    msg "通用依赖包卸载命令已执行。"
+  fi
+
+  msg "节点深度卸载完成。"
 }
 
 show_menu() {
@@ -883,7 +915,7 @@ show_menu() {
   echo "19) 节点运维快照（导出关键状态）"
   echo "20) AI诊断包导出（可粘贴给任意AI）"
   echo "21) 更新同步（保留原配置，自动 git pull）"
-  echo "22) 卸载"
+  echo "22) 深度卸载"
   echo "23) 退出"
   echo "========================================"
 }
