@@ -544,7 +544,7 @@ bash /root/sb-bot-panel/scripts/admin/db_consistency_check.sh
 
 ### 旧机导出
 
-- 进入菜单后执行：`11) 迁移：导出迁移包`
+- 进入菜单后执行：`10) 迁移：导出迁移包`
 - 脚本会停止 `sb-controller` 与 `sb-bot`，导出完成后可选是否自动拉起
 - 生成文件名示例：`sb-migrate-YYYYmmdd-HHMMSS.tar.gz`
 - 导出内容：
@@ -562,7 +562,7 @@ scp root@旧IP:/var/backups/sb-migrate/sb-migrate-xxxx.tar.gz root@新IP:/root/
 ### 新机导入
 
 - 在新机先准备项目目录（建议先 `git clone`）
-- 进入菜单执行：`12) 迁移：导入迁移包`
+- 进入菜单执行：`11) 迁移：导入迁移包`
 - 导入脚本会：
   - 备份旧项目目录到 `/var/backups/sb-migrate/restore-backup-*.tar.gz`
   - 恢复 `data/.env/scripts`
