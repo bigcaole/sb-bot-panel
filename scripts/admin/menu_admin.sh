@@ -918,12 +918,13 @@ show_menu() {
 19. SSH 一键安全修复（半自动）
 20. 运维快照（导出关键状态）
 21. AI诊断包导出（可粘贴给任意AI）
+22. 组件自检与自动修复（controller/bot/caddy）
 
 【系统级操作（谨慎）】
-22. 安装/重装（交互配置 + 依赖 + venv + 重启）
-23. 更新（git pull + 复用现有配置 + 重启）
-24. 卸载
-25. 退出
+23. 安装/重装（交互配置 + 依赖 + venv + 重启）
+24. 更新（git pull + 复用现有配置 + 重启）
+25. 卸载
+26. 退出
 ========================================
 EOF
 }
@@ -1036,6 +1037,139 @@ reload_https_cert() {
   systemctl status caddy --no-pager || true
 }
 
+run_component_self_check_and_repair() {
+  local env_file enable_https https_domain need_repair repair_failed
+  local cert_count
+  env_file="${PROJECT_DIR}/.env"
+  enable_https="$(get_env_value_local ENABLE_HTTPS)"
+  https_domain="$(get_env_value_local HTTPS_DOMAIN)"
+  enable_https="${enable_https:-0}"
+  need_repair=0
+  repair_failed=0
+
+  echo "----- 组件自检（管理服务器）-----"
+  if [[ ! -f "$env_file" ]]; then
+    warn "未检测到 ${env_file}，建议先执行菜单 23（安装/重装）完成初始化。"
+    return 1
+  fi
+
+  if [[ ! -f "${PROJECT_DIR}/venv/bin/python3" ]]; then
+    warn "未检测到 venv Python：${PROJECT_DIR}/venv/bin/python3"
+    need_repair=1
+  else
+    msg "venv Python 已存在。"
+  fi
+
+  if ! systemctl list-unit-files | grep -q '^sb-controller\.service'; then
+    warn "未检测到 sb-controller.service"
+    need_repair=1
+  else
+    msg "sb-controller.service 已安装。"
+  fi
+
+  if ! systemctl list-unit-files | grep -q '^sb-bot\.service'; then
+    warn "未检测到 sb-bot.service"
+    need_repair=1
+  else
+    msg "sb-bot.service 已安装。"
+  fi
+
+  if [[ "$enable_https" == "1" ]]; then
+    if ! command -v caddy >/dev/null 2>&1 || ! systemctl list-unit-files | grep -q '^caddy\.service'; then
+      warn "ENABLE_HTTPS=1 但 caddy/caddy.service 缺失。"
+      need_repair=1
+    else
+      msg "caddy 组件已安装。"
+    fi
+    if [[ -z "$https_domain" ]]; then
+      warn "ENABLE_HTTPS=1 但 HTTPS_DOMAIN 为空。"
+    fi
+  else
+    msg "ENABLE_HTTPS=0：跳过 caddy 安装要求检查。"
+  fi
+
+  if (( need_repair == 1 )); then
+    if [[ ! -f "$INSTALL_SCRIPT" ]]; then
+      err "未找到安装脚本，无法自动修复：$INSTALL_SCRIPT"
+      return 1
+    fi
+    msg "检测到组件缺失，开始自动修复（复用现有参数，不重复提问）..."
+    if ! bash "$INSTALL_SCRIPT" --reuse-config; then
+      err "自动修复失败，请查看上方输出。"
+      repair_failed=1
+    else
+      msg "自动修复执行完成。"
+    fi
+  else
+    msg "未发现必需组件缺失。"
+  fi
+
+  echo ""
+  echo "----- 修复后状态检查 -----"
+  if systemctl is-active sb-controller >/dev/null 2>&1; then
+    msg "sb-controller：运行中"
+  else
+    warn "sb-controller：未运行，尝试启动..."
+    systemctl start sb-controller >/dev/null 2>&1 || true
+    wait_for_controller_ready 20 || repair_failed=1
+  fi
+
+  if systemctl is-active sb-bot >/dev/null 2>&1; then
+    msg "sb-bot：运行中"
+  else
+    warn "sb-bot：未运行，尝试启动..."
+    systemctl start sb-bot >/dev/null 2>&1 || true
+    if ! systemctl is-active sb-bot >/dev/null 2>&1; then
+      err "sb-bot 启动失败，请查看：journalctl -u sb-bot -n 120 --no-pager"
+      repair_failed=1
+    fi
+  fi
+
+  if [[ "$enable_https" == "1" ]]; then
+    if ! command -v caddy >/dev/null 2>&1; then
+      err "HTTPS 已启用，但未检测到 caddy 命令。"
+      repair_failed=1
+    elif [[ ! -f /etc/caddy/Caddyfile ]]; then
+      err "HTTPS 已启用，但未找到 /etc/caddy/Caddyfile。"
+      repair_failed=1
+    else
+      systemctl enable caddy >/dev/null 2>&1 || true
+      if caddy validate --config /etc/caddy/Caddyfile >/tmp/sb-admin-caddy-validate.log 2>&1; then
+        if systemctl is-active caddy >/dev/null 2>&1; then
+          systemctl reload caddy >/dev/null 2>&1 || systemctl restart caddy >/dev/null 2>&1 || true
+        else
+          systemctl restart caddy >/dev/null 2>&1 || true
+        fi
+        if systemctl is-active caddy >/dev/null 2>&1; then
+          msg "caddy：运行中（证书自动续期由 caddy 接管）"
+        else
+          err "caddy 未运行，请查看：journalctl -u caddy -n 120 --no-pager"
+          repair_failed=1
+        fi
+      else
+        err "Caddyfile 校验失败（/tmp/sb-admin-caddy-validate.log）"
+        cat /tmp/sb-admin-caddy-validate.log || true
+        repair_failed=1
+      fi
+      if [[ -n "$https_domain" ]]; then
+        cert_count="$(find /var/lib/caddy -type f \( -name "*.crt" -o -name "*.pem" \) 2>/dev/null | grep -F "$https_domain" | wc -l | tr -d '[:space:]')"
+        if [[ "$cert_count" =~ ^[0-9]+$ ]] && (( cert_count > 0 )); then
+          msg "已发现域名证书文件：${https_domain}（自动续期有效）。"
+        else
+          warn "暂未发现 ${https_domain} 证书文件（新部署时可能需等待首次签发）。"
+        fi
+      fi
+    fi
+  fi
+
+  if (( repair_failed == 0 )); then
+    msg "组件自检与自动修复完成：未发现阻断性问题。"
+  else
+    err "组件自检完成，但仍存在失败项，请按上方日志处理。"
+    return 1
+  fi
+}
+
 do_uninstall() {
   read -r -p "确认卸载服务？[y/N]: " answer
   answer="${answer:-N}"
@@ -1066,7 +1200,7 @@ main() {
 
   while true; do
     show_menu
-    read -r -p "请输入选项 [1-25]: " action
+    read -r -p "请输入选项 [1-26]: " action
     case "$action" in
       1)
         configure_only
@@ -1220,6 +1354,10 @@ main() {
         pause
         ;;
       22)
+        run_component_self_check_and_repair
+        pause
+        ;;
+      23)
         if confirm_action "确认执行安装/重装？（会进入交互配置）" "N"; then
           do_install
         else
@@ -1227,7 +1365,7 @@ main() {
         fi
         pause
         ;;
-      23)
+      24)
         if confirm_action "确认执行更新？（自动复用现有 .env 参数）" "Y"; then
           do_update_reuse_config
         else
@@ -1235,16 +1373,16 @@ main() {
         fi
         pause
         ;;
-      24)
+      25)
         do_uninstall
         pause
         ;;
-      25)
+      26)
         msg "已退出。"
         exit 0
         ;;
       *)
-        warn "无效选项，请输入 1-25。"
+        warn "无效选项，请输入 1-26。"
         pause
         ;;
     esac
