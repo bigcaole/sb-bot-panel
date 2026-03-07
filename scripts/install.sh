@@ -617,13 +617,13 @@ prompt_config() {
 
   echo ""
   msg "配置向导说明（每项都可回车采用默认值）："
-  echo "  1) controller_url：节点拉取配置的 controller 地址"
-  echo "  2) node_code：节点唯一标识（需与管理端节点编码一致）"
-  echo "  3) auth_token：节点访问 controller 的 Bearer token"
-  echo "  4) tuic_domain：TUIC 证书域名（留空=不启用 TUIC）"
-  echo "  5) acme_email：证书申请邮箱（启用 TUIC 时建议填写）"
-  echo "  6) tuic_listen_port：TUIC 监听 UDP 端口（默认 ${TUIC_DEFAULT_PORT}，建议高位端口）"
-  echo "  7) poll_interval：agent 轮询间隔秒数（默认 15）"
+  echo "  1) controller_url：节点拉取配置的地址。获取：管理服务器公网地址（如 https://panel.example.com）"
+  echo "  2) node_code：节点唯一标识。获取：管理端节点列表里的节点编码（需完全一致）"
+  echo "  3) auth_token：节点鉴权 token。获取：管理服务器 .env 中 NODE_AUTH_TOKEN（兼容模式用 AUTH_TOKEN）"
+  echo "  4) tuic_domain：TUIC 证书域名。获取：你已解析到本机公网 IP 的域名（留空=不启用 TUIC）"
+  echo "  5) acme_email：证书申请邮箱。获取：你常用邮箱（用于证书到期通知）"
+  echo "  6) tuic_listen_port：TUIC UDP 端口。建议高位端口（默认 ${TUIC_DEFAULT_PORT}）"
+  echo "  7) poll_interval：agent 轮询间隔秒数。越小同步越快，默认 15"
   echo ""
 
   read -r -p "1) 请输入 controller_url（支持省略 http/https，例如 panel.example.com:8080） [${old_controller:-http://127.0.0.1:8080}]: " CONTROLLER_URL
@@ -689,6 +689,7 @@ prompt_config_quick() {
   echo ""
   msg "快速配置（推荐默认值）"
   echo "  - 仅提问关键参数：controller_url / node_code / auth_token"
+  echo "  - auth_token 获取：管理服务器 .env 的 NODE_AUTH_TOKEN（兼容模式可用 AUTH_TOKEN）"
   echo "  - 其余变量自动按默认值写入（可在高级向导再改）"
   echo ""
 
@@ -973,10 +974,16 @@ main() {
     msg "同步模式：复用现有配置，不进行交互提问。"
     load_existing_config_or_fail
   else
-    msg "仅配置模式：跳过依赖与 sing-box 安装步骤"
+    msg "仅配置模式：默认跳过依赖与 sing-box 安装（缺失时会自动补齐）"
     if ! command -v jq >/dev/null 2>&1; then
       install_base_packages
     fi
+  fi
+
+  if ! command -v sing-box >/dev/null 2>&1; then
+    warn "当前未检测到 sing-box，脚本将自动安装以完成服务创建。"
+    install_base_packages
+    install_sing_box
   fi
 
   ensure_python_311_runtime
