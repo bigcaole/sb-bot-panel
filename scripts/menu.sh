@@ -221,10 +221,16 @@ precheck_ssh_lockout_risk() {
 }
 
 install_or_enable_fail2ban() {
-  msg "安装并启用 fail2ban（SSH 防爆破）..."
+  if command -v fail2ban-client >/dev/null 2>&1; then
+    msg "检测到 fail2ban 已安装，执行配置同步并确保服务启用..."
+  else
+    msg "安装并启用 fail2ban（SSH 防爆破）..."
+  fi
   export DEBIAN_FRONTEND=noninteractive
-  apt-get update -y
-  apt-get install -y fail2ban
+  if ! command -v fail2ban-client >/dev/null 2>&1; then
+    apt-get update -y
+    apt-get install -y fail2ban
+  fi
 
   mkdir -p /etc/fail2ban/jail.d
   cat >"$FAIL2BAN_JAIL_FILE" <<'EOF'

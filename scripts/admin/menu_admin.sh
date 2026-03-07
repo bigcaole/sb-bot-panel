@@ -574,7 +574,8 @@ run_sync_menu() {
   echo "  2) 仅同步节点 Token（auth）"
   echo "  3) 同步节点系统时间（以管理服务器为准）"
   echo "  4) 查看节点部署对齐参数（给新节点抄写）"
-  read -r -p "请选择 [1/2/3/4]（默认 1）: " sync_choice
+  echo "  5) 新节点上线一条龙向导（最少切换）"
+  read -r -p "请选择 [1/2/3/4/5]（默认 1）: " sync_choice
   sync_choice="${sync_choice:-1}"
   case "$sync_choice" in
     2)
@@ -585,6 +586,9 @@ run_sync_menu() {
       ;;
     4)
       show_node_alignment_params
+      ;;
+    5)
+      show_node_onboarding_playbook
       ;;
     *)
       run_sync_node_defaults
@@ -699,6 +703,52 @@ show_node_alignment_params() {
   echo "   - 菜单 14 -> 1（同步默认参数）批量下发 auth_token/controller_url/poll_interval"
   echo "   - 菜单 14 -> 2（仅同步节点 Token）在 token 轮换后执行"
   echo "   - 菜单 6（状态查看）检查节点连接统计，确认新节点已上报 last_seen"
+}
+
+show_node_onboarding_playbook() {
+  local controller_public controller_port node_token auth_token node_primary
+  local poll_interval
+  local node_code_input
+  controller_public="$(get_env_value_local CONTROLLER_PUBLIC_URL)"
+  controller_port="$(get_env_value_local CONTROLLER_PORT)"
+  controller_port="${controller_port:-8080}"
+  node_token="$(get_env_value_local NODE_AUTH_TOKEN)"
+  auth_token="$(get_env_value_local AUTH_TOKEN)"
+  node_primary="$(first_auth_token "$node_token")"
+  if [[ -z "$node_primary" ]]; then
+    node_primary="$(first_auth_token "$auth_token")"
+  fi
+  poll_interval="$(get_env_value_local AGENT_DEFAULT_POLL_INTERVAL)"
+  poll_interval="${poll_interval:-15}"
+  read -r -p "输入本次接入的 node_code（可留空）: " node_code_input
+
+  echo "----- 新节点上线一条龙向导（最少切换）-----"
+  echo "目标：管理端/节点端各操作 1 次，最后回管理端确认 1 次。"
+  echo ""
+  echo "A) 管理服务器（先做）"
+  echo "  1. 先在 Bot 或 API 创建节点记录（node_code 必须和节点端一致）"
+  if [[ -n "$node_code_input" ]]; then
+    echo "     - 本次 node_code: ${node_code_input}"
+  fi
+  echo "  2. 记下节点对齐值："
+  echo "     - controller_url: ${controller_public:-<未设置 CONTROLLER_PUBLIC_URL，需先菜单1配置>}"
+  echo "     - auth_token: ${node_primary:-<未设置 NODE_AUTH_TOKEN/AUTH_TOKEN>}"
+  echo "     - poll_interval: ${poll_interval}"
+  echo ""
+  echo "B) 节点服务器（只做一次）"
+  echo "  1. 执行：cd /root/sb-bot-panel && git pull --ff-only origin main"
+  echo "  2. 执行：bash scripts/install.sh --configure-quick"
+  echo "  3. 按提示填写：controller_url / node_code / auth_token / tuic_domain(可选) / poll_interval"
+  echo ""
+  echo "C) 回管理服务器（收口确认）"
+  echo "  1. 菜单 14 -> 1：同步默认参数（auth/url/poll）"
+  echo "  2. 菜单 6：看“节点连接统计”，确认该节点 last_seen 已上报"
+  echo "  3. 若 token 轮换过：菜单 14 -> 2 再补一次 Token 同步"
+  echo ""
+  echo "D) 常见异常一键处理"
+  echo "  - 节点显示未连接：菜单 6 看 last_seen + 节点机看 journalctl -u sb-agent -n 80"
+  echo "  - 节点提示 sing-box 缺失：节点菜单 23 安装/更新 sing-box"
+  echo "  - 鉴权 401：管理菜单 16 -> 3 查看完整 token，确保节点 auth_token=NODE_PRIMARY"
 }
 
 show_node_connection_overview() {

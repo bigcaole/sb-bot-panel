@@ -3,6 +3,7 @@
 本项目现在包含节点侧一键部署方案：`sing-box + sb-agent + UFW + systemd + ACME 证书检查`，并提供中文数字菜单，体验接近 x-ui/s-ui。
 
 详细手册（零基础可用）：`docs/零基础部署-测试-使用-排障手册.md`
+推荐先读（最少切换上线流程）：`docs/一条龙落地SOP.md`
 
 ## 目录新增
 
@@ -447,11 +448,12 @@ sb-admin
 25. 深度卸载
 26. 退出
 
-说明：菜单 `14` 支持四类操作：  
+说明：菜单 `14` 支持五类操作：  
 1) 默认参数同步（`/admin/nodes/sync_agent_defaults`）  
 2) 节点 Token 同步（`/admin/auth/sync_node_tokens`）  
 3) 节点时间同步（`/admin/nodes/sync_time`）  
 4) 节点部署对齐参数查看（输出 `controller_url/auth_token/poll_interval` 建议值）  
+5) 新节点上线一条龙向导（减少管理端/节点端来回切换）  
 用于节点参数或 token 快速对齐。  
 菜单 `6` 会附带输出节点连接统计（含 `last_seen` 视角），用于判断新节点是否已接入管理端。  
 菜单 `16 -> 3` 支持查看完整 token（有二次确认，高风险操作）。  
