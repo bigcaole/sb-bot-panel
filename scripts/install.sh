@@ -98,6 +98,13 @@ require_root() {
   fi
 }
 
+systemd_unit_exists() {
+  local unit_name="$1"
+  local load_state
+  load_state="$(systemctl show -p LoadState --value "$unit_name" 2>/dev/null || true)"
+  [[ -n "$load_state" && "$load_state" != "not-found" ]]
+}
+
 ask_yes_no() {
   local prompt="$1"
   local default="${2:-Y}"
@@ -496,6 +503,7 @@ install_sing_box() {
 
 ensure_dirs() {
   mkdir -p /etc/sb-agent
+  mkdir -p "$(dirname "$SINGBOX_CONFIG")"
   mkdir -p "$AGENT_DIR"
   mkdir -p "$AGENT_LOG_DIR"
   mkdir -p "$SINGBOX_LOG_DIR"
@@ -793,7 +801,7 @@ write_config_json() {
 }
 
 install_singbox_service_if_missing() {
-  if systemctl list-unit-files | grep -q '^sing-box.service'; then
+  if systemd_unit_exists "sing-box.service"; then
     msg "检测到系统已有 sing-box.service，跳过创建。"
     return
   fi
