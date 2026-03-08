@@ -44,6 +44,179 @@ confirm_action() {
   [[ "$answer" =~ ^[Yy]$ ]]
 }
 
+mask_secret_value() {
+  local value="$1"
+  local n="${#value}"
+  if [[ -z "$value" ]]; then
+    echo "未设置"
+    return
+  fi
+  if (( n <= 8 )); then
+    echo "$value"
+    return
+  fi
+  echo "${value:0:4}****${value:n-4:4}"
+}
+
+read_node_config_value() {
+  local key="$1"
+  if [[ ! -f "$CONFIG_PATH" ]]; then
+    echo ""
+    return
+  fi
+  jq -r --arg k "$key" '.[$k] // ""' "$CONFIG_PATH" 2>/dev/null || true
+}
+
+write_node_config_value() {
+  local key="$1"
+  local value="$2"
+  local tmp
+  if [[ ! -f "$CONFIG_PATH" ]]; then
+    err "未检测到节点配置: $CONFIG_PATH"
+    return 1
+  fi
+  tmp="$(mktemp)"
+  if [[ "$key" == "tuic_listen_port" || "$key" == "poll_interval" ]]; then
+    jq --arg k "$key" --argjson v "$value" '.[$k]=$v' "$CONFIG_PATH" >"$tmp" || {
+      rm -f "$tmp"
+      return 1
+    }
+  else
+    jq --arg k "$key" --arg v "$value" '.[$k]=$v' "$CONFIG_PATH" >"$tmp" || {
+      rm -f "$tmp"
+      return 1
+    }
+  fi
+  mv "$tmp" "$CONFIG_PATH"
+  chmod 0600 "$CONFIG_PATH" || true
+}
+
+normalize_controller_url_input() {
+  local raw="$1"
+  local host scheme
+  raw="${raw//$'\r'/}"
+  raw="${raw//$'\n'/}"
+  raw="$(echo "$raw" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+  if [[ -z "$raw" ]]; then
+    echo ""
+    return
+  fi
+  if [[ "$raw" =~ ^https?:// ]]; then
+    echo "${raw%/}"
+    return
+  fi
+  host="${raw%%/*}"
+  if [[ "$host" == "127.0.0.1"* || "$host" == "localhost"* || "$host" == *":8080"* || "$host" == *":80"* ]]; then
+    scheme="http"
+  else
+    scheme="https"
+  fi
+  echo "${scheme}://${raw%/}"
+}
+
+node_param_hint() {
+  local key="$1"
+  case "$key" in
+    controller_url) echo "管理服务器地址（节点拉取 sync 用）" ;;
+    node_code) echo "节点唯一标识，必须与管理端节点编码一致" ;;
+    auth_token) echo "节点鉴权 token（管理端 NODE_AUTH_TOKEN）" ;;
+    tuic_domain) echo "TUIC 域名（留空=不启用 TUIC 证书）" ;;
+    acme_email) echo "证书邮箱（启用 TUIC 域名时建议填写）" ;;
+    tuic_listen_port) echo "TUIC 监听 UDP 端口（1-65535）" ;;
+    poll_interval) echo "agent 轮询间隔秒数（建议 >=5）" ;;
+    *) echo "参数说明未定义" ;;
+  esac
+}
+
+edit_single_node_param() {
+  if [[ ! -f "$CONFIG_PATH" ]]; then
+    err "未检测到节点配置 ${CONFIG_PATH}，请先执行菜单 1 完成配置。"
+    return 1
+  fi
+  if ! command -v jq >/dev/null 2>&1; then
+    err "缺少 jq，无法执行单项参数修改。"
+    return 1
+  fi
+
+  local -a keys=(controller_url node_code auth_token tuic_domain acme_email tuic_listen_port poll_interval)
+  local choice idx key current_value display_value new_value
+
+  while true; do
+    echo "----- 节点参数单项修改 -----"
+    for idx in "${!keys[@]}"; do
+      key="${keys[$idx]}"
+      current_value="$(read_node_config_value "$key")"
+      if [[ "$key" == "auth_token" ]]; then
+        display_value="$(mask_secret_value "$current_value")"
+      else
+        display_value="${current_value:-未设置}"
+      fi
+      printf "%d) %s = %s\n" "$((idx + 1))" "$key" "$display_value"
+    done
+    echo "q) 返回"
+    read -r -p "请选择要修改的参数编号: " choice
+    if [[ "$choice" == "q" || "$choice" == "Q" ]]; then
+      break
+    fi
+    if ! [[ "$choice" =~ ^[0-9]+$ ]]; then
+      warn "请输入参数编号或 q。"
+      continue
+    fi
+    idx=$((choice - 1))
+    if (( idx < 0 || idx >= ${#keys[@]} )); then
+      warn "编号超出范围。"
+      continue
+    fi
+    key="${keys[$idx]}"
+    current_value="$(read_node_config_value "$key")"
+    echo "参数: ${key}"
+    echo "说明: $(node_param_hint "$key")"
+    if [[ "$key" == "auth_token" ]]; then
+      echo "当前值: $(mask_secret_value "$current_value")"
+    else
+      echo "当前值: ${current_value:-未设置}"
+    fi
+    read -r -p "请输入新值（输入 __EMPTY__ 清空，直接回车取消）: " new_value
+    if [[ -z "$new_value" ]]; then
+      warn "已取消修改。"
+      continue
+    fi
+    if [[ "$new_value" == "__EMPTY__" ]]; then
+      new_value=""
+    fi
+
+    if [[ "$key" == "controller_url" && -n "$new_value" ]]; then
+      new_value="$(normalize_controller_url_input "$new_value")"
+    fi
+    if [[ "$key" == "tuic_listen_port" ]]; then
+      if ! [[ "$new_value" =~ ^[0-9]+$ ]] || (( new_value < 1 || new_value > 65535 )); then
+        warn "tuic_listen_port 需为 1-65535。"
+        continue
+      fi
+    fi
+    if [[ "$key" == "poll_interval" ]]; then
+      if ! [[ "$new_value" =~ ^[0-9]+$ ]] || (( new_value < 5 )); then
+        warn "poll_interval 需为整数且 >= 5。"
+        continue
+      fi
+    fi
+
+    if ! write_node_config_value "$key" "$new_value"; then
+      err "写入配置失败。"
+      continue
+    fi
+    msg "已更新 ${key}。"
+    systemctl restart "$AGENT_SERVICE" >/dev/null 2>&1 || true
+    if [[ "$key" == "tuic_domain" || "$key" == "acme_email" || "$key" == "tuic_listen_port" ]]; then
+      systemctl restart "$SINGBOX_SERVICE" >/dev/null 2>&1 || true
+      msg "已尝试重启 sb-agent / sing-box 使变更生效。"
+    else
+      msg "已尝试重启 sb-agent 使变更生效。"
+    fi
+    echo ""
+  done
+}
+
 require_root() {
   if [[ "${EUID}" -ne 0 ]]; then
     err "请使用 root 权限运行菜单，例如：sudo bash scripts/menu.sh"
@@ -748,10 +921,13 @@ run_reconfigure() {
   msg "配置模式选择："
   echo "  1) 快速配置（推荐默认值，最少提问）"
   echo "  2) 高级变量设置向导（逐项说明，全部可调）"
+  echo "  3) 参数单项修改（点选一项直接改）"
   local cfg_mode
-  read -r -p "请选择 [1/2]（默认 1）: " cfg_mode
+  read -r -p "请选择 [1/2/3]（默认 1）: " cfg_mode
   cfg_mode="${cfg_mode:-1}"
-  if [[ "$cfg_mode" == "2" ]]; then
+  if [[ "$cfg_mode" == "3" ]]; then
+    edit_single_node_param
+  elif [[ "$cfg_mode" == "2" ]]; then
     bash "$INSTALL_SCRIPT" --configure-only
   else
     bash "$INSTALL_SCRIPT" --configure-quick

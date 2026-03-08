@@ -327,6 +327,8 @@ sudo bash scripts/admin/install_admin.sh --configure-quick
 
 - `1) 快速配置（推荐默认值，最少提问）`
 - `2) 高级变量设置向导（逐项说明，全部可调）`
+- `3) 查看当前关键配置（只读，含建议）`
+- `4) 参数单项修改（点选一项直接改；改一项无需重跑全向导）`
 
 说明：执行安装/配置向导时，会自动写入完整 `.env` 字段（包括 `BOT_MENU_TTL`、`BOT_NODE_MONITOR_INTERVAL`、`BOT_NODE_OFFLINE_THRESHOLD`、`BOT_NODE_TIME_SYNC_INTERVAL`、`BOT_LOG_VIEW_COOLDOWN`、`BOT_LOG_VIEW_MAX_PAGES`），无需手工补字段。
 并且 URL 字段支持省略协议（`http://` / `https://`），脚本会自动补全。

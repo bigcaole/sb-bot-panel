@@ -1127,6 +1127,160 @@ get_env_value_local() {
   fi
 }
 
+upsert_env_value_local() {
+  local key="$1"
+  local value="$2"
+  local env_file="${PROJECT_DIR}/.env"
+  local escaped
+  if [[ ! -f "$env_file" ]]; then
+    err "未检测到 ${env_file}，请先执行安装/配置。"
+    return 1
+  fi
+  escaped="$(printf '%s' "$value" | sed 's/[\\/&]/\\&/g')"
+  if grep -q "^${key}=" "$env_file"; then
+    sed -i "s/^${key}=.*/${key}=${escaped}/" "$env_file"
+  else
+    printf '%s=%s\n' "$key" "$value" >>"$env_file"
+  fi
+}
+
+is_secret_env_key() {
+  local key="$1"
+  case "$key" in
+    AUTH_TOKEN|ADMIN_AUTH_TOKEN|NODE_AUTH_TOKEN|BOT_TOKEN|SUB_LINK_SIGN_KEY)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+admin_param_hint() {
+  local key="$1"
+  case "$key" in
+    CONTROLLER_PORT) echo "controller 对外监听端口（1-65535）" ;;
+    CONTROLLER_PORT_WHITELIST) echo "controller 端口白名单（逗号分隔 IP/CIDR）" ;;
+    ADMIN_API_WHITELIST) echo "管理接口来源白名单（逗号分隔 IP/CIDR）" ;;
+    CONTROLLER_URL) echo "bot 调 controller 地址，通常同机 http://127.0.0.1:8080" ;;
+    CONTROLLER_PUBLIC_URL) echo "节点/外部访问管理端地址（建议域名）" ;;
+    PANEL_BASE_URL) echo "用户订阅链接展示地址（不要 127.0.0.1）" ;;
+    ENABLE_HTTPS) echo "是否启用 Caddy HTTPS（0/1）" ;;
+    HTTPS_DOMAIN) echo "HTTPS 证书域名（启用 HTTPS 时必填）" ;;
+    HTTPS_ACME_EMAIL) echo "证书申请邮箱（建议填写）" ;;
+    BOT_TOKEN) echo "Telegram 机器人 token（占位值会导致 bot 不启动）" ;;
+    BOT_MENU_TTL) echo "bot 菜单自动清理秒数" ;;
+    BOT_NODE_MONITOR_INTERVAL) echo "节点监控轮询间隔秒数" ;;
+    BOT_NODE_OFFLINE_THRESHOLD) echo "节点离线判定阈值秒数" ;;
+    BOT_NODE_TIME_SYNC_INTERVAL) echo "节点自动对时周期秒数（0=关闭）" ;;
+    *) echo "此参数可直接修改并立即应用。" ;;
+  esac
+}
+
+edit_single_config_param() {
+  local env_file="${PROJECT_DIR}/.env"
+  if [[ ! -f "$env_file" ]]; then
+    err "未检测到 ${env_file}，请先执行配置。"
+    return 1
+  fi
+
+  local -a keys=(
+    CONTROLLER_PORT CONTROLLER_PORT_WHITELIST ADMIN_API_WHITELIST SECURITY_BLOCK_PROTECTED_IPS
+    CONTROLLER_URL CONTROLLER_PUBLIC_URL PANEL_BASE_URL
+    ENABLE_HTTPS HTTPS_DOMAIN HTTPS_ACME_EMAIL
+    ADMIN_AUTH_TOKEN NODE_AUTH_TOKEN AUTH_TOKEN
+    BOT_TOKEN ADMIN_CHAT_IDS VIEW_ADMIN_CHAT_IDS OPS_ADMIN_CHAT_IDS SUPER_ADMIN_CHAT_IDS
+    MIGRATE_DIR BACKUP_RETENTION_COUNT MIGRATE_RETENTION_COUNT
+    LOG_ARCHIVE_WINDOW_HOURS LOG_ARCHIVE_RETENTION_COUNT LOG_ARCHIVE_DIR
+    BOT_MENU_TTL BOT_NODE_MONITOR_INTERVAL BOT_NODE_OFFLINE_THRESHOLD BOT_NODE_TIME_SYNC_INTERVAL BOT_MUTATION_COOLDOWN
+    TRUST_X_FORWARDED_FOR TRUSTED_PROXY_IPS SECURITY_EVENTS_EXCLUDE_LOCAL
+    SECURITY_AUTO_BLOCK_ENABLED SECURITY_AUTO_BLOCK_INTERVAL_SECONDS SECURITY_AUTO_BLOCK_WINDOW_SECONDS SECURITY_AUTO_BLOCK_THRESHOLD SECURITY_AUTO_BLOCK_DURATION_SECONDS SECURITY_AUTO_BLOCK_MAX_PER_INTERVAL
+    CONTROLLER_HTTP_TIMEOUT BOT_ACTOR_LABEL
+    NODE_TASK_RUNNING_TIMEOUT NODE_TASK_RETENTION_SECONDS NODE_TASK_MAX_PENDING_PER_NODE
+    SUB_LINK_SIGN_KEY SUB_LINK_REQUIRE_SIGNATURE SUB_LINK_DEFAULT_TTL_SECONDS
+    API_RATE_LIMIT_ENABLED API_RATE_LIMIT_WINDOW_SECONDS API_RATE_LIMIT_MAX_REQUESTS
+    ADMIN_OVERVIEW_CACHE_TTL_SECONDS ADMIN_SECURITY_STATUS_CACHE_TTL_SECONDS ADMIN_SECURITY_EVENTS_CACHE_TTL_SECONDS
+  )
+
+  local choice idx key current_value display_value new_value
+  while true; do
+    echo "----- 管理端参数单项修改 -----"
+    for idx in "${!keys[@]}"; do
+      key="${keys[$idx]}"
+      current_value="$(get_env_value_local "$key")"
+      if [[ -z "$current_value" ]]; then
+        display_value="未设置"
+      elif is_secret_env_key "$key"; then
+        display_value="$(mask_secret_local "$current_value")"
+      else
+        display_value="$current_value"
+      fi
+      printf "%2d) %s = %s\n" "$((idx + 1))" "$key" "$display_value"
+    done
+    echo " q) 返回"
+    read -r -p "请选择要修改的参数编号: " choice
+    if [[ "$choice" == "q" || "$choice" == "Q" ]]; then
+      break
+    fi
+    if ! [[ "$choice" =~ ^[0-9]+$ ]]; then
+      warn "请输入参数编号或 q。"
+      continue
+    fi
+    idx=$((choice - 1))
+    if (( idx < 0 || idx >= ${#keys[@]} )); then
+      warn "编号超出范围。"
+      continue
+    fi
+
+    key="${keys[$idx]}"
+    current_value="$(get_env_value_local "$key")"
+    echo "参数: ${key}"
+    echo "说明: $(admin_param_hint "$key")"
+    if is_secret_env_key "$key"; then
+      echo "当前值: $(mask_secret_local "$current_value")"
+    else
+      echo "当前值: ${current_value:-未设置}"
+    fi
+    read -r -p "请输入新值（输入 __EMPTY__ 清空，直接回车取消）: " new_value
+    if [[ -z "$new_value" ]]; then
+      warn "已取消修改。"
+      continue
+    fi
+    if [[ "$new_value" == "__EMPTY__" ]]; then
+      new_value=""
+    fi
+
+    if [[ "$key" == "CONTROLLER_PORT" ]]; then
+      if ! [[ "$new_value" =~ ^[0-9]+$ ]] || (( new_value < 1 || new_value > 65535 )); then
+        warn "端口无效，需为 1-65535。"
+        continue
+      fi
+    fi
+    if [[ "$key" =~ ^(ENABLE_HTTPS|TRUST_X_FORWARDED_FOR|SECURITY_EVENTS_EXCLUDE_LOCAL|SECURITY_AUTO_BLOCK_ENABLED|API_RATE_LIMIT_ENABLED|SUB_LINK_REQUIRE_SIGNATURE)$ ]]; then
+      if [[ "$new_value" != "0" && "$new_value" != "1" ]]; then
+        warn "${key} 仅支持 0 或 1。"
+        continue
+      fi
+    fi
+
+    if ! upsert_env_value_local "$key" "$new_value"; then
+      err "写入失败：${key}"
+      continue
+    fi
+    msg "已更新 ${key}"
+
+    systemctl restart sb-controller >/dev/null 2>&1 || true
+    if [[ "$key" == "BOT_TOKEN" && ( -z "$new_value" || "$new_value" == "__REPLACE_WITH_TELEGRAM_BOT_TOKEN__" ) ]]; then
+      systemctl stop sb-bot >/dev/null 2>&1 || true
+      warn "BOT_TOKEN 为空/占位，已停止 sb-bot。"
+    else
+      systemctl restart sb-bot >/dev/null 2>&1 || true
+    fi
+    msg "已尝试重启 controller/bot 使配置生效。"
+    echo ""
+  done
+}
+
 mask_secret_local() {
   local value="$1"
   local n
@@ -1294,11 +1448,14 @@ configure_only() {
     echo "  1) 快速配置（推荐默认值，最少提问）"
     echo "  2) 高级变量设置向导（逐项说明，全部可调）"
     echo "  3) 查看当前关键配置（只读，含建议）"
+    echo "  4) 参数单项修改（点选一项直接改）"
     local cfg_mode
-    read -r -p "请选择 [1/2/3]（默认 1）: " cfg_mode
+    read -r -p "请选择 [1/2/3/4]（默认 1）: " cfg_mode
     cfg_mode="${cfg_mode:-1}"
     if [[ "$cfg_mode" == "3" ]]; then
       show_current_config_overview
+    elif [[ "$cfg_mode" == "4" ]]; then
+      edit_single_config_param
     elif [[ "$cfg_mode" == "2" ]]; then
       msg "即将进入高级变量设置向导（修改参数并重启服务）。"
       show_config_guide
