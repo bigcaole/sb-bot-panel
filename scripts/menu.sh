@@ -7,6 +7,7 @@ INSTALL_SCRIPT="$ROOT_DIR/scripts/install.sh"
 LOCAL_CERT_CHECK_SCRIPT="$ROOT_DIR/scripts/sb_cert_check.sh"
 OPS_SNAPSHOT_SCRIPT="$ROOT_DIR/scripts/ops_snapshot.sh"
 AI_CONTEXT_SCRIPT="$ROOT_DIR/scripts/ai_context_export.sh"
+RUNTIME_SELF_CHECK_SCRIPT="$ROOT_DIR/scripts/node_self_check.sh"
 SYSTEM_CERT_CHECK_SCRIPT="/usr/local/bin/sb-cert-check.sh"
 MENU_VIEW_MODE="${MENU_VIEW_MODE:-basic}"
 
@@ -1009,7 +1010,8 @@ show_menu() {
     echo "21) 更新同步（保留原配置，自动 git pull）"
     echo "22) 深度卸载"
     echo "23) 安装/更新 sing-box（交互）"
-    echo "24) 退出"
+    echo "24) 部署参数自检与修复向导（循环到通过）"
+    echo "25) 退出"
     echo "========================================"
     echo "视图切换：输入 B 返回简化视图（仅常用项）"
     return
@@ -1028,7 +1030,8 @@ show_menu() {
   echo "15) SSH 安全状态总览（只读）"
   echo "21) 更新同步（保留原配置，自动 git pull）"
   echo "23) 安装/更新 sing-box（交互）"
-  echo "24) 退出"
+  echo "24) 部署参数自检与修复向导（循环到通过）"
+  echo "25) 退出"
   echo "========================================"
   echo "视图切换：输入 A 查看全部功能（高级视图）"
 }
@@ -1039,7 +1042,7 @@ main() {
     show_menu
     local choice_prompt
     if [[ "$MENU_VIEW_MODE" == "advanced" ]]; then
-      choice_prompt="请选择操作 [1-24/b]: "
+      choice_prompt="请选择操作 [1-25/b]: "
     else
       choice_prompt="请选择操作 [常用编号/a]: "
     fi
@@ -1167,12 +1170,20 @@ main() {
         pause
         ;;
       24)
+        if [[ -x "$RUNTIME_SELF_CHECK_SCRIPT" ]]; then
+          bash "$RUNTIME_SELF_CHECK_SCRIPT"
+        else
+          err "未找到部署参数自检脚本: $RUNTIME_SELF_CHECK_SCRIPT"
+        fi
+        pause
+        ;;
+      25)
         msg "已退出。"
         exit 0
         ;;
       *)
         if [[ "$MENU_VIEW_MODE" == "advanced" ]]; then
-          warn "无效选项，请输入 1-24 或 b。"
+          warn "无效选项，请输入 1-25 或 b。"
         else
           warn "无效选项，请输入简化视图中的编号，或输入 a 切换高级视图。"
         fi

@@ -159,6 +159,38 @@ ask_yes_no() {
   [[ "$answer" =~ ^[Yy]$ ]]
 }
 
+ask_yes_no_with_back() {
+  local prompt="$1"
+  local default="${2:-Y}"
+  local answer
+  local hint="[Y/n]"
+  if [[ "$default" == "N" ]]; then
+    hint="[y/N]"
+  fi
+  read -r -p "$prompt $hint（输入 b 返回上一步）: " answer
+  answer="${answer:-$default}"
+  if [[ "$answer" == "b" || "$answer" == "B" ]]; then
+    return 2
+  fi
+  [[ "$answer" =~ ^[Yy]$ ]]
+}
+
+prompt_with_back() {
+  local prompt="$1"
+  local default_value="${2:-}"
+  local input
+  read -r -p "${prompt} [${default_value}]: " input
+  if [[ "$input" == "b" || "$input" == "B" ]]; then
+    echo "__SB_BACK__"
+    return 0
+  fi
+  if [[ -z "$input" ]]; then
+    echo "$default_value"
+  else
+    echo "$input"
+  fi
+}
+
 is_bot_token_configured() {
   local token="$1"
   [[ -n "$token" && "$token" != "$BOT_TOKEN_PLACEHOLDER" ]]
@@ -785,196 +817,348 @@ prompt_env_config() {
   echo "  - SECURITY_AUTO_BLOCK_*：自动封禁策略（默认关闭，建议先观察后开启）"
   echo "  - NODE_TASK_*：节点任务超时与历史清理参数"
   echo ""
+  local step=1
+  local input answer controller_host controller_scheme panel_scheme
+  local default_public_url default_controller_url default_panel_base
+  local public_host enable_https_default public_ip
 
-  read -r -p "CONTROLLER_PORT（controller 对外监听端口；节点 agent 需要访问） [${CONTROLLER_PORT}]: " input_port
-  CONTROLLER_PORT="${input_port:-$CONTROLLER_PORT}"
-  if ! [[ "$CONTROLLER_PORT" =~ ^[0-9]+$ ]] || (( CONTROLLER_PORT < 1 || CONTROLLER_PORT > 65535 )); then
-    warn "端口无效，已回退为 8080"
-    CONTROLLER_PORT="8080"
-  fi
-  read -r -p "CONTROLLER_PORT_WHITELIST（可选，逗号分隔 IP/CIDR；留空=公网放行） [${CONTROLLER_PORT_WHITELIST}]: " input_port_whitelist
-  CONTROLLER_PORT_WHITELIST="${input_port_whitelist:-$CONTROLLER_PORT_WHITELIST}"
-  CONTROLLER_PORT_WHITELIST="$(normalize_whitelist_csv "$CONTROLLER_PORT_WHITELIST")"
-  read -r -p "ADMIN_API_WHITELIST（可选，逗号分隔 IP/CIDR；留空=不启用应用层来源限制） [${ADMIN_API_WHITELIST}]: " input_admin_api_whitelist
-  ADMIN_API_WHITELIST="${input_admin_api_whitelist:-$ADMIN_API_WHITELIST}"
-  ADMIN_API_WHITELIST="$(normalize_whitelist_csv "$ADMIN_API_WHITELIST")"
-  read -r -p "SECURITY_BLOCK_PROTECTED_IPS（可选，逗号分隔 IP/CIDR；封禁保护白名单） [${SECURITY_BLOCK_PROTECTED_IPS}]: " input_block_protected
-  SECURITY_BLOCK_PROTECTED_IPS="${input_block_protected:-$SECURITY_BLOCK_PROTECTED_IPS}"
-  SECURITY_BLOCK_PROTECTED_IPS="$(normalize_whitelist_csv "$SECURITY_BLOCK_PROTECTED_IPS")"
-
-  local public_ip default_public_url
-  public_ip="$(get_public_ipv4)"
-  if [[ -n "$public_ip" ]]; then
-    default_public_url="http://${public_ip}:${CONTROLLER_PORT}"
-  else
-    default_public_url=""
-  fi
-  read -r -p "CONTROLLER_PUBLIC_URL（可选；给节点/外部访问，支持省略 http/https） [${CONTROLLER_PUBLIC_URL:-$default_public_url}]: " input_public_url
-  CONTROLLER_PUBLIC_URL="${input_public_url:-${CONTROLLER_PUBLIC_URL:-$default_public_url}}"
-  CONTROLLER_PUBLIC_URL="$(normalize_input_url "$CONTROLLER_PUBLIC_URL" "http")"
-
-  local public_host enable_https_default
-  public_host="$(extract_url_host "$CONTROLLER_PUBLIC_URL")"
-  if [[ -z "$HTTPS_DOMAIN" && -n "$public_host" ]] && ! is_ipv4 "$public_host"; then
-    HTTPS_DOMAIN="$public_host"
-  fi
-  if [[ "$ENABLE_HTTPS" == "1" || "$CONTROLLER_PUBLIC_URL" == https://* ]]; then
-    enable_https_default="Y"
-  else
-    enable_https_default="N"
-  fi
-
-  if ask_yes_no "是否启用 HTTPS 反向代理（Caddy 自动申请与续期证书）？" "$enable_https_default"; then
-    ENABLE_HTTPS="1"
-    while [[ -z "$HTTPS_DOMAIN" ]] || is_ipv4 "$HTTPS_DOMAIN"; do
-      read -r -p "HTTPS_DOMAIN（证书域名，例如 panel.example.com） [${HTTPS_DOMAIN}]: " input_https_domain
-      HTTPS_DOMAIN="${input_https_domain:-$HTTPS_DOMAIN}"
-      HTTPS_DOMAIN="$(sanitize_domain_input "$HTTPS_DOMAIN")"
-      if [[ -z "$HTTPS_DOMAIN" ]] || is_ipv4 "$HTTPS_DOMAIN" || ! is_valid_domain "$HTTPS_DOMAIN"; then
-        warn "HTTPS_DOMAIN 无效，请填写域名（例如 panel.example.com），不要填 IP/路径。"
-      fi
-    done
-    read -r -p "HTTPS_ACME_EMAIL（证书账号邮箱，可选） [${HTTPS_ACME_EMAIL}]: " input_https_email
-    HTTPS_ACME_EMAIL="${input_https_email:-$HTTPS_ACME_EMAIL}"
-    CONTROLLER_PUBLIC_URL="https://${HTTPS_DOMAIN}"
-  else
-    ENABLE_HTTPS="0"
-    HTTPS_DOMAIN=""
-    HTTPS_ACME_EMAIL=""
-  fi
-
-  local default_controller_url="http://127.0.0.1:${CONTROLLER_PORT}"
-  local default_panel_base
-  default_panel_base="${PANEL_BASE_URL:-$CONTROLLER_PUBLIC_URL}"
-  if [[ "$ENABLE_HTTPS" == "1" && -n "$HTTPS_DOMAIN" ]]; then
-    default_panel_base="https://${HTTPS_DOMAIN}"
-  fi
-  if [[ -z "$default_panel_base" ]]; then
-    default_panel_base="$default_controller_url"
-  fi
-  read -r -p "PANEL_BASE_URL（bot订阅链接地址；支持省略 http/https） [${default_panel_base}]: " input_panel_base
-  PANEL_BASE_URL="${input_panel_base:-$default_panel_base}"
-  local panel_scheme
-  panel_scheme="http"
-  if [[ "$ENABLE_HTTPS" == "1" || "$PANEL_BASE_URL" == https://* ]]; then
-    panel_scheme="https"
-  fi
-  PANEL_BASE_URL="$(normalize_input_url "$PANEL_BASE_URL" "$panel_scheme")"
-
-  read -r -p "CONTROLLER_URL（给 bot 调用，支持省略 http/https） [${CONTROLLER_URL:-$default_controller_url}]: " input_url
-  CONTROLLER_URL="${input_url:-${CONTROLLER_URL:-$default_controller_url}}"
-  local controller_host controller_scheme
-  controller_host="$(extract_url_host "$CONTROLLER_URL")"
-  controller_scheme="http"
-  if [[ "$ENABLE_HTTPS" == "1" && "$controller_host" != "127.0.0.1" && "$controller_host" != "localhost" ]]; then
-    controller_scheme="https"
-  fi
-  CONTROLLER_URL="$(normalize_input_url "$CONTROLLER_URL" "$controller_scheme")"
-
-  read -r -p "AUTH_TOKEN（可选；保护 controller 接口；输入 - 可清空关闭鉴权） [${AUTH_TOKEN}]: " input_auth
-  if [[ "$input_auth" == "-" ]]; then
-    AUTH_DISABLED_EXPLICIT=1
-    AUTH_TOKEN=""
-    ADMIN_AUTH_TOKEN=""
-    NODE_AUTH_TOKEN=""
-  else
-    AUTH_TOKEN="${input_auth:-$AUTH_TOKEN}"
-    AUTH_DISABLED_EXPLICIT=0
-  fi
-
-  read -r -p "BOT_TOKEN（建议填写；Telegram 机器人 token，直接回车使用默认占位） [${BOT_TOKEN}]: " input_bot
-  BOT_TOKEN="${input_bot:-$BOT_TOKEN}"
-  if ! is_bot_token_configured "$BOT_TOKEN"; then
-    warn "BOT_TOKEN 当前为占位值。脚本会完成安装，但不会启动 sb-bot，需后续在配置向导中填入真实 token。"
-  fi
-
-  read -r -p "ADMIN_CHAT_IDS（可选；逗号分隔，限制谁能操作 bot） [${ADMIN_CHAT_IDS}]: " input_admin
-  ADMIN_CHAT_IDS="${input_admin:-$ADMIN_CHAT_IDS}"
-
-  read -r -p "VIEW_ADMIN_CHAT_IDS（可选；只读管理员） [${VIEW_ADMIN_CHAT_IDS}]: " input_view_admin
-  VIEW_ADMIN_CHAT_IDS="${input_view_admin:-$VIEW_ADMIN_CHAT_IDS}"
-  read -r -p "OPS_ADMIN_CHAT_IDS（可选；运维管理员） [${OPS_ADMIN_CHAT_IDS}]: " input_ops_admin
-  OPS_ADMIN_CHAT_IDS="${input_ops_admin:-$OPS_ADMIN_CHAT_IDS}"
-  read -r -p "SUPER_ADMIN_CHAT_IDS（可选；超级管理员） [${SUPER_ADMIN_CHAT_IDS}]: " input_super_admin
-  SUPER_ADMIN_CHAT_IDS="${input_super_admin:-$SUPER_ADMIN_CHAT_IDS}"
-
-  read -r -p "MIGRATE_DIR（迁移包/备份包输出目录，直接回车使用默认） [${MIGRATE_DIR}]: " input_migrate
-  MIGRATE_DIR="${input_migrate:-${MIGRATE_DIR:-$MIGRATE_DIR_DEFAULT}}"
-  if [[ -z "$MIGRATE_DIR" ]]; then
-    MIGRATE_DIR="$MIGRATE_DIR_DEFAULT"
-  fi
-
-  read -r -p "BACKUP_RETENTION_COUNT（控制器备份保留数量） [${BACKUP_RETENTION_COUNT}]: " input_backup_retention
-  BACKUP_RETENTION_COUNT="${input_backup_retention:-$BACKUP_RETENTION_COUNT}"
-  if ! [[ "$BACKUP_RETENTION_COUNT" =~ ^[0-9]+$ ]] || (( BACKUP_RETENTION_COUNT < 1 )); then
-    warn "BACKUP_RETENTION_COUNT 无效，回退为 30"
-    BACKUP_RETENTION_COUNT="30"
-  fi
-
-  read -r -p "MIGRATE_RETENTION_COUNT（迁移包保留数量） [${MIGRATE_RETENTION_COUNT}]: " input_migrate_retention
-  MIGRATE_RETENTION_COUNT="${input_migrate_retention:-$MIGRATE_RETENTION_COUNT}"
-  if ! [[ "$MIGRATE_RETENTION_COUNT" =~ ^[0-9]+$ ]] || (( MIGRATE_RETENTION_COUNT < 1 )); then
-    warn "MIGRATE_RETENTION_COUNT 无效，回退为 20"
-    MIGRATE_RETENTION_COUNT="20"
-  fi
-
-  read -r -p "LOG_ARCHIVE_WINDOW_HOURS（日志归档窗口小时数） [${LOG_ARCHIVE_WINDOW_HOURS}]: " input_log_window
-  LOG_ARCHIVE_WINDOW_HOURS="${input_log_window:-$LOG_ARCHIVE_WINDOW_HOURS}"
-  if ! [[ "$LOG_ARCHIVE_WINDOW_HOURS" =~ ^[0-9]+$ ]] || (( LOG_ARCHIVE_WINDOW_HOURS < 1 )); then
-    warn "LOG_ARCHIVE_WINDOW_HOURS 无效，回退为 24"
-    LOG_ARCHIVE_WINDOW_HOURS="24"
-  fi
-
-  read -r -p "LOG_ARCHIVE_RETENTION_COUNT（日志归档保留数量） [${LOG_ARCHIVE_RETENTION_COUNT}]: " input_log_retention
-  LOG_ARCHIVE_RETENTION_COUNT="${input_log_retention:-$LOG_ARCHIVE_RETENTION_COUNT}"
-  if ! [[ "$LOG_ARCHIVE_RETENTION_COUNT" =~ ^[0-9]+$ ]] || (( LOG_ARCHIVE_RETENTION_COUNT < 1 )); then
-    warn "LOG_ARCHIVE_RETENTION_COUNT 无效，回退为 30"
-    LOG_ARCHIVE_RETENTION_COUNT="30"
-  fi
-
-  read -r -p "LOG_ARCHIVE_DIR（日志归档目录） [${LOG_ARCHIVE_DIR}]: " input_log_dir
-  LOG_ARCHIVE_DIR="${input_log_dir:-$LOG_ARCHIVE_DIR}"
-  if [[ -z "$LOG_ARCHIVE_DIR" ]]; then
-    LOG_ARCHIVE_DIR="/var/backups/sb-controller/logs"
-  fi
-
-  read -r -p "BOT_MENU_TTL（bot 菜单自动清理秒数） [${BOT_MENU_TTL}]: " input_menu_ttl
-  BOT_MENU_TTL="${input_menu_ttl:-$BOT_MENU_TTL}"
-  if ! [[ "$BOT_MENU_TTL" =~ ^[0-9]+$ ]] || (( BOT_MENU_TTL < 5 )); then
-    warn "BOT_MENU_TTL 无效，回退为 60"
-    BOT_MENU_TTL="60"
-  fi
-
-  read -r -p "BOT_NODE_MONITOR_INTERVAL（节点监控轮询秒数） [${BOT_NODE_MONITOR_INTERVAL}]: " input_monitor_interval
-  BOT_NODE_MONITOR_INTERVAL="${input_monitor_interval:-$BOT_NODE_MONITOR_INTERVAL}"
-  if ! [[ "$BOT_NODE_MONITOR_INTERVAL" =~ ^[0-9]+$ ]] || (( BOT_NODE_MONITOR_INTERVAL < 10 )); then
-    warn "BOT_NODE_MONITOR_INTERVAL 无效，回退为 60"
-    BOT_NODE_MONITOR_INTERVAL="60"
-  fi
-
-  read -r -p "BOT_NODE_OFFLINE_THRESHOLD（离线判定阈值秒数） [${BOT_NODE_OFFLINE_THRESHOLD}]: " input_offline_threshold
-  BOT_NODE_OFFLINE_THRESHOLD="${input_offline_threshold:-$BOT_NODE_OFFLINE_THRESHOLD}"
-  if ! [[ "$BOT_NODE_OFFLINE_THRESHOLD" =~ ^[0-9]+$ ]] || (( BOT_NODE_OFFLINE_THRESHOLD < 30 )); then
-    warn "BOT_NODE_OFFLINE_THRESHOLD 无效，回退为 120"
-    BOT_NODE_OFFLINE_THRESHOLD="120"
-  fi
-
-  read -r -p "BOT_NODE_TIME_SYNC_INTERVAL（节点自动时间对齐秒数，0=关闭） [${BOT_NODE_TIME_SYNC_INTERVAL}]: " input_time_sync_interval
-  BOT_NODE_TIME_SYNC_INTERVAL="${input_time_sync_interval:-$BOT_NODE_TIME_SYNC_INTERVAL}"
-  if ! [[ "$BOT_NODE_TIME_SYNC_INTERVAL" =~ ^[0-9]+$ ]]; then
-    warn "BOT_NODE_TIME_SYNC_INTERVAL 无效，回退为 86400"
-    BOT_NODE_TIME_SYNC_INTERVAL="86400"
-  elif (( BOT_NODE_TIME_SYNC_INTERVAL > 0 && BOT_NODE_TIME_SYNC_INTERVAL < 3600 )); then
-    warn "BOT_NODE_TIME_SYNC_INTERVAL 过小，最小为 3600（或 0 关闭）"
-    BOT_NODE_TIME_SYNC_INTERVAL="3600"
-  fi
-
-  read -r -p "BOT_MUTATION_COOLDOWN（写操作防抖秒数） [${BOT_MUTATION_COOLDOWN}]: " input_mutation_cooldown
-  BOT_MUTATION_COOLDOWN="${input_mutation_cooldown:-$BOT_MUTATION_COOLDOWN}"
-  if ! [[ "$BOT_MUTATION_COOLDOWN" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
-    warn "BOT_MUTATION_COOLDOWN 无效，回退为 1"
-    BOT_MUTATION_COOLDOWN="1"
-  fi
+  while (( step <= 27 )); do
+    case "$step" in
+      1)
+        input="$(prompt_with_back "CONTROLLER_PORT（controller 对外监听端口；节点 agent 需要访问）" "${CONTROLLER_PORT}")"
+        if [[ "$input" == "__SB_BACK__" ]]; then
+          warn "已经是第一步。"
+          continue
+        fi
+        CONTROLLER_PORT="$input"
+        if ! [[ "$CONTROLLER_PORT" =~ ^[0-9]+$ ]] || (( CONTROLLER_PORT < 1 || CONTROLLER_PORT > 65535 )); then
+          warn "端口无效，已回退为 8080"
+          CONTROLLER_PORT="8080"
+        fi
+        step=$((step + 1))
+        ;;
+      2)
+        input="$(prompt_with_back "CONTROLLER_PORT_WHITELIST（可选，逗号分隔 IP/CIDR；留空=公网放行）" "${CONTROLLER_PORT_WHITELIST}")"
+        if [[ "$input" == "__SB_BACK__" ]]; then
+          step=$((step - 1)); continue
+        fi
+        CONTROLLER_PORT_WHITELIST="$(normalize_whitelist_csv "$input")"
+        step=$((step + 1))
+        ;;
+      3)
+        input="$(prompt_with_back "ADMIN_API_WHITELIST（可选，逗号分隔 IP/CIDR；留空=不启用应用层来源限制）" "${ADMIN_API_WHITELIST}")"
+        if [[ "$input" == "__SB_BACK__" ]]; then
+          step=$((step - 1)); continue
+        fi
+        ADMIN_API_WHITELIST="$(normalize_whitelist_csv "$input")"
+        step=$((step + 1))
+        ;;
+      4)
+        input="$(prompt_with_back "SECURITY_BLOCK_PROTECTED_IPS（可选，逗号分隔 IP/CIDR；封禁保护白名单）" "${SECURITY_BLOCK_PROTECTED_IPS}")"
+        if [[ "$input" == "__SB_BACK__" ]]; then
+          step=$((step - 1)); continue
+        fi
+        SECURITY_BLOCK_PROTECTED_IPS="$(normalize_whitelist_csv "$input")"
+        step=$((step + 1))
+        ;;
+      5)
+        public_ip="$(get_public_ipv4)"
+        if [[ -n "$public_ip" ]]; then
+          default_public_url="http://${public_ip}:${CONTROLLER_PORT}"
+        else
+          default_public_url=""
+        fi
+        input="$(prompt_with_back "CONTROLLER_PUBLIC_URL（可选；给节点/外部访问，支持省略 http/https）" "${CONTROLLER_PUBLIC_URL:-$default_public_url}")"
+        if [[ "$input" == "__SB_BACK__" ]]; then
+          step=$((step - 1)); continue
+        fi
+        CONTROLLER_PUBLIC_URL="$(normalize_input_url "$input" "http")"
+        step=$((step + 1))
+        ;;
+      6)
+        public_host="$(extract_url_host "$CONTROLLER_PUBLIC_URL")"
+        if [[ -z "$HTTPS_DOMAIN" && -n "$public_host" ]] && ! is_ipv4 "$public_host"; then
+          HTTPS_DOMAIN="$public_host"
+        fi
+        if [[ "$ENABLE_HTTPS" == "1" || "$CONTROLLER_PUBLIC_URL" == https://* ]]; then
+          enable_https_default="Y"
+        else
+          enable_https_default="N"
+        fi
+        read -r -p "是否启用 HTTPS 反向代理（Caddy 自动申请与续期证书）？[Y/n]（输入 b 返回上一步）: " answer
+        answer="${answer:-$enable_https_default}"
+        if [[ "$answer" == "b" || "$answer" == "B" ]]; then
+          step=$((step - 1))
+          continue
+        fi
+        if [[ "$answer" =~ ^[Yy]$ ]]; then
+          ENABLE_HTTPS="1"
+          step=7
+        else
+          ENABLE_HTTPS="0"
+          HTTPS_DOMAIN=""
+          HTTPS_ACME_EMAIL=""
+          step=9
+        fi
+        ;;
+      7)
+        input="$(prompt_with_back "HTTPS_DOMAIN（证书域名，例如 panel.example.com）" "${HTTPS_DOMAIN}")"
+        if [[ "$input" == "__SB_BACK__" ]]; then
+          step=6
+          continue
+        fi
+        HTTPS_DOMAIN="$(sanitize_domain_input "$input")"
+        if [[ -z "$HTTPS_DOMAIN" ]] || is_ipv4 "$HTTPS_DOMAIN" || ! is_valid_domain "$HTTPS_DOMAIN"; then
+          warn "HTTPS_DOMAIN 无效，请填写域名（例如 panel.example.com），不要填 IP/路径。"
+          continue
+        fi
+        CONTROLLER_PUBLIC_URL="https://${HTTPS_DOMAIN}"
+        step=8
+        ;;
+      8)
+        input="$(prompt_with_back "HTTPS_ACME_EMAIL（证书账号邮箱，可选）" "${HTTPS_ACME_EMAIL}")"
+        if [[ "$input" == "__SB_BACK__" ]]; then
+          step=7
+          continue
+        fi
+        HTTPS_ACME_EMAIL="$input"
+        step=9
+        ;;
+      9)
+        default_controller_url="http://127.0.0.1:${CONTROLLER_PORT}"
+        default_panel_base="${PANEL_BASE_URL:-$CONTROLLER_PUBLIC_URL}"
+        if [[ "$ENABLE_HTTPS" == "1" && -n "$HTTPS_DOMAIN" ]]; then
+          default_panel_base="https://${HTTPS_DOMAIN}"
+        fi
+        if [[ -z "$default_panel_base" ]]; then
+          default_panel_base="$default_controller_url"
+        fi
+        input="$(prompt_with_back "PANEL_BASE_URL（bot订阅链接地址；支持省略 http/https）" "${default_panel_base}")"
+        if [[ "$input" == "__SB_BACK__" ]]; then
+          if [[ "$ENABLE_HTTPS" == "1" ]]; then
+            step=8
+          else
+            step=6
+          fi
+          continue
+        fi
+        PANEL_BASE_URL="$input"
+        panel_scheme="http"
+        if [[ "$ENABLE_HTTPS" == "1" || "$PANEL_BASE_URL" == https://* ]]; then
+          panel_scheme="https"
+        fi
+        PANEL_BASE_URL="$(normalize_input_url "$PANEL_BASE_URL" "$panel_scheme")"
+        step=$((step + 1))
+        ;;
+      10)
+        default_controller_url="http://127.0.0.1:${CONTROLLER_PORT}"
+        input="$(prompt_with_back "CONTROLLER_URL（给 bot 调用，支持省略 http/https）" "${CONTROLLER_URL:-$default_controller_url}")"
+        if [[ "$input" == "__SB_BACK__" ]]; then
+          step=$((step - 1)); continue
+        fi
+        CONTROLLER_URL="$input"
+        controller_host="$(extract_url_host "$CONTROLLER_URL")"
+        controller_scheme="http"
+        if [[ "$ENABLE_HTTPS" == "1" && "$controller_host" != "127.0.0.1" && "$controller_host" != "localhost" ]]; then
+          controller_scheme="https"
+        fi
+        CONTROLLER_URL="$(normalize_input_url "$CONTROLLER_URL" "$controller_scheme")"
+        step=$((step + 1))
+        ;;
+      11)
+        input="$(prompt_with_back "AUTH_TOKEN（可选；保护 controller 接口；输入 - 可清空关闭鉴权）" "${AUTH_TOKEN}")"
+        if [[ "$input" == "__SB_BACK__" ]]; then
+          step=$((step - 1)); continue
+        fi
+        if [[ "$input" == "-" ]]; then
+          AUTH_DISABLED_EXPLICIT=1
+          AUTH_TOKEN=""
+          ADMIN_AUTH_TOKEN=""
+          NODE_AUTH_TOKEN=""
+        else
+          AUTH_TOKEN="$input"
+          AUTH_DISABLED_EXPLICIT=0
+        fi
+        step=$((step + 1))
+        ;;
+      12)
+        input="$(prompt_with_back "BOT_TOKEN（建议填写；Telegram 机器人 token，直接回车使用默认占位）" "${BOT_TOKEN}")"
+        if [[ "$input" == "__SB_BACK__" ]]; then
+          step=$((step - 1)); continue
+        fi
+        BOT_TOKEN="$input"
+        if ! is_bot_token_configured "$BOT_TOKEN"; then
+          warn "BOT_TOKEN 当前为占位值。脚本会完成安装，但不会启动 sb-bot，需后续在配置向导中填入真实 token。"
+        fi
+        step=$((step + 1))
+        ;;
+      13)
+        input="$(prompt_with_back "ADMIN_CHAT_IDS（可选；逗号分隔，限制谁能操作 bot）" "${ADMIN_CHAT_IDS}")"
+        if [[ "$input" == "__SB_BACK__" ]]; then
+          step=$((step - 1)); continue
+        fi
+        ADMIN_CHAT_IDS="$input"
+        step=$((step + 1))
+        ;;
+      14)
+        input="$(prompt_with_back "VIEW_ADMIN_CHAT_IDS（可选；只读管理员）" "${VIEW_ADMIN_CHAT_IDS}")"
+        if [[ "$input" == "__SB_BACK__" ]]; then
+          step=$((step - 1)); continue
+        fi
+        VIEW_ADMIN_CHAT_IDS="$input"
+        step=$((step + 1))
+        ;;
+      15)
+        input="$(prompt_with_back "OPS_ADMIN_CHAT_IDS（可选；运维管理员）" "${OPS_ADMIN_CHAT_IDS}")"
+        if [[ "$input" == "__SB_BACK__" ]]; then
+          step=$((step - 1)); continue
+        fi
+        OPS_ADMIN_CHAT_IDS="$input"
+        step=$((step + 1))
+        ;;
+      16)
+        input="$(prompt_with_back "SUPER_ADMIN_CHAT_IDS（可选；超级管理员）" "${SUPER_ADMIN_CHAT_IDS}")"
+        if [[ "$input" == "__SB_BACK__" ]]; then
+          step=$((step - 1)); continue
+        fi
+        SUPER_ADMIN_CHAT_IDS="$input"
+        step=$((step + 1))
+        ;;
+      17)
+        input="$(prompt_with_back "MIGRATE_DIR（迁移包/备份包输出目录，直接回车使用默认）" "${MIGRATE_DIR}")"
+        if [[ "$input" == "__SB_BACK__" ]]; then
+          step=$((step - 1)); continue
+        fi
+        MIGRATE_DIR="${input:-$MIGRATE_DIR_DEFAULT}"
+        if [[ -z "$MIGRATE_DIR" ]]; then
+          MIGRATE_DIR="$MIGRATE_DIR_DEFAULT"
+        fi
+        step=$((step + 1))
+        ;;
+      18)
+        input="$(prompt_with_back "BACKUP_RETENTION_COUNT（控制器备份保留数量）" "${BACKUP_RETENTION_COUNT}")"
+        if [[ "$input" == "__SB_BACK__" ]]; then
+          step=$((step - 1)); continue
+        fi
+        BACKUP_RETENTION_COUNT="$input"
+        if ! [[ "$BACKUP_RETENTION_COUNT" =~ ^[0-9]+$ ]] || (( BACKUP_RETENTION_COUNT < 1 )); then
+          warn "BACKUP_RETENTION_COUNT 无效，回退为 30"
+          BACKUP_RETENTION_COUNT="30"
+        fi
+        step=$((step + 1))
+        ;;
+      19)
+        input="$(prompt_with_back "MIGRATE_RETENTION_COUNT（迁移包保留数量）" "${MIGRATE_RETENTION_COUNT}")"
+        if [[ "$input" == "__SB_BACK__" ]]; then
+          step=$((step - 1)); continue
+        fi
+        MIGRATE_RETENTION_COUNT="$input"
+        if ! [[ "$MIGRATE_RETENTION_COUNT" =~ ^[0-9]+$ ]] || (( MIGRATE_RETENTION_COUNT < 1 )); then
+          warn "MIGRATE_RETENTION_COUNT 无效，回退为 20"
+          MIGRATE_RETENTION_COUNT="20"
+        fi
+        step=$((step + 1))
+        ;;
+      20)
+        input="$(prompt_with_back "LOG_ARCHIVE_WINDOW_HOURS（日志归档窗口小时数）" "${LOG_ARCHIVE_WINDOW_HOURS}")"
+        if [[ "$input" == "__SB_BACK__" ]]; then
+          step=$((step - 1)); continue
+        fi
+        LOG_ARCHIVE_WINDOW_HOURS="$input"
+        if ! [[ "$LOG_ARCHIVE_WINDOW_HOURS" =~ ^[0-9]+$ ]] || (( LOG_ARCHIVE_WINDOW_HOURS < 1 )); then
+          warn "LOG_ARCHIVE_WINDOW_HOURS 无效，回退为 24"
+          LOG_ARCHIVE_WINDOW_HOURS="24"
+        fi
+        step=$((step + 1))
+        ;;
+      21)
+        input="$(prompt_with_back "LOG_ARCHIVE_RETENTION_COUNT（日志归档保留数量）" "${LOG_ARCHIVE_RETENTION_COUNT}")"
+        if [[ "$input" == "__SB_BACK__" ]]; then
+          step=$((step - 1)); continue
+        fi
+        LOG_ARCHIVE_RETENTION_COUNT="$input"
+        if ! [[ "$LOG_ARCHIVE_RETENTION_COUNT" =~ ^[0-9]+$ ]] || (( LOG_ARCHIVE_RETENTION_COUNT < 1 )); then
+          warn "LOG_ARCHIVE_RETENTION_COUNT 无效，回退为 30"
+          LOG_ARCHIVE_RETENTION_COUNT="30"
+        fi
+        step=$((step + 1))
+        ;;
+      22)
+        input="$(prompt_with_back "LOG_ARCHIVE_DIR（日志归档目录）" "${LOG_ARCHIVE_DIR}")"
+        if [[ "$input" == "__SB_BACK__" ]]; then
+          step=$((step - 1)); continue
+        fi
+        LOG_ARCHIVE_DIR="$input"
+        if [[ -z "$LOG_ARCHIVE_DIR" ]]; then
+          LOG_ARCHIVE_DIR="/var/backups/sb-controller/logs"
+        fi
+        step=$((step + 1))
+        ;;
+      23)
+        input="$(prompt_with_back "BOT_MENU_TTL（bot 菜单自动清理秒数）" "${BOT_MENU_TTL}")"
+        if [[ "$input" == "__SB_BACK__" ]]; then
+          step=$((step - 1)); continue
+        fi
+        BOT_MENU_TTL="$input"
+        if ! [[ "$BOT_MENU_TTL" =~ ^[0-9]+$ ]] || (( BOT_MENU_TTL < 5 )); then
+          warn "BOT_MENU_TTL 无效，回退为 60"
+          BOT_MENU_TTL="60"
+        fi
+        step=$((step + 1))
+        ;;
+      24)
+        input="$(prompt_with_back "BOT_NODE_MONITOR_INTERVAL（节点监控轮询秒数）" "${BOT_NODE_MONITOR_INTERVAL}")"
+        if [[ "$input" == "__SB_BACK__" ]]; then
+          step=$((step - 1)); continue
+        fi
+        BOT_NODE_MONITOR_INTERVAL="$input"
+        if ! [[ "$BOT_NODE_MONITOR_INTERVAL" =~ ^[0-9]+$ ]] || (( BOT_NODE_MONITOR_INTERVAL < 10 )); then
+          warn "BOT_NODE_MONITOR_INTERVAL 无效，回退为 60"
+          BOT_NODE_MONITOR_INTERVAL="60"
+        fi
+        step=$((step + 1))
+        ;;
+      25)
+        input="$(prompt_with_back "BOT_NODE_OFFLINE_THRESHOLD（离线判定阈值秒数）" "${BOT_NODE_OFFLINE_THRESHOLD}")"
+        if [[ "$input" == "__SB_BACK__" ]]; then
+          step=$((step - 1)); continue
+        fi
+        BOT_NODE_OFFLINE_THRESHOLD="$input"
+        if ! [[ "$BOT_NODE_OFFLINE_THRESHOLD" =~ ^[0-9]+$ ]] || (( BOT_NODE_OFFLINE_THRESHOLD < 30 )); then
+          warn "BOT_NODE_OFFLINE_THRESHOLD 无效，回退为 120"
+          BOT_NODE_OFFLINE_THRESHOLD="120"
+        fi
+        step=$((step + 1))
+        ;;
+      26)
+        input="$(prompt_with_back "BOT_NODE_TIME_SYNC_INTERVAL（节点自动时间对齐秒数，0=关闭）" "${BOT_NODE_TIME_SYNC_INTERVAL}")"
+        if [[ "$input" == "__SB_BACK__" ]]; then
+          step=$((step - 1)); continue
+        fi
+        BOT_NODE_TIME_SYNC_INTERVAL="$input"
+        if ! [[ "$BOT_NODE_TIME_SYNC_INTERVAL" =~ ^[0-9]+$ ]]; then
+          warn "BOT_NODE_TIME_SYNC_INTERVAL 无效，回退为 86400"
+          BOT_NODE_TIME_SYNC_INTERVAL="86400"
+        elif (( BOT_NODE_TIME_SYNC_INTERVAL > 0 && BOT_NODE_TIME_SYNC_INTERVAL < 3600 )); then
+          warn "BOT_NODE_TIME_SYNC_INTERVAL 过小，最小为 3600（或 0 关闭）"
+          BOT_NODE_TIME_SYNC_INTERVAL="3600"
+        fi
+        step=$((step + 1))
+        ;;
+      27)
+        input="$(prompt_with_back "BOT_MUTATION_COOLDOWN（写操作防抖秒数）" "${BOT_MUTATION_COOLDOWN}")"
+        if [[ "$input" == "__SB_BACK__" ]]; then
+          step=$((step - 1)); continue
+        fi
+        BOT_MUTATION_COOLDOWN="$input"
+        if ! [[ "$BOT_MUTATION_COOLDOWN" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+          warn "BOT_MUTATION_COOLDOWN 无效，回退为 1"
+          BOT_MUTATION_COOLDOWN="1"
+        fi
+        step=$((step + 1))
+        ;;
+    esac
+  done
 
   echo ""
   msg "UFW/端口放行说明："
@@ -993,82 +1177,121 @@ prompt_env_config_quick() {
   load_existing_env_defaults
 
   echo ""
-  msg "快速配置（推荐默认值）"
+  msg "快速配置（推荐默认值，输入 b 可回到上一步）"
   echo "  - 本模式会优先使用安全默认值，仅提问最关键参数。"
   echo "  - 其余变量会自动按标准默认值写入。"
   echo "  - 后续可在菜单中进入“高级变量设置向导”逐项调整。"
   echo ""
 
   local public_ip default_public_url default_controller_url default_panel_base
+  local input step enable_https_default public_host answer
   public_ip="$(get_public_ipv4)"
   if [[ -n "$public_ip" ]]; then
     default_public_url="http://${public_ip}:${CONTROLLER_PORT}"
   else
     default_public_url="http://127.0.0.1:${CONTROLLER_PORT}"
   fi
-  read -r -p "CONTROLLER_PUBLIC_URL（节点/外部访问地址，支持省略 http/https） [${CONTROLLER_PUBLIC_URL:-$default_public_url}]: " input_public_url
-  CONTROLLER_PUBLIC_URL="${input_public_url:-${CONTROLLER_PUBLIC_URL:-$default_public_url}}"
-  CONTROLLER_PUBLIC_URL="$(normalize_input_url "$CONTROLLER_PUBLIC_URL" "http")"
-
-  local enable_https_default
-  if [[ "$ENABLE_HTTPS" == "1" ]]; then
-    enable_https_default="Y"
-  else
-    enable_https_default="N"
-  fi
-  if ask_yes_no "是否启用 HTTPS（Caddy 自动证书）？" "$enable_https_default"; then
-    ENABLE_HTTPS="1"
-    local public_host
-    public_host="$(extract_url_host "$CONTROLLER_PUBLIC_URL")"
-    if [[ -z "$HTTPS_DOMAIN" && -n "$public_host" ]] && ! is_ipv4 "$public_host"; then
-      HTTPS_DOMAIN="$public_host"
-    fi
-    read -r -p "HTTPS_DOMAIN（证书域名） [${HTTPS_DOMAIN}]: " input_https_domain
-    HTTPS_DOMAIN="$(sanitize_domain_input "${input_https_domain:-$HTTPS_DOMAIN}")"
-    if [[ -z "$HTTPS_DOMAIN" ]] || ! is_valid_domain "$HTTPS_DOMAIN"; then
-      warn "域名无效，回退为 HTTP 模式。"
-      ENABLE_HTTPS="0"
-      HTTPS_DOMAIN=""
-      HTTPS_ACME_EMAIL=""
-    else
-      read -r -p "HTTPS_ACME_EMAIL（证书账号邮箱，可选） [${HTTPS_ACME_EMAIL}]: " input_https_email
-      HTTPS_ACME_EMAIL="${input_https_email:-$HTTPS_ACME_EMAIL}"
-      CONTROLLER_PUBLIC_URL="https://${HTTPS_DOMAIN}"
-    fi
-  else
-    ENABLE_HTTPS="0"
-    HTTPS_DOMAIN=""
-    HTTPS_ACME_EMAIL=""
-  fi
-
-  default_controller_url="http://127.0.0.1:${CONTROLLER_PORT}"
-  CONTROLLER_URL="$default_controller_url"
-  if [[ "$ENABLE_HTTPS" == "1" && -n "$HTTPS_DOMAIN" ]]; then
-    default_panel_base="https://${HTTPS_DOMAIN}"
-  else
-    default_panel_base="${CONTROLLER_PUBLIC_URL:-$default_controller_url}"
-  fi
-  PANEL_BASE_URL="$(normalize_input_url "$default_panel_base" "$([[ "$ENABLE_HTTPS" == "1" ]] && echo https || echo http)")"
-
-  read -r -p "BOT_TOKEN（Telegram 机器人 token；可先留空） [${BOT_TOKEN}]: " input_bot
-  BOT_TOKEN="${input_bot:-$BOT_TOKEN}"
-  if ! is_bot_token_configured "$BOT_TOKEN"; then
-    warn "BOT_TOKEN 为空/占位：将跳过 sb-bot 启动，你可稍后在高级向导中补填。"
-  fi
-
-  read -r -p "ADMIN_CHAT_IDS（可选，逗号分隔；不填=不限制） [${ADMIN_CHAT_IDS}]: " input_admin
-  ADMIN_CHAT_IDS="${input_admin:-$ADMIN_CHAT_IDS}"
-
-  read -r -p "AUTH_TOKEN（接口鉴权 token，回车使用当前值） [${AUTH_TOKEN}]: " input_auth
-  if [[ "$input_auth" == "-" ]]; then
-    AUTH_DISABLED_EXPLICIT=1
-    AUTH_TOKEN=""
-    ADMIN_AUTH_TOKEN=""
-    NODE_AUTH_TOKEN=""
-  else
-    AUTH_TOKEN="${input_auth:-$AUTH_TOKEN}"
-    AUTH_DISABLED_EXPLICIT=0
-  fi
+  CONTROLLER_PUBLIC_URL="${CONTROLLER_PUBLIC_URL:-$default_public_url}"
+  step=1
+  while (( step <= 5 )); do
+    case "$step" in
+      1)
+        input="$(prompt_with_back "CONTROLLER_PUBLIC_URL（节点/外部访问地址，支持省略 http/https）" "$CONTROLLER_PUBLIC_URL")"
+        if [[ "$input" == "__SB_BACK__" ]]; then
+          warn "已经是第一步。"
+          continue
+        fi
+        CONTROLLER_PUBLIC_URL="$(normalize_input_url "$input" "http")"
+        step=$((step + 1))
+        ;;
+      2)
+        if [[ "$ENABLE_HTTPS" == "1" ]]; then
+          enable_https_default="Y"
+        else
+          enable_https_default="N"
+        fi
+        read -r -p "是否启用 HTTPS（Caddy 自动证书）？[Y/n]（输入 b 返回上一步）: " answer
+        answer="${answer:-$enable_https_default}"
+        if [[ "$answer" == "b" || "$answer" == "B" ]]; then
+          step=$((step - 1))
+          continue
+        fi
+        if [[ "$answer" =~ ^[Yy]$ ]]; then
+          ENABLE_HTTPS="1"
+          public_host="$(extract_url_host "$CONTROLLER_PUBLIC_URL")"
+          if [[ -z "$HTTPS_DOMAIN" && -n "$public_host" ]] && ! is_ipv4 "$public_host"; then
+            HTTPS_DOMAIN="$public_host"
+          fi
+          input="$(prompt_with_back "HTTPS_DOMAIN（证书域名）" "${HTTPS_DOMAIN}")"
+          if [[ "$input" == "__SB_BACK__" ]]; then
+            step=$((step - 1)); continue
+          fi
+          HTTPS_DOMAIN="$(sanitize_domain_input "$input")"
+          if [[ -z "$HTTPS_DOMAIN" ]] || ! is_valid_domain "$HTTPS_DOMAIN"; then
+            warn "域名无效，回退为 HTTP 模式。"
+            ENABLE_HTTPS="0"
+            HTTPS_DOMAIN=""
+            HTTPS_ACME_EMAIL=""
+          else
+            input="$(prompt_with_back "HTTPS_ACME_EMAIL（证书账号邮箱，可选）" "${HTTPS_ACME_EMAIL}")"
+            if [[ "$input" == "__SB_BACK__" ]]; then
+              continue
+            fi
+            HTTPS_ACME_EMAIL="$input"
+            CONTROLLER_PUBLIC_URL="https://${HTTPS_DOMAIN}"
+          fi
+        else
+          ENABLE_HTTPS="0"
+          HTTPS_DOMAIN=""
+          HTTPS_ACME_EMAIL=""
+        fi
+        step=$((step + 1))
+        ;;
+      3)
+        default_controller_url="http://127.0.0.1:${CONTROLLER_PORT}"
+        CONTROLLER_URL="$default_controller_url"
+        if [[ "$ENABLE_HTTPS" == "1" && -n "$HTTPS_DOMAIN" ]]; then
+          default_panel_base="https://${HTTPS_DOMAIN}"
+        else
+          default_panel_base="${CONTROLLER_PUBLIC_URL:-$default_controller_url}"
+        fi
+        PANEL_BASE_URL="$(normalize_input_url "$default_panel_base" "$([[ "$ENABLE_HTTPS" == "1" ]] && echo https || echo http)")"
+        input="$(prompt_with_back "BOT_TOKEN（Telegram 机器人 token；可先留空）" "${BOT_TOKEN}")"
+        if [[ "$input" == "__SB_BACK__" ]]; then
+          step=$((step - 1)); continue
+        fi
+        BOT_TOKEN="$input"
+        if ! is_bot_token_configured "$BOT_TOKEN"; then
+          warn "BOT_TOKEN 为空/占位：将跳过 sb-bot 启动，你可稍后在高级向导中补填。"
+        fi
+        step=$((step + 1))
+        ;;
+      4)
+        input="$(prompt_with_back "ADMIN_CHAT_IDS（可选，逗号分隔；不填=不限制）" "${ADMIN_CHAT_IDS}")"
+        if [[ "$input" == "__SB_BACK__" ]]; then
+          step=$((step - 1)); continue
+        fi
+        ADMIN_CHAT_IDS="$input"
+        step=$((step + 1))
+        ;;
+      5)
+        input="$(prompt_with_back "AUTH_TOKEN（接口鉴权 token，输入 - 表示关闭）" "${AUTH_TOKEN}")"
+        if [[ "$input" == "__SB_BACK__" ]]; then
+          step=$((step - 1)); continue
+        fi
+        if [[ "$input" == "-" ]]; then
+          AUTH_DISABLED_EXPLICIT=1
+          AUTH_TOKEN=""
+          ADMIN_AUTH_TOKEN=""
+          NODE_AUTH_TOKEN=""
+        else
+          AUTH_TOKEN="$input"
+          AUTH_DISABLED_EXPLICIT=0
+        fi
+        step=$((step + 1))
+        ;;
+    esac
+  done
 
   local current_client_ip
   current_client_ip=""
@@ -1347,7 +1570,11 @@ configure_ufw_rules() {
   local status_line
   status_line="$(ufw status 2>/dev/null | head -n1 || true)"
   if [[ "$status_line" == *"inactive"* ]]; then
-    if ask_yes_no "检测到 UFW 未启用，是否现在启用？" "Y"; then
+    ask_yes_no_with_back "检测到 UFW 未启用，是否现在启用？" "Y"
+    local ufw_choice_rc=$?
+    if (( ufw_choice_rc == 2 )); then
+      warn "已返回上一步并保留 UFW 未启用状态。"
+    elif (( ufw_choice_rc == 0 )); then
       ufw --force enable >/dev/null
       msg "UFW 已启用。"
     else

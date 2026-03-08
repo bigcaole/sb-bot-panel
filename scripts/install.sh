@@ -121,6 +121,41 @@ ask_yes_no() {
   return 1
 }
 
+ask_yes_no_with_back() {
+  local prompt="$1"
+  local default="${2:-Y}"
+  local answer
+  local hint="[Y/n]"
+  if [[ "$default" == "N" ]]; then
+    hint="[y/N]"
+  fi
+  read -r -p "$prompt $hint（输入 b 返回上一步）: " answer
+  answer="${answer:-$default}"
+  if [[ "$answer" == "b" || "$answer" == "B" ]]; then
+    return 2
+  fi
+  if [[ "$answer" =~ ^[Yy]$ ]]; then
+    return 0
+  fi
+  return 1
+}
+
+prompt_with_back() {
+  local prompt="$1"
+  local default_value="${2:-}"
+  local input
+  read -r -p "${prompt} [${default_value}]: " input
+  if [[ "$input" == "b" || "$input" == "B" ]]; then
+    echo "__SB_BACK__"
+    return 0
+  fi
+  if [[ -z "$input" ]]; then
+    echo "$default_value"
+  else
+    echo "$input"
+  fi
+}
+
 install_menu_shortcuts() {
   # Cleanup legacy shortcut from old versions to avoid confusing entrypoint.
   if [[ -f /usr/local/bin/sb-bot-panel ]] && grep -q "sb-node-main-shortcut" /usr/local/bin/sb-bot-panel 2>/dev/null; then
@@ -311,40 +346,65 @@ ufw_allows_ssh_for_ip() {
 
 precheck_ssh_lockout_risk() {
   local client_ip ssh_port
+  local step=1 answer_rc
   client_ip="$(detect_current_ssh_client_ip)"
   ssh_port="$(detect_sshd_port)"
 
-  if [[ -n "$client_ip" ]]; then
-    msg "当前 SSH 会话来源 IP: ${client_ip}，sshd 端口: ${ssh_port}"
-    if is_fail2ban_banned_ip "$client_ip"; then
-      err "当前来源 IP(${client_ip}) 已在 fail2ban 封禁列表，请先解封后再启用仅密钥登录。"
-      return 1
-    fi
-    if ! ufw_allows_ssh_for_ip "$client_ip" "$ssh_port"; then
-      warn "UFW 未明确放行当前来源 IP(${client_ip}) 到 SSH 端口 ${ssh_port}。"
-      if ! ask_yes_no "仍继续启用仅密钥登录？（可能导致失联）" "N"; then
-        warn "已取消启用。"
-        return 1
+  while (( step <= 2 )); do
+    if (( step == 1 )); then
+      if [[ -n "$client_ip" ]]; then
+        msg "当前 SSH 会话来源 IP: ${client_ip}，sshd 端口: ${ssh_port}"
+        if is_fail2ban_banned_ip "$client_ip"; then
+          err "当前来源 IP(${client_ip}) 已在 fail2ban 封禁列表，请先解封后再启用仅密钥登录。"
+          return 1
+        fi
+        if ! ufw_allows_ssh_for_ip "$client_ip" "$ssh_port"; then
+          warn "UFW 未明确放行当前来源 IP(${client_ip}) 到 SSH 端口 ${ssh_port}。"
+          ask_yes_no_with_back "仍继续启用仅密钥登录？（可能导致失联）" "N"
+          answer_rc=$?
+          if (( answer_rc == 2 )); then
+            return 2
+          fi
+          if (( answer_rc != 0 )); then
+            warn "已取消启用。"
+            return 1
+          fi
+        fi
+      else
+        warn "未检测到当前 SSH 会话来源 IP（可能是本机控制台）。"
+        ask_yes_no_with_back "仍继续启用仅密钥登录？" "N"
+        answer_rc=$?
+        if (( answer_rc == 2 )); then
+          return 2
+        fi
+        if (( answer_rc != 0 )); then
+          warn "已取消启用。"
+          return 1
+        fi
       fi
+      step=2
+      continue
     fi
-  else
-    warn "未检测到当前 SSH 会话来源 IP（可能是本机控制台）。"
-    if ! ask_yes_no "仍继续启用仅密钥登录？" "N"; then
-      warn "已取消启用。"
+
+    ask_yes_no_with_back "是否已在另一个终端验证公钥可登录？" "N"
+    answer_rc=$?
+    if (( answer_rc == 2 )); then
+      step=1
+      continue
+    fi
+    if (( answer_rc != 0 )); then
+      warn "未确认公钥可登录，已取消启用。"
       return 1
     fi
-  fi
-
-  if ! ask_yes_no "是否已在另一个终端验证公钥可登录？" "N"; then
-    warn "未确认公钥可登录，已取消启用。"
-    return 1
-  fi
+    step=3
+  done
   return 0
 }
 
 configure_ssh_key_only_login() {
   local user_name="${1:-root}"
   local ssh_service auth_file
+  local precheck_rc=0
   ssh_service="$(detect_ssh_service)"
   auth_file="$(get_authorized_keys_path_for_user "$user_name")"
 
@@ -352,7 +412,11 @@ configure_ssh_key_only_login() {
     warn "用户 ${user_name} 尚无可用 authorized_keys（${auth_file}），跳过启用仅密钥登录，避免锁死 SSH。"
     return 1
   fi
-  if ! precheck_ssh_lockout_risk; then
+  precheck_ssh_lockout_risk || precheck_rc=$?
+  if (( precheck_rc == 2 )); then
+    return 2
+  fi
+  if (( precheck_rc != 0 )); then
     return 1
   fi
 
@@ -409,26 +473,56 @@ EOF
 }
 
 configure_security_interactive() {
+  local step=1 choice_rc ssh_user input
   echo "SSH 公钥存放路径提示："
   echo "  - root: /root/.ssh/authorized_keys"
   echo "  - 普通用户: /home/<用户名>/.ssh/authorized_keys"
   echo ""
-  if ask_yes_no "是否安装并启用 fail2ban（推荐，用于 SSH 防爆破）？" "Y"; then
-    install_and_enable_fail2ban
-  else
-    warn "已跳过 fail2ban 安装。"
-  fi
 
-  if ask_yes_no "是否现在启用 SSH 仅密钥登录（将禁用密码登录）？" "N"; then
-    local ssh_user
-    read -r -p "请输入用于校验公钥的用户名 [root]: " ssh_user
-    ssh_user="${ssh_user:-root}"
-    if ! configure_ssh_key_only_login "$ssh_user"; then
-      warn "SSH 仅密钥登录未生效。请先为 ${ssh_user} 配置公钥后再执行。"
-    fi
-  else
-    warn "已跳过 SSH 仅密钥登录设置。"
-  fi
+  while (( step <= 2 )); do
+    case "$step" in
+      1)
+        ask_yes_no_with_back "是否安装并启用 fail2ban（推荐，用于 SSH 防爆破）？" "Y"
+        choice_rc=$?
+        if (( choice_rc == 2 )); then
+          return 2
+        fi
+        if (( choice_rc == 0 )); then
+          install_and_enable_fail2ban
+        else
+          warn "已跳过 fail2ban 安装。"
+        fi
+        step=2
+        ;;
+      2)
+        ask_yes_no_with_back "是否现在启用 SSH 仅密钥登录（将禁用密码登录）？" "N"
+        choice_rc=$?
+        if (( choice_rc == 2 )); then
+          step=1
+          continue
+        fi
+        if (( choice_rc == 0 )); then
+          input="$(prompt_with_back "请输入用于校验公钥的用户名" "root")"
+          if [[ "$input" == "__SB_BACK__" ]]; then
+            continue
+          fi
+          ssh_user="${input:-root}"
+          configure_ssh_key_only_login "$ssh_user"
+          choice_rc=$?
+          if (( choice_rc == 2 )); then
+            continue
+          fi
+          if (( choice_rc != 0 )); then
+            warn "SSH 仅密钥登录未生效。请先为 ${ssh_user} 配置公钥后再执行。"
+          fi
+        else
+          warn "已跳过 SSH 仅密钥登录设置。"
+        fi
+        step=3
+        ;;
+    esac
+  done
+  return 0
 }
 
 python_version_ge_311() {
@@ -681,7 +775,7 @@ prompt_config() {
   old_poll="$(read_old_config_value "poll_interval")"
 
   echo ""
-  msg "配置向导说明（每项都可回车采用默认值）："
+  msg "配置向导说明（每项都可回车采用默认值，输入 b 可回到上一步）："
   echo "  1) controller_url：节点拉取配置的地址。获取：管理服务器公网地址（如 https://panel.example.com）"
   echo "  2) node_code：节点唯一标识。获取：管理端节点列表里的节点编码（需完全一致）"
   echo "  3) auth_token：节点鉴权 token。获取：管理服务器 .env 中 NODE_AUTH_TOKEN（兼容模式用 AUTH_TOKEN）"
@@ -691,54 +785,106 @@ prompt_config() {
   echo "  7) poll_interval：agent 轮询间隔秒数。越小同步越快，默认 15"
   echo ""
 
-  read -r -p "1) 请输入 controller_url（支持省略 http/https，例如 panel.example.com:8080） [${old_controller:-http://127.0.0.1:8080}]: " CONTROLLER_URL
-  CONTROLLER_URL="${CONTROLLER_URL:-${old_controller:-http://127.0.0.1:8080}}"
-  local controller_scheme controller_host
-  controller_host="$(extract_url_host "$CONTROLLER_URL")"
-  controller_scheme="https"
-  if [[ "$controller_host" == "127.0.0.1" || "$controller_host" == "localhost" || "$CONTROLLER_URL" == *":8080"* || "$CONTROLLER_URL" == *":80"* ]]; then
-    controller_scheme="http"
-  fi
-  CONTROLLER_URL="$(normalize_input_url "$CONTROLLER_URL" "$controller_scheme")"
+  local step=1
+  local input controller_scheme controller_host
+  CONTROLLER_URL="${old_controller:-http://127.0.0.1:8080}"
+  NODE_CODE="${old_node:-N1}"
+  AUTH_TOKEN="${old_token:-devtoken123}"
+  TUIC_DOMAIN="${old_domain:-}"
+  ACME_EMAIL="${old_email:-admin@example.com}"
+  TUIC_LISTEN_PORT="${old_tuic_port:-$TUIC_DEFAULT_PORT}"
+  POLL_INTERVAL="${old_poll:-15}"
 
-  while [[ -z "$NODE_CODE" ]]; do
-    read -r -p "2) 请输入 node_code（例如 N1） [${old_node:-N1}]: " NODE_CODE
-    NODE_CODE="${NODE_CODE:-${old_node:-N1}}"
-    NODE_CODE="$(echo "$NODE_CODE" | tr -d '[:space:]')"
+  while (( step <= 7 )); do
+    case "$step" in
+      1)
+        input="$(prompt_with_back "1) 请输入 controller_url（支持省略 http/https，例如 panel.example.com:8080）" "$CONTROLLER_URL")"
+        if [[ "$input" == "__SB_BACK__" ]]; then
+          warn "已经是第一步。"
+          continue
+        fi
+        CONTROLLER_URL="$input"
+        controller_host="$(extract_url_host "$CONTROLLER_URL")"
+        controller_scheme="https"
+        if [[ "$controller_host" == "127.0.0.1" || "$controller_host" == "localhost" || "$CONTROLLER_URL" == *":8080"* || "$CONTROLLER_URL" == *":80"* ]]; then
+          controller_scheme="http"
+        fi
+        CONTROLLER_URL="$(normalize_input_url "$CONTROLLER_URL" "$controller_scheme")"
+        step=$((step + 1))
+        ;;
+      2)
+        input="$(prompt_with_back "2) 请输入 node_code（例如 N1）" "$NODE_CODE")"
+        if [[ "$input" == "__SB_BACK__" ]]; then
+          step=$((step - 1)); continue
+        fi
+        NODE_CODE="$(echo "$input" | tr -d '[:space:]')"
+        if [[ -z "$NODE_CODE" ]]; then
+          warn "node_code 不能为空。"
+          continue
+        fi
+        step=$((step + 1))
+        ;;
+      3)
+        input="$(prompt_with_back "3) 请输入 auth_token（用于拉取 sync）" "$AUTH_TOKEN")"
+        if [[ "$input" == "__SB_BACK__" ]]; then
+          step=$((step - 1)); continue
+        fi
+        AUTH_TOKEN="$input"
+        step=$((step + 1))
+        ;;
+      4)
+        input="$(prompt_with_back "4) 请输入 tuic_domain（例如 node1.example.com；留空=不启用TUIC）" "$TUIC_DOMAIN")"
+        if [[ "$input" == "__SB_BACK__" ]]; then
+          step=$((step - 1)); continue
+        fi
+        TUIC_DOMAIN="$(echo "$input" | tr -d '[:space:]')"
+        if [[ -z "$TUIC_DOMAIN" ]]; then
+          ACME_EMAIL=""
+          msg "已选择不启用 TUIC，跳过证书邮箱。"
+        fi
+        step=$((step + 1))
+        ;;
+      5)
+        if [[ -z "$TUIC_DOMAIN" ]]; then
+          step=$((step + 1))
+          continue
+        fi
+        input="$(prompt_with_back "5) 请输入 acme_email（例如 admin@example.com）" "${ACME_EMAIL:-admin@example.com}")"
+        if [[ "$input" == "__SB_BACK__" ]]; then
+          step=$((step - 1)); continue
+        fi
+        ACME_EMAIL="$(echo "$input" | tr -d '[:space:]')"
+        if [[ "$ACME_EMAIL" == "admin@example.com" ]]; then
+          warn "当前 acme_email 使用默认占位邮箱，建议后续改为你的真实邮箱。"
+        fi
+        step=$((step + 1))
+        ;;
+      6)
+        input="$(prompt_with_back "6) 请输入 tuic_listen_port（默认 ${TUIC_DEFAULT_PORT}）" "$TUIC_LISTEN_PORT")"
+        if [[ "$input" == "__SB_BACK__" ]]; then
+          step=$((step - 1)); continue
+        fi
+        TUIC_LISTEN_PORT="$input"
+        if ! [[ "$TUIC_LISTEN_PORT" =~ ^[0-9]+$ ]] || (( TUIC_LISTEN_PORT < 1 || TUIC_LISTEN_PORT > 65535 )); then
+          warn "端口无效，已回退为 ${TUIC_DEFAULT_PORT}"
+          TUIC_LISTEN_PORT=$TUIC_DEFAULT_PORT
+        fi
+        step=$((step + 1))
+        ;;
+      7)
+        input="$(prompt_with_back "7) 请输入 poll_interval（秒，默认 15）" "$POLL_INTERVAL")"
+        if [[ "$input" == "__SB_BACK__" ]]; then
+          step=$((step - 1)); continue
+        fi
+        POLL_INTERVAL="$input"
+        if ! [[ "$POLL_INTERVAL" =~ ^[0-9]+$ ]] || (( POLL_INTERVAL < 5 )); then
+          warn "轮询间隔无效，已回退为 15 秒"
+          POLL_INTERVAL=15
+        fi
+        step=$((step + 1))
+        ;;
+    esac
   done
-
-  read -r -p "3) 请输入 auth_token（用于拉取 sync） [${old_token:-devtoken123}]: " AUTH_TOKEN
-  AUTH_TOKEN="${AUTH_TOKEN:-${old_token:-devtoken123}}"
-
-  read -r -p "4) 请输入 tuic_domain（例如 node1.example.com；留空=不启用TUIC） [${old_domain}]: " TUIC_DOMAIN
-  TUIC_DOMAIN="${TUIC_DOMAIN:-$old_domain}"
-  TUIC_DOMAIN="${TUIC_DOMAIN//[$'\r\n']}"
-
-  if [[ -n "$TUIC_DOMAIN" ]]; then
-    read -r -p "5) 请输入 acme_email（例如 admin@example.com） [${old_email:-admin@example.com}]: " ACME_EMAIL
-    ACME_EMAIL="${ACME_EMAIL:-${old_email:-admin@example.com}}"
-    ACME_EMAIL="$(echo "$ACME_EMAIL" | tr -d '[:space:]')"
-    if [[ "$ACME_EMAIL" == "admin@example.com" ]]; then
-      warn "当前 acme_email 使用默认占位邮箱，建议后续改为你的真实邮箱。"
-    fi
-  else
-    ACME_EMAIL=""
-    msg "已选择不启用 TUIC，跳过证书邮箱。"
-  fi
-
-  read -r -p "6) 请输入 tuic_listen_port（默认 ${TUIC_DEFAULT_PORT}） [${old_tuic_port:-$TUIC_DEFAULT_PORT}]: " TUIC_LISTEN_PORT
-  TUIC_LISTEN_PORT="${TUIC_LISTEN_PORT:-${old_tuic_port:-$TUIC_DEFAULT_PORT}}"
-  if ! [[ "$TUIC_LISTEN_PORT" =~ ^[0-9]+$ ]] || (( TUIC_LISTEN_PORT < 1 || TUIC_LISTEN_PORT > 65535 )); then
-    warn "端口无效，已回退为 ${TUIC_DEFAULT_PORT}"
-    TUIC_LISTEN_PORT=$TUIC_DEFAULT_PORT
-  fi
-
-  read -r -p "7) 请输入 poll_interval（秒，默认 15） [${old_poll:-15}]: " POLL_INTERVAL
-  POLL_INTERVAL="${POLL_INTERVAL:-${old_poll:-15}}"
-  if ! [[ "$POLL_INTERVAL" =~ ^[0-9]+$ ]] || (( POLL_INTERVAL < 5 )); then
-    warn "轮询间隔无效，已回退为 15 秒"
-    POLL_INTERVAL=15
-  fi
 }
 
 prompt_config_quick() {
@@ -753,57 +899,97 @@ prompt_config_quick() {
   old_poll="$(read_old_config_value "poll_interval")"
 
   echo ""
-  msg "快速配置（推荐默认值）"
+  msg "快速配置（推荐默认值，输入 b 可回到上一步）"
   echo "  - 仅提问关键参数：controller_url / node_code / auth_token"
   echo "  - auth_token 获取：管理服务器 .env 的 NODE_AUTH_TOKEN（兼容模式可用 AUTH_TOKEN）"
   echo "  - 其余变量自动按默认值写入（可在高级向导再改）"
   echo ""
 
-  read -r -p "controller_url（节点拉取配置地址） [${old_controller:-http://127.0.0.1:8080}]: " CONTROLLER_URL
-  CONTROLLER_URL="${CONTROLLER_URL:-${old_controller:-http://127.0.0.1:8080}}"
-  local controller_scheme controller_host
-  controller_host="$(extract_url_host "$CONTROLLER_URL")"
-  controller_scheme="https"
-  if [[ "$controller_host" == "127.0.0.1" || "$controller_host" == "localhost" || "$CONTROLLER_URL" == *":8080"* || "$CONTROLLER_URL" == *":80"* ]]; then
-    controller_scheme="http"
-  fi
-  CONTROLLER_URL="$(normalize_input_url "$CONTROLLER_URL" "$controller_scheme")"
+  local step=1 input controller_scheme controller_host enable_tuic_answer
+  CONTROLLER_URL="${old_controller:-http://127.0.0.1:8080}"
+  NODE_CODE="${old_node:-N1}"
+  AUTH_TOKEN="${old_token:-devtoken123}"
+  TUIC_DOMAIN="${old_domain:-}"
+  ACME_EMAIL="${old_email:-}"
+  TUIC_LISTEN_PORT="${old_tuic_port:-$TUIC_DEFAULT_PORT}"
 
-  read -r -p "node_code（节点唯一标识） [${old_node:-N1}]: " NODE_CODE
-  NODE_CODE="${NODE_CODE:-${old_node:-N1}}"
-  NODE_CODE="$(echo "$NODE_CODE" | tr -d '[:space:]')"
-  if [[ -z "$NODE_CODE" ]]; then
-    NODE_CODE="N1"
-  fi
-
-  read -r -p "auth_token（用于拉取 sync） [${old_token:-devtoken123}]: " AUTH_TOKEN
-  AUTH_TOKEN="${AUTH_TOKEN:-${old_token:-devtoken123}}"
-
-  if [[ -n "$old_domain" ]]; then
-    enable_tuic_quick="Y"
-  else
-    enable_tuic_quick="N"
-  fi
-  if ask_yes_no "是否在快速配置中启用/修改 TUIC 证书参数（tuic_domain/acme_email/端口）？" "$enable_tuic_quick"; then
-    read -r -p "tuic_domain（留空=关闭TUIC） [${old_domain}]: " TUIC_DOMAIN
-    TUIC_DOMAIN="${TUIC_DOMAIN:-$old_domain}"
-    TUIC_DOMAIN="$(echo "$TUIC_DOMAIN" | tr -d '[:space:]')"
-    if [[ -n "$TUIC_DOMAIN" ]]; then
-      read -r -p "acme_email（证书邮箱） [${old_email:-admin@example.com}]: " ACME_EMAIL
-      ACME_EMAIL="${ACME_EMAIL:-${old_email:-admin@example.com}}"
-      ACME_EMAIL="$(echo "$ACME_EMAIL" | tr -d '[:space:]')"
-      read -r -p "tuic_listen_port（默认 ${TUIC_DEFAULT_PORT}） [${old_tuic_port:-$TUIC_DEFAULT_PORT}]: " TUIC_LISTEN_PORT
-      TUIC_LISTEN_PORT="${TUIC_LISTEN_PORT:-${old_tuic_port:-$TUIC_DEFAULT_PORT}}"
-    else
-      ACME_EMAIL=""
-      TUIC_LISTEN_PORT="${old_tuic_port:-$TUIC_DEFAULT_PORT}"
-      warn "已按你的输入关闭 TUIC（tuic_domain 为空）。"
-    fi
-  else
-    TUIC_DOMAIN="${old_domain:-}"
-    ACME_EMAIL="${old_email:-}"
-    TUIC_LISTEN_PORT="${old_tuic_port:-$TUIC_DEFAULT_PORT}"
-  fi
+  while (( step <= 4 )); do
+    case "$step" in
+      1)
+        input="$(prompt_with_back "controller_url（节点拉取配置地址）" "$CONTROLLER_URL")"
+        if [[ "$input" == "__SB_BACK__" ]]; then
+          warn "已经是第一步。"
+          continue
+        fi
+        CONTROLLER_URL="$input"
+        controller_host="$(extract_url_host "$CONTROLLER_URL")"
+        controller_scheme="https"
+        if [[ "$controller_host" == "127.0.0.1" || "$controller_host" == "localhost" || "$CONTROLLER_URL" == *":8080"* || "$CONTROLLER_URL" == *":80"* ]]; then
+          controller_scheme="http"
+        fi
+        CONTROLLER_URL="$(normalize_input_url "$CONTROLLER_URL" "$controller_scheme")"
+        step=$((step + 1))
+        ;;
+      2)
+        input="$(prompt_with_back "node_code（节点唯一标识）" "$NODE_CODE")"
+        if [[ "$input" == "__SB_BACK__" ]]; then
+          step=$((step - 1)); continue
+        fi
+        NODE_CODE="$(echo "$input" | tr -d '[:space:]')"
+        [[ -z "$NODE_CODE" ]] && NODE_CODE="N1"
+        step=$((step + 1))
+        ;;
+      3)
+        input="$(prompt_with_back "auth_token（用于拉取 sync）" "$AUTH_TOKEN")"
+        if [[ "$input" == "__SB_BACK__" ]]; then
+          step=$((step - 1)); continue
+        fi
+        AUTH_TOKEN="$input"
+        step=$((step + 1))
+        ;;
+      4)
+        if [[ -n "$old_domain" ]]; then
+          enable_tuic_quick="Y"
+        else
+          enable_tuic_quick="N"
+        fi
+        read -r -p "是否在快速配置中启用/修改 TUIC 证书参数（tuic_domain/acme_email/端口）？[Y/n]（输入 b 返回上一步）: " enable_tuic_answer
+        enable_tuic_answer="${enable_tuic_answer:-$enable_tuic_quick}"
+        if [[ "$enable_tuic_answer" == "b" || "$enable_tuic_answer" == "B" ]]; then
+          step=$((step - 1))
+          continue
+        fi
+        if [[ "$enable_tuic_answer" =~ ^[Yy]$ ]]; then
+          input="$(prompt_with_back "tuic_domain（留空=关闭TUIC）" "${old_domain}")"
+          if [[ "$input" == "__SB_BACK__" ]]; then
+            step=$((step - 1)); continue
+          fi
+          TUIC_DOMAIN="$(echo "$input" | tr -d '[:space:]')"
+          if [[ -n "$TUIC_DOMAIN" ]]; then
+            input="$(prompt_with_back "acme_email（证书邮箱）" "${old_email:-admin@example.com}")"
+            if [[ "$input" == "__SB_BACK__" ]]; then
+              continue
+            fi
+            ACME_EMAIL="$(echo "$input" | tr -d '[:space:]')"
+            input="$(prompt_with_back "tuic_listen_port（默认 ${TUIC_DEFAULT_PORT}）" "${old_tuic_port:-$TUIC_DEFAULT_PORT}")"
+            if [[ "$input" == "__SB_BACK__" ]]; then
+              continue
+            fi
+            TUIC_LISTEN_PORT="$input"
+          else
+            ACME_EMAIL=""
+            TUIC_LISTEN_PORT="${old_tuic_port:-$TUIC_DEFAULT_PORT}"
+            warn "已按你的输入关闭 TUIC（tuic_domain 为空）。"
+          fi
+        else
+          TUIC_DOMAIN="${old_domain:-}"
+          ACME_EMAIL="${old_email:-}"
+          TUIC_LISTEN_PORT="${old_tuic_port:-$TUIC_DEFAULT_PORT}"
+        fi
+        step=$((step + 1))
+        ;;
+    esac
+  done
 
   POLL_INTERVAL="${old_poll:-15}"
   if ! [[ "$TUIC_LISTEN_PORT" =~ ^[0-9]+$ ]] || (( TUIC_LISTEN_PORT < 1 || TUIC_LISTEN_PORT > 65535 )); then
@@ -816,13 +1002,13 @@ prompt_config_quick() {
 
 check_domain_resolution_interactive() {
   if [[ -z "$TUIC_DOMAIN" ]]; then
-    return
+    return 0
   fi
   ensure_dns_tools
   PUBLIC_IP="$(get_public_ipv4)"
   if [[ -z "$PUBLIC_IP" ]]; then
     warn "无法获取本机公网 IPv4，跳过自动解析比对。"
-    return
+    return 0
   fi
   while true; do
     local dns_ip
@@ -834,18 +1020,21 @@ check_domain_resolution_interactive() {
       break
     fi
     warn "解析不正确。请到 Cloudflare 关闭代理（小黄云置灰），并将 A 记录指向当前公网 IP。"
-    read -r -p "修复后按回车重试，输入 skip 跳过该检查: " retry
+    read -r -p "修复后按回车重试，输入 skip 跳过，输入 b 返回上一步: " retry
     if [[ "$retry" == "skip" ]]; then
       warn "你选择了跳过解析检查，证书申请可能失败。"
       break
+    elif [[ "$retry" == "b" || "$retry" == "B" ]]; then
+      return 2
     fi
   done
+  return 0
 }
 
 configure_ufw_rules() {
   if ! command -v ufw >/dev/null 2>&1; then
     warn "未检测到 ufw，跳过防火墙配置。"
-    return
+    return 0
   fi
   msg "配置 UFW 防火墙规则..."
   ufw allow 22/tcp >/dev/null
@@ -857,7 +1046,12 @@ configure_ufw_rules() {
   local status_line
   status_line="$(ufw status 2>/dev/null | head -n1 || true)"
   if [[ "$status_line" == *"inactive"* ]]; then
-    if ask_yes_no "检测到 UFW 未启用，是否现在启用？" "Y"; then
+    ask_yes_no_with_back "检测到 UFW 未启用，是否现在启用？" "Y"
+    local ufw_choice_rc=$?
+    if (( ufw_choice_rc == 2 )); then
+      return 2
+    fi
+    if (( ufw_choice_rc == 0 )); then
       ufw --force enable >/dev/null
       msg "UFW 已启用。"
     else
@@ -866,6 +1060,7 @@ configure_ufw_rules() {
   else
     msg "UFW 已启用，规则已更新。"
   fi
+  return 0
 }
 
 write_config_json() {
@@ -986,9 +1181,13 @@ reload_and_enable_services() {
   systemctl enable sb-agent >/dev/null
   systemctl restart sb-agent
 
-  if ask_yes_no "是否启用每日证书健康检查定时器（sb-cert-check.timer）？" "Y"; then
+  ask_yes_no_with_back "是否启用每日证书健康检查定时器（sb-cert-check.timer）？" "Y"
+  local cert_timer_choice_rc=$?
+  if (( cert_timer_choice_rc == 0 )); then
     systemctl enable --now sb-cert-check.timer >/dev/null
     msg "已启用 sb-cert-check.timer"
+  elif (( cert_timer_choice_rc == 2 )); then
+    warn "已返回上一步并默认不启用定时器。你可稍后在菜单中手动启用。"
   else
     warn "未启用 sb-cert-check.timer，可后续手动启用。"
   fi
@@ -1092,9 +1291,41 @@ main() {
     else
       prompt_config
     fi
-    check_domain_resolution_interactive
-    configure_ufw_rules
-    configure_security_interactive
+    local post_step=1 post_rc=0
+    while (( post_step <= 3 )); do
+      case "$post_step" in
+        1)
+          check_domain_resolution_interactive || post_rc=$?
+          if (( post_rc == 2 )); then
+            warn "已在当前步骤起点，无法再回退。"
+            post_rc=0
+            continue
+          fi
+          post_rc=0
+          post_step=2
+          ;;
+        2)
+          configure_ufw_rules || post_rc=$?
+          if (( post_rc == 2 )); then
+            post_step=1
+            post_rc=0
+            continue
+          fi
+          post_rc=0
+          post_step=3
+          ;;
+        3)
+          configure_security_interactive || post_rc=$?
+          if (( post_rc == 2 )); then
+            post_step=2
+            post_rc=0
+            continue
+          fi
+          post_rc=0
+          post_step=4
+          ;;
+      esac
+    done
     write_config_json
   fi
 

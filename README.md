@@ -43,7 +43,7 @@ cd /root/sb-bot-panel
 sudo bash scripts/admin/menu_admin.sh
 ```
 
-进入菜单后先选：`23) 安装/重装`
+进入菜单后先选：`24) 安装/重装`
 
 安装成功后可用以下命令随时打开管理菜单：
 
@@ -292,7 +292,7 @@ REALITY 密钥策略：
 git clone <你的仓库地址> sb-bot-panel && cd sb-bot-panel && sudo bash scripts/admin/menu_admin.sh
 ```
 
-菜单里选择 `23) 安装/重装` 即可完成：
+菜单里选择 `24) 安装/重装` 即可完成：
 
 - 依赖安装（apt）
 - venv 创建与 `pip install -r requirements.txt`
@@ -306,8 +306,9 @@ git clone <你的仓库地址> sb-bot-panel && cd sb-bot-panel && sudo bash scri
 
 说明：
 - 菜单 `22) 组件自检与自动修复`：会检查 controller/bot/caddy，缺失时自动修复。
-- 菜单 `23) 安装/重装` 会进入交互配置，适合首装或重装。
-- 菜单 `24) 更新` 会自动 `git pull` 并执行 `--reuse-config`，默认复用现有 `.env` 配置，不会重复询问端口/域名/token/chat_id。
+- 菜单 `23) 部署参数自检与修复向导`：按“必需未配置/可选未配置/配置错误”分类并循环修复。
+- 菜单 `24) 安装/重装` 会进入交互配置，适合首装或重装。
+- 菜单 `25) 更新` 会自动 `git pull` 并执行 `--reuse-config`，默认复用现有 `.env` 配置，不会重复询问端口/域名/token/chat_id。
 - 需要改参数时使用菜单 `1) 配置（快速默认 / 高级变量向导）`。
 
 ### 仅重新配置（改 token/chat id）
@@ -453,10 +454,11 @@ sb-admin
 21. AI诊断包导出（可粘贴给任意AI）
 【系统级操作（谨慎）】
 22. 组件自检与自动修复（controller/bot/caddy）
-23. 安装/重装（交互配置 + 依赖 + venv + 重启）
-24. 更新（git pull + 复用现有配置 + 重启）
-25. 深度卸载
-26. 退出
+23. 部署参数自检与修复向导（循环到通过）
+24. 安装/重装（交互配置 + 依赖 + venv + 重启）
+25. 更新（git pull + 复用现有配置 + 重启）
+26. 深度卸载
+27. 退出
 
 说明：菜单 `14` 支持五类操作：  
 1) 默认参数同步（`/admin/nodes/sync_agent_defaults`）  

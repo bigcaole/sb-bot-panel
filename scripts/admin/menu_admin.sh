@@ -21,6 +21,7 @@ TOKEN_SPLIT_MIGRATE_SCRIPT="${PROJECT_DIR}/scripts/admin/auth_token_split_migrat
 LOG_ARCHIVE_SCRIPT="${PROJECT_DIR}/scripts/admin/log_archive.sh"
 OPS_SNAPSHOT_SCRIPT="${PROJECT_DIR}/scripts/admin/ops_snapshot.sh"
 AI_CONTEXT_SCRIPT="${PROJECT_DIR}/scripts/admin/ai_context_export.sh"
+RUNTIME_SELF_CHECK_SCRIPT="${PROJECT_DIR}/scripts/admin/runtime_self_check.sh"
 ADMIN_SCRIPT_ACTOR="sb-admin"
 MENU_VIEW_MODE="${MENU_VIEW_MODE:-basic}"
 
@@ -1228,12 +1229,13 @@ show_menu() {
 20. 运维快照（导出关键状态）
 21. AI诊断包导出（可粘贴给任意AI）
 22. 组件自检与自动修复（controller/bot/caddy）
+23. 部署参数自检与修复向导（循环到通过）
 
 【系统级操作（谨慎）】
-23. 安装/重装（交互配置 + 依赖 + venv + 重启）
-24. 更新（git pull + 复用现有配置 + 重启）
-25. 深度卸载
-26. 退出
+24. 安装/重装（交互配置 + 依赖 + venv + 重启）
+25. 更新（git pull + 复用现有配置 + 重启）
+26. 深度卸载
+27. 退出
 ========================================
 EOF
     echo "视图切换：输入 B 返回简化视图（仅常用项）"
@@ -1255,8 +1257,9 @@ EOF
 20. 运维快照（导出关键状态）
 21. AI诊断包导出（可粘贴给任意AI）
 22. 组件自检与自动修复（controller/bot/caddy）
-24. 更新（git pull + 复用现有配置 + 重启）
-26. 退出
+23. 部署参数自检与修复向导（循环到通过）
+25. 更新（git pull + 复用现有配置 + 重启）
+27. 退出
 ========================================
 EOF
   echo "视图切换：输入 A 查看全部功能（高级视图）"
@@ -1384,7 +1387,7 @@ run_component_self_check_and_repair() {
 
   echo "----- 组件自检（管理服务器）-----"
   if [[ ! -f "$env_file" ]]; then
-    warn "未检测到 ${env_file}，建议先执行菜单 23（安装/重装）完成初始化。"
+    warn "未检测到 ${env_file}，建议先执行菜单 24（安装/重装）完成初始化。"
     return 1
   fi
 
@@ -1597,7 +1600,7 @@ main() {
     show_menu
     local action_prompt
     if [[ "$MENU_VIEW_MODE" == "advanced" ]]; then
-      action_prompt="请输入选项 [1-26/b]: "
+      action_prompt="请输入选项 [1-27/b]: "
     else
       action_prompt="请输入选项 [常用编号/a]: "
     fi
@@ -1772,6 +1775,14 @@ main() {
         pause
         ;;
       23)
+        if [[ -x "$RUNTIME_SELF_CHECK_SCRIPT" ]]; then
+          bash "$RUNTIME_SELF_CHECK_SCRIPT"
+        else
+          err "未找到部署参数自检脚本: $RUNTIME_SELF_CHECK_SCRIPT"
+        fi
+        pause
+        ;;
+      24)
         if confirm_action "确认执行安装/重装？（会进入交互配置）" "N"; then
           do_install
         else
@@ -1779,7 +1790,7 @@ main() {
         fi
         pause
         ;;
-      24)
+      25)
         if confirm_action "确认执行更新？（自动复用现有 .env 参数）" "Y"; then
           do_update_reuse_config
         else
@@ -1787,17 +1798,17 @@ main() {
         fi
         pause
         ;;
-      25)
+      26)
         do_uninstall
         pause
         ;;
-      26)
+      27)
         msg "已退出。"
         exit 0
         ;;
       *)
         if [[ "$MENU_VIEW_MODE" == "advanced" ]]; then
-          warn "无效选项，请输入 1-26 或 b。"
+          warn "无效选项，请输入 1-27 或 b。"
         else
           warn "无效选项，请输入简化视图中的编号，或输入 a 切换高级视图。"
         fi
