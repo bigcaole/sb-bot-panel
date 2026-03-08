@@ -44,6 +44,33 @@ confirm_action() {
   [[ "$answer" =~ ^[Yy]$ ]]
 }
 
+update_repo_from_origin_main() {
+  local repo_dir="$1"
+  local before_rev after_rev
+  if ! command -v git >/dev/null 2>&1; then
+    err "未安装 git，无法执行更新。"
+    return 1
+  fi
+  if [[ ! -d "${repo_dir}/.git" ]]; then
+    err "未检测到 Git 仓库：${repo_dir}/.git"
+    return 1
+  fi
+  before_rev="$(git -C "$repo_dir" rev-parse --short HEAD 2>/dev/null || true)"
+  msg "当前版本: ${before_rev:-unknown}"
+  msg "拉取远端代码: origin/main（仅快进）..."
+  if ! git -C "$repo_dir" pull --ff-only origin main; then
+    err "git pull 失败，已中止更新（请先处理本地改动/分支状态后重试）。"
+    return 1
+  fi
+  after_rev="$(git -C "$repo_dir" rev-parse --short HEAD 2>/dev/null || true)"
+  if [[ -n "$before_rev" && "$before_rev" == "$after_rev" ]]; then
+    msg "代码已是最新版本: ${after_rev:-unknown}"
+  else
+    msg "代码已更新到: ${after_rev:-unknown}"
+  fi
+  return 0
+}
+
 mask_secret_value() {
   local value="$1"
   local n="${#value}"
@@ -128,6 +155,20 @@ node_param_hint() {
   esac
 }
 
+node_param_brief() {
+  local key="$1"
+  case "$key" in
+    controller_url) echo "控制器地址" ;;
+    node_code) echo "节点编码" ;;
+    auth_token) echo "节点鉴权Token" ;;
+    tuic_domain) echo "TUIC域名" ;;
+    acme_email) echo "证书邮箱" ;;
+    tuic_listen_port) echo "TUIC端口" ;;
+    poll_interval) echo "轮询间隔秒数" ;;
+    *) echo "参数" ;;
+  esac
+}
+
 edit_single_node_param() {
   if [[ ! -f "$CONFIG_PATH" ]]; then
     err "未检测到节点配置 ${CONFIG_PATH}，请先执行菜单 1 完成配置。"
@@ -151,7 +192,7 @@ edit_single_node_param() {
       else
         display_value="${current_value:-未设置}"
       fi
-      printf "%d) %s = %s\n" "$((idx + 1))" "$key" "$display_value"
+      printf "%d) %s｜%s = %s\n" "$((idx + 1))" "$(node_param_brief "$key")" "$key" "$display_value"
     done
     echo "q) 返回"
     read -r -p "请选择要修改的参数编号: " choice
@@ -899,9 +940,9 @@ run_install() {
     err "未找到 install.sh: $INSTALL_SCRIPT"
     return
   fi
-  if [[ -d "${ROOT_DIR}/.git" ]] && command -v git >/dev/null 2>&1; then
-    msg "检测到 Git 仓库，尝试拉取最新代码..."
-    git -C "$ROOT_DIR" pull --ff-only origin main || warn "git pull 失败，请手动处理分支后重试。"
+  if ! update_repo_from_origin_main "$ROOT_DIR"; then
+    err "更新已中止：代码拉取失败。"
+    return 1
   fi
 
   if [[ -f "$CONFIG_PATH" ]]; then
@@ -1331,7 +1372,9 @@ main() {
         ;;
       21)
         if confirm_action "确认执行更新同步？" "N"; then
-          run_install
+          if ! run_install; then
+            warn "更新同步失败，请先处理上述报错后重试。"
+          fi
         else
           warn "已取消更新同步。"
         fi

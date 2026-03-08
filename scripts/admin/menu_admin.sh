@@ -150,6 +150,33 @@ pick_working_auth_token() {
   return 1
 }
 
+update_repo_from_origin_main() {
+  local repo_dir="$1"
+  local before_rev after_rev
+  if ! command -v git >/dev/null 2>&1; then
+    err "未安装 git，无法执行更新。"
+    return 1
+  fi
+  if [[ ! -d "${repo_dir}/.git" ]]; then
+    err "未检测到 Git 仓库：${repo_dir}/.git"
+    return 1
+  fi
+  before_rev="$(git -C "$repo_dir" rev-parse --short HEAD 2>/dev/null || true)"
+  msg "当前版本: ${before_rev:-unknown}"
+  msg "拉取远端代码: origin/main（仅快进）..."
+  if ! git -C "$repo_dir" pull --ff-only origin main; then
+    err "git pull 失败，已中止更新（请先处理本地改动/分支状态后重试）。"
+    return 1
+  fi
+  after_rev="$(git -C "$repo_dir" rev-parse --short HEAD 2>/dev/null || true)"
+  if [[ -n "$before_rev" && "$before_rev" == "$after_rev" ]]; then
+    msg "代码已是最新版本: ${after_rev:-unknown}"
+  else
+    msg "代码已更新到: ${after_rev:-unknown}"
+  fi
+  return 0
+}
+
 resolve_admin_auth_token() {
   local controller_port="$1"
   local auth_token_raw auth_token
@@ -1177,6 +1204,65 @@ admin_param_hint() {
   esac
 }
 
+admin_param_brief() {
+  local key="$1"
+  case "$key" in
+    CONTROLLER_PORT) echo "监听端口" ;;
+    CONTROLLER_PORT_WHITELIST) echo "8080白名单" ;;
+    ADMIN_API_WHITELIST) echo "管理来源白名单" ;;
+    SECURITY_BLOCK_PROTECTED_IPS) echo "封禁保护白名单" ;;
+    CONTROLLER_URL) echo "控制器内网地址" ;;
+    CONTROLLER_PUBLIC_URL) echo "控制器公网地址" ;;
+    PANEL_BASE_URL) echo "订阅展示地址" ;;
+    ENABLE_HTTPS) echo "启用HTTPS" ;;
+    HTTPS_DOMAIN) echo "HTTPS域名" ;;
+    HTTPS_ACME_EMAIL) echo "证书邮箱" ;;
+    ADMIN_AUTH_TOKEN) echo "管理鉴权Token" ;;
+    NODE_AUTH_TOKEN) echo "节点鉴权Token" ;;
+    AUTH_TOKEN) echo "兼容Token" ;;
+    BOT_TOKEN) echo "机器人Token" ;;
+    ADMIN_CHAT_IDS) echo "管理员ID" ;;
+    VIEW_ADMIN_CHAT_IDS) echo "只读管理员ID" ;;
+    OPS_ADMIN_CHAT_IDS) echo "运维管理员ID" ;;
+    SUPER_ADMIN_CHAT_IDS) echo "超级管理员ID" ;;
+    MIGRATE_DIR) echo "迁移目录" ;;
+    BACKUP_RETENTION_COUNT) echo "备份保留数" ;;
+    MIGRATE_RETENTION_COUNT) echo "迁移包保留数" ;;
+    LOG_ARCHIVE_WINDOW_HOURS) echo "日志归档窗口" ;;
+    LOG_ARCHIVE_RETENTION_COUNT) echo "日志归档保留数" ;;
+    LOG_ARCHIVE_DIR) echo "日志归档目录" ;;
+    BOT_MENU_TTL) echo "菜单TTL" ;;
+    BOT_NODE_MONITOR_INTERVAL) echo "节点监控间隔" ;;
+    BOT_NODE_OFFLINE_THRESHOLD) echo "离线阈值" ;;
+    BOT_NODE_TIME_SYNC_INTERVAL) echo "对时间隔" ;;
+    BOT_MUTATION_COOLDOWN) echo "操作冷却秒数" ;;
+    TRUST_X_FORWARDED_FOR) echo "信任XFF" ;;
+    TRUSTED_PROXY_IPS) echo "受信代理IP" ;;
+    SECURITY_EVENTS_EXCLUDE_LOCAL) echo "事件过滤本机" ;;
+    SECURITY_AUTO_BLOCK_ENABLED) echo "自动封禁开关" ;;
+    SECURITY_AUTO_BLOCK_INTERVAL_SECONDS) echo "自动封禁周期" ;;
+    SECURITY_AUTO_BLOCK_WINDOW_SECONDS) echo "统计窗口秒数" ;;
+    SECURITY_AUTO_BLOCK_THRESHOLD) echo "封禁阈值" ;;
+    SECURITY_AUTO_BLOCK_DURATION_SECONDS) echo "封禁时长秒数" ;;
+    SECURITY_AUTO_BLOCK_MAX_PER_INTERVAL) echo "每轮封禁上限" ;;
+    CONTROLLER_HTTP_TIMEOUT) echo "HTTP超时秒数" ;;
+    BOT_ACTOR_LABEL) echo "审计操作者标签" ;;
+    NODE_TASK_RUNNING_TIMEOUT) echo "任务运行超时" ;;
+    NODE_TASK_RETENTION_SECONDS) echo "任务保留秒数" ;;
+    NODE_TASK_MAX_PENDING_PER_NODE) echo "单节点待执行上限" ;;
+    SUB_LINK_SIGN_KEY) echo "订阅签名密钥" ;;
+    SUB_LINK_REQUIRE_SIGNATURE) echo "强制签名" ;;
+    SUB_LINK_DEFAULT_TTL_SECONDS) echo "签名默认TTL" ;;
+    API_RATE_LIMIT_ENABLED) echo "限流开关" ;;
+    API_RATE_LIMIT_WINDOW_SECONDS) echo "限流窗口秒数" ;;
+    API_RATE_LIMIT_MAX_REQUESTS) echo "窗口最大请求" ;;
+    ADMIN_OVERVIEW_CACHE_TTL_SECONDS) echo "概览缓存秒数" ;;
+    ADMIN_SECURITY_STATUS_CACHE_TTL_SECONDS) echo "安全状态缓存秒数" ;;
+    ADMIN_SECURITY_EVENTS_CACHE_TTL_SECONDS) echo "安全事件缓存秒数" ;;
+    *) echo "参数" ;;
+  esac
+}
+
 edit_single_config_param() {
   local env_file="${PROJECT_DIR}/.env"
   if [[ ! -f "$env_file" ]]; then
@@ -1215,7 +1301,7 @@ edit_single_config_param() {
       else
         display_value="$current_value"
       fi
-      printf "%2d) %s = %s\n" "$((idx + 1))" "$key" "$display_value"
+      printf "%2d) %s｜%s = %s\n" "$((idx + 1))" "$(admin_param_brief "$key")" "$key" "$display_value"
     done
     echo " q) 返回"
     read -r -p "请选择要修改的参数编号: " choice
@@ -1428,11 +1514,9 @@ do_install() {
 }
 
 do_update_reuse_config() {
-  if [[ -d "${PROJECT_DIR}/.git" ]]; then
-    msg "检测到 Git 仓库，执行 git pull..."
-    git -C "$PROJECT_DIR" pull --ff-only || warn "git pull 失败，请手动处理。"
-  else
-    warn "未检测到 .git，跳过 git pull。"
+  if ! update_repo_from_origin_main "$PROJECT_DIR"; then
+    err "更新已中止：代码拉取失败。"
+    return 1
   fi
 
   if [[ -f "$INSTALL_SCRIPT" ]]; then
@@ -1949,7 +2033,9 @@ main() {
         ;;
       25)
         if confirm_action "确认执行更新？（自动复用现有 .env 参数）" "Y"; then
-          do_update_reuse_config
+          if ! do_update_reuse_config; then
+            warn "更新失败，请先处理上述报错后重试。"
+          fi
         else
           warn "已取消更新。"
         fi
