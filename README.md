@@ -153,7 +153,7 @@ sudo bash /path/to/sb-bot-panel/scripts/menu.sh
 【系统级操作（谨慎）】
 19. 节点运维快照（导出关键状态）
 20. AI诊断包导出（可粘贴给任意AI）
-21. 更新同步（保留原配置，自动 `git pull`，无交互）
+21. 更新同步（保留原配置，自动 `git pull --ff-only origin main`，无交互）
 22. 深度卸载
 23. 安装/更新 sing-box（交互）
 24. 退出
@@ -165,7 +165,8 @@ sudo bash /path/to/sb-bot-panel/scripts/menu.sh
 - 在高级视图输入 `B` 可切回简化视图。
 
 - 首次安装后，后续更新建议直接用菜单 `21`，不会重复询问端口/域名等参数。
-- 需要改参数时用菜单 `1`。
+- 菜单 `21` 若拉取失败会直接中止并提示，不会继续执行后续更新步骤。
+- 需要改参数时用菜单 `1`（支持“参数单项修改”，列表按 `中文说明｜参数名` 显示）。
 - 若后续仅缺失或需要升级 sing-box，可直接执行菜单 `23`（交互安装/更新）。
 - 安全建议：先用菜单 `14` 生成并部署公钥，再用菜单 `15` 做只读安全检查；可先执行菜单 `16` 做半自动修复，最后再执行菜单 `17` 启用仅密钥登录。
 - 排障建议先执行菜单 `19` 导出节点运维快照，再贴快照内容定位问题。
@@ -308,7 +309,8 @@ git clone <你的仓库地址> sb-bot-panel && cd sb-bot-panel && sudo bash scri
 - 菜单 `22) 组件自检与自动修复`：会检查 controller/bot/caddy，缺失时自动修复。
 - 菜单 `23) 部署参数自检与修复向导`：按“必需未配置/可选未配置/配置错误”分类并循环修复。
 - 菜单 `24) 安装/重装` 会进入交互配置，适合首装或重装。
-- 菜单 `25) 更新` 会自动 `git pull` 并执行 `--reuse-config`，默认复用现有 `.env` 配置，不会重复询问端口/域名/token/chat_id。
+- 菜单 `25) 更新` 会强制执行 `git pull --ff-only origin main` 并执行 `--reuse-config`，默认复用现有 `.env` 配置，不会重复询问端口/域名/token/chat_id。
+- 若 `git pull` 失败（如本地有冲突改动），更新会直接中止并提示处理，不会继续走后续重装步骤。
 - 需要改参数时使用菜单 `1) 配置（快速默认 / 高级变量向导）`。
 
 ### 仅重新配置（改 token/chat id）
@@ -329,6 +331,8 @@ sudo bash scripts/admin/install_admin.sh --configure-quick
 - `2) 高级变量设置向导（逐项说明，全部可调）`
 - `3) 查看当前关键配置（只读，含建议）`
 - `4) 参数单项修改（点选一项直接改；改一项无需重跑全向导）`
+
+单项修改列表会显示为 `中文说明｜参数名 = 当前值`，便于直接按中文定位参数再修改。
 
 说明：执行安装/配置向导时，会自动写入完整 `.env` 字段（包括 `BOT_MENU_TTL`、`BOT_NODE_MONITOR_INTERVAL`、`BOT_NODE_OFFLINE_THRESHOLD`、`BOT_NODE_TIME_SYNC_INTERVAL`、`BOT_LOG_VIEW_COOLDOWN`、`BOT_LOG_VIEW_MAX_PAGES`），无需手工补字段。
 并且 URL 字段支持省略协议（`http://` / `https://`），脚本会自动补全。
