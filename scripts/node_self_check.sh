@@ -128,6 +128,14 @@ run_checks() {
   if ! systemctl is-active sing-box >/dev/null 2>&1; then
     add_issue "singbox_inactive" "config_error" "sing-box 未运行" "修复权限后重启 sing-box"
   fi
+  if ! systemctl is-enabled sb-agent >/dev/null 2>&1; then
+    add_issue "sb_agent_not_enabled" "config_error" "sb-agent 未设置开机自启" "启用 sb-agent 开机自启"
+  fi
+  if systemctl list-unit-files 2>/dev/null | grep -q '^sing-box\.service'; then
+    if ! systemctl is-enabled sing-box >/dev/null 2>&1; then
+      add_issue "singbox_not_enabled" "config_error" "sing-box 未设置开机自启" "启用 sing-box 开机自启"
+    fi
+  fi
 
   if [[ -n "$controller_url" ]]; then
     local health_code
@@ -222,9 +230,15 @@ apply_fix() {
     sb_agent_inactive)
       systemctl enable --now sb-agent >/dev/null 2>&1 || true
       ;;
+    sb_agent_not_enabled)
+      systemctl enable sb-agent >/dev/null 2>&1 || true
+      ;;
     singbox_inactive)
       repair_singbox_log_permissions
       systemctl enable --now sing-box >/dev/null 2>&1 || true
+      ;;
+    singbox_not_enabled)
+      systemctl enable sing-box >/dev/null 2>&1 || true
       ;;
     controller_unreachable|sync_failed|sync_forbidden)
       warn "该问题无法安全自动修复，请根据提示手动修复后重试。"

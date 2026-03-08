@@ -1171,10 +1171,11 @@ reload_and_enable_services() {
   systemctl daemon-reload
 
   if command -v sing-box >/dev/null 2>&1; then
+    systemctl enable sing-box >/dev/null 2>&1 || true
     if sing-box check -c "$SINGBOX_CONFIG" >/dev/null 2>&1; then
-      systemctl enable --now sing-box >/dev/null || true
+      systemctl restart sing-box >/dev/null 2>&1 || systemctl start sing-box >/dev/null 2>&1 || true
     else
-      warn "当前 sing-box 配置检查未通过，先等待 sb-agent 下发新配置。"
+      warn "当前 sing-box 配置检查未通过，已先设置开机自启，等待 sb-agent 下发新配置后再启动。"
     fi
   fi
 
@@ -1197,10 +1198,11 @@ reload_and_enable_services_noninteractive() {
   systemctl daemon-reload
 
   if command -v sing-box >/dev/null 2>&1; then
+    systemctl enable sing-box >/dev/null 2>&1 || true
     if sing-box check -c "$SINGBOX_CONFIG" >/dev/null 2>&1; then
-      systemctl enable --now sing-box >/dev/null || true
+      systemctl restart sing-box >/dev/null 2>&1 || systemctl start sing-box >/dev/null 2>&1 || true
     else
-      warn "当前 sing-box 配置检查未通过，先等待 sb-agent 下发新配置。"
+      warn "当前 sing-box 配置检查未通过，已先设置开机自启，等待 sb-agent 下发新配置后再启动。"
     fi
   fi
 

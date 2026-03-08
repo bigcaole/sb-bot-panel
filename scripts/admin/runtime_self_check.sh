@@ -210,6 +210,12 @@ run_checks() {
   if is_bot_token_configured "${BOT_TOKEN:-}" && ! systemctl is-active sb-bot >/dev/null 2>&1; then
     add_issue "bot_inactive" "config_error" "sb-bot 未运行（且 BOT_TOKEN 已配置）" "尝试重启 sb-bot"
   fi
+  if ! systemctl is-enabled sb-controller >/dev/null 2>&1; then
+    add_issue "controller_not_enabled" "config_error" "sb-controller 未设置开机自启" "启用 sb-controller 开机自启"
+  fi
+  if is_bot_token_configured "${BOT_TOKEN:-}" && ! systemctl is-enabled sb-bot >/dev/null 2>&1; then
+    add_issue "bot_not_enabled" "config_error" "sb-bot 未设置开机自启（且 BOT_TOKEN 已配置）" "启用 sb-bot 开机自启"
+  fi
 
   local health_code
   health_code="$(curl -sS -o /dev/null -w "%{http_code}" --max-time 3 "${API_BASE}/health" || true)"
@@ -235,6 +241,8 @@ run_checks() {
   if [[ "${ENABLE_HTTPS:-0}" == "1" ]]; then
     if ! command -v caddy >/dev/null 2>&1; then
       add_issue "caddy_missing" "config_error" "ENABLE_HTTPS=1 但未安装 caddy" "安装 caddy 并启动服务"
+    elif ! systemctl is-enabled caddy >/dev/null 2>&1; then
+      add_issue "caddy_not_enabled" "config_error" "ENABLE_HTTPS=1 但 caddy 未设置开机自启" "启用 caddy 开机自启"
     elif ! systemctl is-active caddy >/dev/null 2>&1; then
       add_issue "caddy_inactive" "config_error" "ENABLE_HTTPS=1 但 caddy 未运行" "重启 caddy 并检查 443 占用"
     fi
@@ -292,14 +300,23 @@ apply_fix() {
     controller_inactive|health_fail|admin_api_auth_fail)
       systemctl restart sb-controller || true
       ;;
+    controller_not_enabled)
+      systemctl enable sb-controller >/dev/null 2>&1 || true
+      ;;
     bot_inactive)
       systemctl restart sb-bot || true
+      ;;
+    bot_not_enabled)
+      systemctl enable sb-bot >/dev/null 2>&1 || true
       ;;
     caddy_missing)
       export DEBIAN_FRONTEND=noninteractive
       apt-get update -y >/dev/null 2>&1 || true
       apt-get install -y caddy >/dev/null 2>&1 || true
       systemctl enable --now caddy >/dev/null 2>&1 || true
+      ;;
+    caddy_not_enabled)
+      systemctl enable caddy >/dev/null 2>&1 || true
       ;;
     caddy_inactive)
       systemctl restart caddy || true
