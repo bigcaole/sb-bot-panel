@@ -1575,6 +1575,28 @@ show_summary() {
   echo "----------------------------------------"
 }
 
+run_post_config_self_check() {
+  if [[ "$MODE" == "sync-only" ]]; then
+    return
+  fi
+  if [[ ! -t 0 ]]; then
+    return
+  fi
+  local answer
+  read -r -p "配置完成后是否立即执行自检修复（推荐）？[Y/n]: " answer
+  answer="${answer:-Y}"
+  if [[ "$answer" =~ ^[Yy]$ ]]; then
+    if [[ -x "${ROOT_DIR}/scripts/node_self_check.sh" ]]; then
+      bash "${ROOT_DIR}/scripts/node_self_check.sh" || true
+      load_existing_config_or_fail || true
+    else
+      warn "未找到自检脚本：${ROOT_DIR}/scripts/node_self_check.sh"
+    fi
+  else
+    warn "你选择跳过自检，可稍后在菜单 24 运行。"
+  fi
+}
+
 main() {
   require_root
   detect_os
@@ -1660,6 +1682,7 @@ main() {
     reload_and_enable_services_noninteractive
   else
     reload_and_enable_services
+    run_post_config_self_check
   fi
 
   show_summary
