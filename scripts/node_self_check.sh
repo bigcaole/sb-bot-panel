@@ -262,6 +262,9 @@ update_config_value() {
 repair_singbox_log_permissions() {
   local run_user run_group
   run_user="$(systemctl show -p User --value sing-box.service 2>/dev/null | xargs || true)"
+  if [[ -z "$run_user" ]]; then
+    run_user="$(systemctl cat sing-box.service 2>/dev/null | awk -F= '/^User=/{print $2; exit}' | xargs || true)"
+  fi
   [[ -z "$run_user" ]] && run_user="sing-box"
   id -u "$run_user" >/dev/null 2>&1 || run_user="root"
   run_group="$(id -gn "$run_user" 2>/dev/null || echo "$run_user")"
@@ -421,7 +424,12 @@ apply_fix() {
       ;;
     singbox_inactive)
       repair_singbox_log_permissions
+      systemctl reset-failed sing-box >/dev/null 2>&1 || true
       systemctl enable --now sing-box >/dev/null 2>&1 || true
+      systemctl restart sing-box >/dev/null 2>&1 || true
+      if ! systemctl is-active sing-box >/dev/null 2>&1; then
+        warn "sing-box 仍未运行，请检查日志：journalctl -u sing-box -n 120 --no-pager"
+      fi
       ;;
     singbox_not_enabled)
       systemctl enable sing-box >/dev/null 2>&1 || true
