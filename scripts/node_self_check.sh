@@ -484,13 +484,15 @@ run_checks() {
 
   if [[ -n "$controller_url" && -n "$node_code" && -n "$auth_token" ]]; then
     local sync_code
+    local sync_ok="false"
     sync_code="$(curl -ks -o /dev/null -w "%{http_code}" --max-time 8 \
       -H "Authorization: Bearer ${auth_token}" \
       "${controller_url}/nodes/${node_code}/sync" || true)"
     case "$sync_code" in
-      200) ;;
+      200) sync_ok="true" ;;
       401) add_issue "sync_unauthorized" "config_error" "节点拉取 sync 401（token 无效）" "更新 auth_token 为管理端 NODE_AUTH_TOKEN" ;;
       403) add_issue "sync_forbidden" "config_error" "节点拉取 sync 403（来源受限）" "检查节点 agent_ip/白名单策略" ;;
+      404) add_issue "sync_not_found" "config_error" "节点拉取 sync 404（接口未找到）" "检查 controller_url 是否指向管理服务器控制器地址/反代规则" ;;
       *) add_issue "sync_failed" "config_error" "节点拉取 sync 失败（HTTP=${sync_code}）" "检查 controller 状态、地址与鉴权" ;;
     esac
   fi
@@ -509,22 +511,26 @@ run_checks() {
       add_issue "tuic_dns_mismatch" "config_error" "tuic_domain A记录(${dns_ip})与本机公网IP(${public_ip})不一致" "修正 DNS 后重试"
     fi
 
-    if [[ -f "$SINGBOX_CONFIG" ]]; then
-      local tuic_inbound_count acme_match_count
-      tuic_inbound_count="$(jq '[.inbounds[]? | select(.type=="tuic")] | length' "$SINGBOX_CONFIG" 2>/dev/null || echo 0)"
-      acme_match_count="$(jq --arg d "$tuic_domain" '[.inbounds[]? | select(.type=="tuic" and (.tls.acme.domain[]?==$d))] | length' "$SINGBOX_CONFIG" 2>/dev/null || echo 0)"
-      if ! [[ "$tuic_inbound_count" =~ ^[0-9]+$ ]] || (( tuic_inbound_count < 1 )); then
-        add_issue "tuic_inbound_missing" "config_error" "运行配置无 TUIC 入站" "请在管理端执行节点同步后重启 sb-agent"
+    if [[ "${sync_code:-}" == "200" ]]; then
+      if [[ -f "$SINGBOX_CONFIG" ]]; then
+        local tuic_inbound_count acme_match_count
+        tuic_inbound_count="$(jq '[.inbounds[]? | select(.type=="tuic")] | length' "$SINGBOX_CONFIG" 2>/dev/null || echo 0)"
+        acme_match_count="$(jq --arg d "$tuic_domain" '[.inbounds[]? | select(.type=="tuic" and (.tls.acme.domain[]?==$d))] | length' "$SINGBOX_CONFIG" 2>/dev/null || echo 0)"
+        if ! [[ "$tuic_inbound_count" =~ ^[0-9]+$ ]] || (( tuic_inbound_count < 1 )); then
+          add_issue "tuic_inbound_missing" "config_error" "运行配置无 TUIC 入站" "请在管理端执行节点同步后重启 sb-agent"
+        fi
+        if ! [[ "$acme_match_count" =~ ^[0-9]+$ ]] || (( acme_match_count < 1 )); then
+          add_issue "tuic_acme_missing" "config_error" "运行配置未包含当前域名 ACME" "检查 tuic_domain/acme_email 并重载"
+        fi
       fi
-      if ! [[ "$acme_match_count" =~ ^[0-9]+$ ]] || (( acme_match_count < 1 )); then
-        add_issue "tuic_acme_missing" "config_error" "运行配置未包含当前域名 ACME" "检查 tuic_domain/acme_email 并重载"
-      fi
-    fi
 
-    local cert_file
-    cert_file="$(find /var/lib/sing-box/certmagic -type f -name "${tuic_domain}.crt" 2>/dev/null | head -n1 || true)"
-    if [[ -z "$cert_file" ]]; then
-      add_issue "certificate_missing" "config_error" "未检测到 TUIC 证书文件" "确认 TUIC 入站+ACME 后等待或触发重载"
+      local cert_file
+      cert_file="$(find /var/lib/sing-box/certmagic -type f -name "${tuic_domain}.crt" 2>/dev/null | head -n1 || true)"
+      if [[ -z "$cert_file" ]]; then
+        add_issue "certificate_missing" "config_error" "未检测到 TUIC 证书文件" "确认 TUIC 入站+ACME 后等待或触发重载"
+      fi
+    else
+      add_issue "tuic_checks_skipped" "config_error" "同步未成功，TUIC 入站/证书无法判定" "先修复 sync，再重检 TUIC 相关项"
     fi
   fi
 
@@ -614,8 +620,15 @@ apply_fix() {
     singbox_not_enabled)
       systemctl enable sing-box >/dev/null 2>&1 || true
       ;;
-    controller_unreachable|sync_failed|sync_forbidden)
-      warn "该问题无法安全自动修复，请根据提示手动修复后重试。"
+    controller_unreachable|sync_failed|sync_forbidden|sync_not_found)
+      local new_url
+      read -r -p "请输入管理端 controller_url（例如 https://panel.example.com 或 https://panel.example.com:8080）: " new_url
+      if [[ -n "$new_url" ]]; then
+        update_config_value --arg u "$new_url" '.controller_url=$u'
+        systemctl restart sb-agent >/dev/null 2>&1 || true
+      else
+        warn "未输入 controller_url，跳过。"
+      fi
       ;;
     acme_email_missing)
       local new_email
@@ -637,7 +650,7 @@ apply_fix() {
       systemctl restart sing-box >/dev/null 2>&1 || true
       sleep 5
       ;;
-    tuic_domain_empty|fail2ban_inactive|cert_timer_disabled)
+    tuic_checks_skipped|tuic_domain_empty|fail2ban_inactive|cert_timer_disabled)
       warn "该项为可选缺失，可跳过。"
       ;;
     *)
