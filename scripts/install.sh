@@ -895,16 +895,33 @@ resolve_singbox_run_user() {
 
 ensure_singbox_log_permissions() {
   local run_user run_group
+  local dynamic_user="false"
+  if command -v systemctl >/dev/null 2>&1; then
+    dynamic_user="$(systemctl show -p DynamicUser --value sing-box.service 2>/dev/null | xargs || true)"
+  fi
+  if [[ "${dynamic_user,,}" == "yes" ]]; then
+    dynamic_user="true"
+  else
+    dynamic_user="false"
+  fi
   run_user="$(resolve_singbox_run_user)"
   run_group="$(id -gn "$run_user" 2>/dev/null || echo "$run_user")"
 
   mkdir -p "$SINGBOX_LOG_DIR"
   touch "${SINGBOX_LOG_DIR}/sing-box.log"
 
+  if [[ "$dynamic_user" == "true" ]]; then
+    chmod 0777 "$SINGBOX_LOG_DIR" || true
+    chmod 0666 "${SINGBOX_LOG_DIR}/sing-box.log" || true
+    return
+  fi
   if chown "${run_user}:${run_group}" "$SINGBOX_LOG_DIR" "${SINGBOX_LOG_DIR}/sing-box.log" >/dev/null 2>&1; then
     :
   else
-    warn "无法设置 sing-box 日志目录属主为 ${run_user}:${run_group}，将继续尝试启动。"
+    warn "无法设置 sing-box 日志目录属主为 ${run_user}:${run_group}，将放宽权限继续启动。"
+    chmod 0777 "$SINGBOX_LOG_DIR" || true
+    chmod 0666 "${SINGBOX_LOG_DIR}/sing-box.log" || true
+    return
   fi
   chmod 0755 "$SINGBOX_LOG_DIR" || true
   chmod 0644 "${SINGBOX_LOG_DIR}/sing-box.log" || true

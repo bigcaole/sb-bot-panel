@@ -261,13 +261,31 @@ update_config_value() {
 
 repair_singbox_log_permissions() {
   local run_user run_group
+  local dynamic_user="false"
+  if command -v systemctl >/dev/null 2>&1; then
+    dynamic_user="$(systemctl show -p DynamicUser --value sing-box.service 2>/dev/null | xargs || true)"
+  fi
+  if [[ "${dynamic_user,,}" == "yes" ]]; then
+    dynamic_user="true"
+  else
+    dynamic_user="false"
+  fi
   run_user="$(get_singbox_run_user)"
   run_group="$(get_singbox_run_group "$run_user")"
   mkdir -p "$SINGBOX_LOG_DIR"
   touch "${SINGBOX_LOG_DIR}/sing-box.log"
-  chown "$run_user:$run_group" "$SINGBOX_LOG_DIR" "${SINGBOX_LOG_DIR}/sing-box.log" >/dev/null 2>&1 || true
-  chmod 755 "$SINGBOX_LOG_DIR" || true
-  chmod 644 "${SINGBOX_LOG_DIR}/sing-box.log" || true
+  if [[ "$dynamic_user" == "true" ]]; then
+    chmod 0777 "$SINGBOX_LOG_DIR" || true
+    chmod 0666 "${SINGBOX_LOG_DIR}/sing-box.log" || true
+    return 0
+  fi
+  if chown "$run_user:$run_group" "$SINGBOX_LOG_DIR" "${SINGBOX_LOG_DIR}/sing-box.log" >/dev/null 2>&1; then
+    chmod 755 "$SINGBOX_LOG_DIR" || true
+    chmod 644 "${SINGBOX_LOG_DIR}/sing-box.log" || true
+    return 0
+  fi
+  chmod 0777 "$SINGBOX_LOG_DIR" || true
+  chmod 0666 "${SINGBOX_LOG_DIR}/sing-box.log" || true
 }
 
 get_singbox_run_user() {
@@ -288,6 +306,15 @@ get_singbox_run_group() {
 
 detect_singbox_log_permission_issue() {
   local log_file="${SINGBOX_LOG_DIR}/sing-box.log"
+  local dynamic_user="false"
+  if command -v systemctl >/dev/null 2>&1; then
+    dynamic_user="$(systemctl show -p DynamicUser --value sing-box.service 2>/dev/null | xargs || true)"
+  fi
+  if [[ "${dynamic_user,,}" == "yes" ]]; then
+    dynamic_user="true"
+  else
+    dynamic_user="false"
+  fi
   if command -v journalctl >/dev/null 2>&1; then
     if journalctl -u sing-box -n 50 --no-pager 2>/dev/null | grep -qi "permission denied" \
       && journalctl -u sing-box -n 50 --no-pager 2>/dev/null | grep -qi "sing-box.log"; then
@@ -303,6 +330,11 @@ detect_singbox_log_permission_issue() {
       if [[ "$run_user" != "root" && "$owner" != "$run_user" ]]; then
         return 0
       fi
+    fi
+  fi
+  if [[ "$dynamic_user" == "true" && -f "$log_file" ]]; then
+    if [[ ! -w "$log_file" ]]; then
+      return 0
     fi
   fi
   return 1

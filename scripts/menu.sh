@@ -1311,6 +1311,12 @@ show_singbox_status_logs() {
   echo "开机自启: ${enabled}"
   if [[ "$state" != "active" ]]; then
     echo "提示：可执行菜单 24（自检修复）自动修复常见问题。"
+    if command -v journalctl >/dev/null 2>&1; then
+      if journalctl -u "$SINGBOX_SERVICE" -n 40 --no-pager 2>/dev/null | grep -qi "permission denied" \
+        && journalctl -u "$SINGBOX_SERVICE" -n 40 --no-pager 2>/dev/null | grep -qi "sing-box.log"; then
+        echo "提示：检测到日志权限问题（sing-box.log），菜单 24 可自动修复。"
+      fi
+    fi
   fi
   echo "提示：查看详细日志请执行："
   echo "  journalctl -u ${SINGBOX_SERVICE} -n 120 --no-pager"
