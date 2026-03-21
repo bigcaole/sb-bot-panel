@@ -1395,6 +1395,9 @@ LimitNOFILE=1048576
 AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_NET_ADMIN CAP_NET_RAW
 CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_NET_ADMIN CAP_NET_RAW
 NoNewPrivileges=true
+ReadWritePaths=/var/lib/sing-box /var/log/sing-box
+StateDirectory=sing-box
+LogsDirectory=sing-box
 
 [Install]
 WantedBy=multi-user.target

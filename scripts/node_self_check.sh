@@ -356,6 +356,21 @@ detect_singbox_log_permission_issue() {
   return 1
 }
 
+ensure_singbox_systemd_rw_override() {
+  if [[ "$INIT_SYSTEM" != "systemd" ]]; then
+    return
+  fi
+  local dir="/etc/systemd/system/sing-box.service.d"
+  mkdir -p "$dir"
+  cat >"${dir}/sb-bot-panel.conf" <<'EOF'
+[Service]
+ReadWritePaths=/var/lib/sing-box /var/log/sing-box
+StateDirectory=sing-box
+LogsDirectory=sing-box
+EOF
+  systemctl daemon-reload >/dev/null 2>&1 || true
+}
+
 detect_singbox_config_error() {
   if ! command -v sing-box >/dev/null 2>&1; then
     return 1
@@ -557,10 +572,12 @@ apply_fix() {
       ;;
     singbox_inactive)
       repair_singbox_log_permissions
+      ensure_singbox_systemd_rw_override
       systemctl restart sb-agent >/dev/null 2>&1 || true
       sleep 2
       refresh_singbox_log_path_from_config
       repair_singbox_log_permissions
+      ensure_singbox_systemd_rw_override
       systemctl reset-failed sing-box >/dev/null 2>&1 || true
       systemctl enable --now sing-box >/dev/null 2>&1 || true
       systemctl restart sing-box >/dev/null 2>&1 || true
@@ -570,10 +587,12 @@ apply_fix() {
       ;;
     singbox_log_permission_denied)
       repair_singbox_log_permissions
+      ensure_singbox_systemd_rw_override
       systemctl restart sb-agent >/dev/null 2>&1 || true
       sleep 2
       refresh_singbox_log_path_from_config
       repair_singbox_log_permissions
+      ensure_singbox_systemd_rw_override
       systemctl reset-failed sing-box >/dev/null 2>&1 || true
       systemctl restart sing-box >/dev/null 2>&1 || true
       if ! systemctl is-active sing-box >/dev/null 2>&1; then

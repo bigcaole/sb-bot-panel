@@ -11,6 +11,7 @@
 sing-box 未运行时，菜单会提示使用自检进行自动修复。
 自检还会提示配置校验失败与端口冲突，并给出具体占用进程信息。
 sing-box 日志默认输出到 `/var/lib/sing-box/sing-box.log`（避免系统包的 DynamicUser 权限问题）。
+自检还会自动写入 systemd override（ReadWritePaths/StateDirectory），进一步避免日志权限问题。
 
 ## 目录新增
 
