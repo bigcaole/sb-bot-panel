@@ -468,6 +468,30 @@ get_last_singbox_error() {
   shorten_text "$line"
 }
 
+get_acme_retry_after() {
+  local line=""
+  if command -v journalctl >/dev/null 2>&1; then
+    line="$(journalctl -u sing-box -n 120 --no-pager 2>/dev/null | grep -Ei 'rateLimited|too many failed authorizations' | tail -n1 || true)"
+  fi
+  if [[ -z "$line" ]]; then
+    echo ""
+    return
+  fi
+  echo "$line" | sed -n 's/.*retry after \([0-9-: TUTCZ+]*\).*/\1/p' | xargs || true
+}
+
+detect_acme_rate_limited() {
+  if command -v journalctl >/dev/null 2>&1; then
+    if journalctl -u sing-box -n 120 --no-pager 2>/dev/null | grep -qi "rateLimited"; then
+      return 0
+    fi
+    if journalctl -u sing-box -n 120 --no-pager 2>/dev/null | grep -qi "too many failed authorizations"; then
+      return 0
+    fi
+  fi
+  return 1
+}
+
 singbox_stable_active() {
   local i
   for i in {1..5}; do
@@ -603,7 +627,15 @@ run_checks() {
     add_issue "sb_agent_inactive" "config_error" "sb-agent 未运行" "重启 sb-agent"
   fi
   if ! systemctl is-active sing-box >/dev/null 2>&1; then
-    if detect_singbox_log_permission_issue; then
+    if detect_acme_rate_limited; then
+      local retry_after
+      retry_after="$(get_acme_retry_after)"
+      if [[ -n "$retry_after" ]]; then
+        add_issue "singbox_acme_rate_limited" "config_error" "ACME 触发限流（HTTP 429），最早重试时间：${retry_after}（UTC）" "建议等待到期后重试，或更换 TUIC 域名"
+      else
+        add_issue "singbox_acme_rate_limited" "config_error" "ACME 触发限流（HTTP 429）" "建议等待到期后重试，或更换 TUIC 域名"
+      fi
+    elif detect_singbox_log_permission_issue; then
       add_issue "singbox_log_permission_denied" "config_error" "sing-box 未运行（疑似日志权限问题）" "自动修复日志权限并重启 sing-box"
     elif detect_certmagic_permission_issue; then
       add_issue "singbox_certmagic_permission_denied" "config_error" "sing-box 未运行（证书目录权限问题）" "自动修复 certmagic 目录权限并重启 sing-box"
@@ -793,6 +825,11 @@ apply_fix() {
       if ! sing-box check -c "$SINGBOX_CONFIG" >/dev/null 2>&1; then
         status_fatal "配置仍不通过，请检查节点同步与下发配置。"
       fi
+      ;;
+    singbox_acme_rate_limited)
+      systemctl stop sing-box >/dev/null 2>&1 || true
+      systemctl reset-failed sing-box >/dev/null 2>&1 || true
+      status_manual "已暂停 sing-box 以避免持续触发限流；等待限流窗口结束后再启动。"
       ;;
     singbox_port_conflict)
       status_fatal "端口冲突无法自动修复，请手动处理占用进程后重试。"
