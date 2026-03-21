@@ -647,6 +647,9 @@ EOF
 }
 
 install_and_enable_fail2ban() {
+  local backend_preferred=""
+  local backend_fallback=""
+  local used_backend=""
   if command -v fail2ban-client >/dev/null 2>&1; then
     msg "检测到 fail2ban 已安装，执行配置同步并确保服务启用..."
   else
@@ -664,7 +667,17 @@ install_and_enable_fail2ban() {
 
   mkdir -p /etc/fail2ban/jail.d
   if command -v systemctl >/dev/null 2>&1 && command -v journalctl >/dev/null 2>&1; then
-    cat >"$FAIL2BAN_JAIL_FILE" <<'EOF'
+    backend_preferred="systemd"
+    backend_fallback="auto"
+  else
+    backend_preferred="auto"
+    backend_fallback="systemd"
+  fi
+
+  write_fail2ban_jail() {
+    local backend="$1"
+    if [[ "$backend" == "systemd" ]]; then
+      cat >"$FAIL2BAN_JAIL_FILE" <<'EOF'
 [sshd]
 enabled = true
 mode = normal
@@ -675,8 +688,8 @@ maxretry = 5
 findtime = 10m
 bantime = 1h
 EOF
-  else
-    cat >"$FAIL2BAN_JAIL_FILE" <<'EOF'
+    else
+      cat >"$FAIL2BAN_JAIL_FILE" <<'EOF'
 [sshd]
 enabled = true
 mode = normal
@@ -688,10 +701,24 @@ maxretry = 5
 findtime = 10m
 bantime = 1h
 EOF
-  fi
+    fi
+  }
+
+  used_backend="$backend_preferred"
+  write_fail2ban_jail "$used_backend"
 
   systemctl enable --now fail2ban >/dev/null
-  msg "fail2ban 已启用（jail=sshd, maxretry=5, bantime=1h）。"
+  if ! systemctl is-active fail2ban >/dev/null 2>&1; then
+    warn "fail2ban 启动失败，尝试切换 backend=${backend_fallback} 自动修复..."
+    used_backend="$backend_fallback"
+    write_fail2ban_jail "$used_backend"
+    systemctl restart fail2ban >/dev/null 2>&1 || true
+  fi
+  if ! systemctl is-active fail2ban >/dev/null 2>&1; then
+    warn "fail2ban 仍未运行，请查看日志：journalctl -u fail2ban -n 120 --no-pager"
+    return 1
+  fi
+  msg "fail2ban 已启用（backend=${used_backend}, jail=sshd, maxretry=5, bantime=1h）。"
 }
 
 configure_security_interactive() {

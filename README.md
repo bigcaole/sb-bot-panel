@@ -164,6 +164,7 @@ sudo bash /path/to/sb-bot-panel/scripts/menu.sh
 12. 查看 fail2ban 状态与封禁列表
 13. 解封 fail2ban 封禁 IP
    - systemd 系统会自动使用 `backend=systemd`（避免缺少 auth.log 导致启动失败）
+   - 若 fail2ban 启动失败，会自动切换 backend 并重试一次
 14. 生成 SSH 密钥（ed25519）
 15. SSH 安全状态总览（只读）
 16. 一键安全修复（半自动）
