@@ -650,6 +650,7 @@ install_and_enable_fail2ban() {
   local backend_preferred=""
   local backend_fallback=""
   local used_backend=""
+  local logpath=""
   if command -v fail2ban-client >/dev/null 2>&1; then
     msg "检测到 fail2ban 已安装，执行配置同步并确保服务启用..."
   else
@@ -666,9 +667,45 @@ install_and_enable_fail2ban() {
   fi
 
   mkdir -p /etc/fail2ban/jail.d
+  find_fail2ban_logpath() {
+    if [[ -f /var/log/auth.log ]]; then
+      echo "/var/log/auth.log"; return
+    fi
+    if [[ -f /var/log/secure ]]; then
+      echo "/var/log/secure"; return
+    fi
+    if [[ -f /var/log/messages ]]; then
+      echo "/var/log/messages"; return
+    fi
+    mkdir -p /var/log
+    touch /var/log/auth.log
+    echo "/var/log/auth.log"
+  }
+
   if command -v systemctl >/dev/null 2>&1 && command -v journalctl >/dev/null 2>&1; then
-    backend_preferred="systemd"
-    backend_fallback="auto"
+    if command -v python3 >/dev/null 2>&1; then
+      if ! python3 - <<'PY' >/dev/null 2>&1
+import systemd.journal  # noqa: F401
+PY
+      then
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get update -y >/dev/null 2>&1 || true
+        apt-get install -y python3-systemd >/dev/null 2>&1 || true
+      fi
+      if python3 - <<'PY' >/dev/null 2>&1
+import systemd.journal  # noqa: F401
+PY
+      then
+        backend_preferred="systemd"
+        backend_fallback="auto"
+      else
+        backend_preferred="auto"
+        backend_fallback="systemd"
+      fi
+    else
+      backend_preferred="auto"
+      backend_fallback="systemd"
+    fi
   else
     backend_preferred="auto"
     backend_fallback="systemd"
@@ -689,13 +726,14 @@ findtime = 10m
 bantime = 1h
 EOF
     else
-      cat >"$FAIL2BAN_JAIL_FILE" <<'EOF'
+      logpath="$(find_fail2ban_logpath)"
+      cat >"$FAIL2BAN_JAIL_FILE" <<EOF
 [sshd]
 enabled = true
 mode = normal
 port = ssh
 filter = sshd
-logpath = %(sshd_log)s
+logpath = ${logpath}
 backend = auto
 maxretry = 5
 findtime = 10m
