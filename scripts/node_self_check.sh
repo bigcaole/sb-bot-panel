@@ -21,6 +21,84 @@ msg() { echo -e "\033[1;32m[信息]\033[0m $*"; }
 warn() { echo -e "\033[1;33m[警告]\033[0m $*"; }
 err() { echo -e "\033[1;31m[错误]\033[0m $*" >&2; }
 
+install_or_enable_fail2ban_selfcheck() {
+  if command -v fail2ban-client >/dev/null 2>&1; then
+    msg "检测到 fail2ban 已安装，尝试启用..."
+  else
+    msg "安装并启用 fail2ban（SSH 防爆破）..."
+    if [[ "$INIT_SYSTEM" == "openrc" ]]; then
+      apk add --no-cache fail2ban >/dev/null 2>&1 || true
+    else
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get update -y >/dev/null 2>&1 || true
+      apt-get install -y fail2ban >/dev/null 2>&1 || true
+    fi
+  fi
+
+  if ! command -v fail2ban-client >/dev/null 2>&1; then
+    warn "fail2ban 安装失败，请检查网络或源。"
+    return 1
+  fi
+
+  mkdir -p /etc/fail2ban/jail.d
+  if command -v systemctl >/dev/null 2>&1 && command -v journalctl >/dev/null 2>&1; then
+    cat >"/etc/fail2ban/jail.d/sb-agent-sshd.local" <<'EOF'
+[sshd]
+enabled = true
+mode = normal
+port = ssh
+filter = sshd
+backend = systemd
+maxretry = 5
+findtime = 10m
+bantime = 1h
+EOF
+  else
+    cat >"/etc/fail2ban/jail.d/sb-agent-sshd.local" <<'EOF'
+[sshd]
+enabled = true
+mode = normal
+port = ssh
+filter = sshd
+logpath = %(sshd_log)s
+backend = auto
+maxretry = 5
+findtime = 10m
+bantime = 1h
+EOF
+  fi
+
+  if [[ "$INIT_SYSTEM" == "openrc" ]]; then
+    rc-update add fail2ban default >/dev/null 2>&1 || true
+    rc-service fail2ban restart >/dev/null 2>&1 || rc-service fail2ban start >/dev/null 2>&1 || true
+  else
+    systemctl enable --now fail2ban >/dev/null 2>&1 || true
+    if ! systemctl is-active fail2ban >/dev/null 2>&1; then
+      warn "fail2ban 启动失败，尝试切换 backend=auto 自动修复..."
+      cat >"/etc/fail2ban/jail.d/sb-agent-sshd.local" <<'EOF'
+[sshd]
+enabled = true
+mode = normal
+port = ssh
+filter = sshd
+logpath = %(sshd_log)s
+backend = auto
+maxretry = 5
+findtime = 10m
+bantime = 1h
+EOF
+      systemctl restart fail2ban >/dev/null 2>&1 || true
+    fi
+  fi
+
+  if ! systemctl is-active fail2ban >/dev/null 2>&1 && [[ "$INIT_SYSTEM" != "openrc" ]]; then
+    warn "fail2ban 仍未运行，请查看日志：journalctl -u fail2ban -n 120 --no-pager"
+    return 1
+  fi
+  msg "fail2ban 已启用。"
+  return 0
+}
+
 detect_os() {
   if [[ -f /etc/os-release ]]; then
     # shellcheck disable=SC1091
@@ -537,8 +615,10 @@ run_checks() {
   if ! systemctl is-active fail2ban >/dev/null 2>&1; then
     add_issue "fail2ban_inactive" "optional_missing" "fail2ban 未运行" "建议启用以防 SSH 爆破"
   fi
-  if ! systemctl is-enabled sb-cert-check.timer >/dev/null 2>&1; then
-    add_issue "cert_timer_disabled" "optional_missing" "sb-cert-check.timer 未启用" "建议启用每日证书健康检查"
+  if [[ "$INIT_SYSTEM" == "systemd" ]]; then
+    if ! systemctl is-enabled sb-cert-check.timer >/dev/null 2>&1; then
+      add_issue "cert_timer_disabled" "optional_missing" "sb-cert-check.timer 未启用" "建议启用每日证书健康检查"
+    fi
   fi
 }
 
@@ -650,7 +730,17 @@ apply_fix() {
       systemctl restart sing-box >/dev/null 2>&1 || true
       sleep 5
       ;;
-    tuic_checks_skipped|tuic_domain_empty|fail2ban_inactive|cert_timer_disabled)
+    fail2ban_inactive)
+      install_or_enable_fail2ban_selfcheck || true
+      ;;
+    cert_timer_disabled)
+      if [[ "$INIT_SYSTEM" == "systemd" ]]; then
+        systemctl enable --now sb-cert-check.timer >/dev/null 2>&1 || true
+      else
+        warn "当前为 OpenRC，证书定时检查由 crond 管理，请确认 crond 运行。"
+      fi
+      ;;
+    tuic_checks_skipped|tuic_domain_empty)
       warn "该项为可选缺失，可跳过。"
       ;;
     *)
@@ -714,6 +804,8 @@ main_loop() {
       a|A)
         for id in "${ISSUE_ORDER[@]}"; do
           if [[ "${ISSUE_SEVERITY[$id]}" != "optional_missing" ]]; then
+            apply_fix "$id" || true
+          elif [[ "$id" == "fail2ban_inactive" || "$id" == "cert_timer_disabled" ]]; then
             apply_fix "$id" || true
           fi
         done
