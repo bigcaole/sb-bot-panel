@@ -308,6 +308,45 @@ detect_singbox_log_permission_issue() {
   return 1
 }
 
+detect_singbox_config_error() {
+  if ! command -v sing-box >/dev/null 2>&1; then
+    return 1
+  fi
+  if [[ ! -f "$SINGBOX_CONFIG" ]]; then
+    return 1
+  fi
+  if sing-box check -c "$SINGBOX_CONFIG" >/dev/null 2>&1; then
+    return 1
+  fi
+  return 0
+}
+
+get_port_conflict_summary() {
+  local tuic_port="$1"
+  local summary=""
+  if ! command -v ss >/dev/null 2>&1; then
+    return 0
+  fi
+  local line proc
+  line="$(ss -lntp 2>/dev/null | awk '$4 ~ /:443$/ {print $0}' | head -n1)"
+  if [[ -n "$line" && "$line" != *"sing-box"* ]]; then
+    proc="$(echo "$line" | sed -n 's/.*users:(\(.*\))$/\1/p')"
+    summary="tcp/443 -> ${proc:-$line}"
+  fi
+  if [[ -n "$tuic_port" && "$tuic_port" =~ ^[0-9]+$ ]]; then
+    line="$(ss -lnup 2>/dev/null | awk -v p=":${tuic_port}$" '$4 ~ p {print $0}' | head -n1)"
+    if [[ -n "$line" && "$line" != *"sing-box"* ]]; then
+      proc="$(echo "$line" | sed -n 's/.*users:(\(.*\))$/\1/p')"
+      if [[ -n "$summary" ]]; then
+        summary="${summary}; udp/${tuic_port} -> ${proc:-$line}"
+      else
+        summary="udp/${tuic_port} -> ${proc:-$line}"
+      fi
+    fi
+  fi
+  echo "$summary"
+}
+
 run_checks() {
   clear_issues
 
@@ -350,8 +389,16 @@ run_checks() {
   if ! systemctl is-active sing-box >/dev/null 2>&1; then
     if detect_singbox_log_permission_issue; then
       add_issue "singbox_log_permission_denied" "config_error" "sing-box 未运行（疑似日志权限问题）" "自动修复日志权限并重启 sing-box"
+    elif detect_singbox_config_error; then
+      add_issue "singbox_config_invalid" "config_error" "sing-box 配置校验失败" "自动重拉配置并重启 sing-box"
     else
       add_issue "singbox_inactive" "config_error" "sing-box 未运行" "修复权限后重启 sing-box"
+    fi
+
+    local port_conflict
+    port_conflict="$(get_port_conflict_summary "$tuic_port")"
+    if [[ -n "$port_conflict" ]]; then
+      add_issue "singbox_port_conflict" "config_error" "检测到端口冲突" "占用进程：${port_conflict}"
     fi
   fi
   if ! systemctl is-enabled sb-agent >/dev/null 2>&1; then
@@ -403,7 +450,7 @@ run_checks() {
       tuic_inbound_count="$(jq '[.inbounds[]? | select(.type=="tuic")] | length' "$SINGBOX_CONFIG" 2>/dev/null || echo 0)"
       acme_match_count="$(jq --arg d "$tuic_domain" '[.inbounds[]? | select(.type=="tuic" and (.tls.acme.domain[]?==$d))] | length' "$SINGBOX_CONFIG" 2>/dev/null || echo 0)"
       if ! [[ "$tuic_inbound_count" =~ ^[0-9]+$ ]] || (( tuic_inbound_count < 1 )); then
-        add_issue "tuic_inbound_missing" "config_error" "运行配置无 TUIC 入站" "确认 sync 正常后重启 sb-agent"
+        add_issue "tuic_inbound_missing" "config_error" "运行配置无 TUIC 入站" "请在管理端执行节点同步后重启 sb-agent"
       fi
       if ! [[ "$acme_match_count" =~ ^[0-9]+$ ]] || (( acme_match_count < 1 )); then
         add_issue "tuic_acme_missing" "config_error" "运行配置未包含当前域名 ACME" "检查 tuic_domain/acme_email 并重载"
@@ -475,6 +522,18 @@ apply_fix() {
       if ! systemctl is-active sing-box >/dev/null 2>&1; then
         warn "sing-box 仍未运行，请检查日志：journalctl -u sing-box -n 120 --no-pager"
       fi
+      ;;
+    singbox_config_invalid)
+      warn "检测到 sing-box 配置校验失败，尝试重拉配置..."
+      systemctl restart sb-agent >/dev/null 2>&1 || true
+      sleep 2
+      systemctl restart sing-box >/dev/null 2>&1 || true
+      if ! sing-box check -c "$SINGBOX_CONFIG" >/dev/null 2>&1; then
+        warn "配置仍不通过，请检查节点同步与下发配置。"
+      fi
+      ;;
+    singbox_port_conflict)
+      warn "端口冲突无法自动修复，请手动处理占用进程后重试。"
       ;;
     singbox_not_enabled)
       systemctl enable sing-box >/dev/null 2>&1 || true
