@@ -1,6 +1,6 @@
 # sb-bot-panel
 
-本项目现在包含节点侧一键部署方案：`sing-box + sb-agent + UFW + systemd + ACME 证书检查`，并提供中文数字菜单，体验接近 x-ui/s-ui。
+本项目现在包含节点侧一键部署方案：`sing-box + sb-agent + UFW(可选) + systemd/OpenRC + ACME 证书检查`，并提供中文数字菜单，体验接近 x-ui/s-ui。
 
 详细手册（零基础可用）：`docs/零基础部署-测试-使用-排障手册.md`
 推荐先读（最少切换上线流程）：`docs/一条龙落地SOP.md`
@@ -11,7 +11,7 @@
   - 节点侧 agent（Python 3.11+），轮询 controller `/nodes/{node_code}/sync`，生成并热更新 `sing-box` 配置。
   - 当 UFW 已启用时，agent 会自动放行 TUIC 相关 UDP 端口（含监听端口与端口池范围）。
 - `scripts/install.sh`
-  - Debian/Ubuntu 中文交互式安装/更新脚本（含域名解析检查、防火墙、服务部署、证书检查 timer）。
+  - Debian/Ubuntu/Alpine 中文交互式安装/更新脚本（含域名解析检查、防火墙、服务部署、证书检查 timer；Alpine 使用 OpenRC）。
 - `scripts/menu.sh`
   - 中文数字菜单（安装/配置/启停/日志/证书刷新/卸载/SSH 与 fail2ban 安全加固）。
 - `scripts/sb_cert_check.sh`
@@ -89,7 +89,7 @@ curl -fsSL "http://127.0.0.1:${CONTROLLER_PORT:-8080}/health"
 
 ---
 
-## 节点服务器：一键安装（Debian/Ubuntu）
+## 节点服务器：一键安装（Debian/Ubuntu/Alpine）
 
 执行位置：`节点服务器` 终端
 
@@ -118,6 +118,14 @@ git clone <你的仓库地址> sb-bot-panel && cd sb-bot-panel && sudo bash scri
 补充：
 
 - 快速配置模式也支持直接启用/修改 `tuic_domain + acme_email + tuic_listen_port`，不需要再切换到高级模式。
+- Alpine 需确保已安装 `bash`（首次执行脚本前可先 `apk add --no-cache bash curl git jq`）。
+- Alpine 服务查看可用：`rc-service sb-agent status`、`rc-service sing-box status`。
+
+### 节点最低配置建议
+
+- **最低可运行**：`1C / 0.5G 内存 / 5G 硬盘`（轻量使用可行）
+- **更稳妥**：`1C / 1G+ 内存 / 10G+ 硬盘`（并发/多用户更稳定）
+- 说明：极低配机型在高并发或大量连接下可能出现抖动，建议按实际用户规模预留余量。
 - 节点侧 TUIC 证书由 `sing-box` 内置 ACME 处理，不依赖 Caddy；不建议在节点安装 Caddy 抢占 `443` 端口。
 
 若安装/配置失败，默认自动导出 AI 诊断包到 `/tmp/sb-install-node-ai-context-on-fail-*.md`（可用 `INSTALL_NODE_EXPORT_AI_CONTEXT_ON_FAIL=0` 关闭）。
@@ -589,6 +597,7 @@ bash scripts/admin/check_docs_sync.sh
 - Debian 13：系统 Python 通常 >=3.11，直接可用
 - Debian 11：自动尝试 `bullseye-backports` 安装 Python 3.11
 - Ubuntu（20.04/22.04/24.04）：自动尝试系统包，必要时回退 `deadsnakes` 安装 Python 3.11
+- Alpine：使用系统仓库 `apk add python3 py3-virtualenv py3-pip`（要求 Python >=3.11）
 
 ## 迁移导出/导入（管理服务器）
 

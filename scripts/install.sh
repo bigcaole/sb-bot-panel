@@ -54,10 +54,197 @@ TUIC_LISTEN_PORT=$TUIC_DEFAULT_PORT
 POLL_INTERVAL=15
 PUBLIC_IP=""
 AGENT_PYTHON_BIN=""
+OS_ID=""
+OS_VERSION=""
+INIT_SYSTEM="systemd"
 
 msg() { echo -e "\033[1;32m[信息]\033[0m $*"; }
 warn() { echo -e "\033[1;33m[警告]\033[0m $*"; }
 err() { echo -e "\033[1;31m[错误]\033[0m $*" >&2; }
+
+detect_os() {
+  if [[ -f /etc/os-release ]]; then
+    # shellcheck disable=SC1091
+    . /etc/os-release
+    OS_ID="${ID:-}"
+    OS_VERSION="${VERSION_ID:-}"
+  fi
+  if [[ "$OS_ID" == "alpine" ]]; then
+    INIT_SYSTEM="openrc"
+  elif command -v systemctl >/dev/null 2>&1 && [[ -d /run/systemd/system ]]; then
+    INIT_SYSTEM="systemd"
+  else
+    INIT_SYSTEM="openrc"
+  fi
+}
+
+is_alpine() {
+  [[ "$OS_ID" == "alpine" ]]
+}
+
+strip_unit_name() {
+  local unit="$1"
+  unit="${unit##*/}"
+  unit="${unit%.service}"
+  unit="${unit%.timer}"
+  echo "$unit"
+}
+
+openrc_service_exists() {
+  local svc="$1"
+  [[ -x "/etc/init.d/${svc}" ]]
+}
+
+openrc_is_enabled() {
+  local svc="$1"
+  rc-update show default 2>/dev/null | grep -E "[[:space:]]${svc}[[:space:]]" >/dev/null 2>&1
+}
+
+openrc_enable() {
+  local svc="$1"
+  rc-update add "$svc" default >/dev/null 2>&1 || true
+}
+
+openrc_disable() {
+  local svc="$1"
+  rc-update del "$svc" default >/dev/null 2>&1 || true
+}
+
+openrc_start() {
+  local svc="$1"
+  rc-service "$svc" start >/dev/null 2>&1 || true
+}
+
+openrc_stop() {
+  local svc="$1"
+  rc-service "$svc" stop >/dev/null 2>&1 || true
+}
+
+openrc_restart() {
+  local svc="$1"
+  rc-service "$svc" restart >/dev/null 2>&1 || rc-service "$svc" start >/dev/null 2>&1 || true
+}
+
+openrc_status() {
+  local svc="$1"
+  rc-service "$svc" status 2>/dev/null || true
+}
+
+openrc_is_active() {
+  local svc="$1"
+  rc-service "$svc" status >/dev/null 2>&1
+}
+
+openrc_cert_timer_enabled() {
+  [[ -f /etc/periodic/daily/sb-cert-check ]]
+}
+
+openrc_cert_timer_enable() {
+  mkdir -p /etc/periodic/daily
+  cat >/etc/periodic/daily/sb-cert-check <<EOF
+#!/bin/sh
+${SB_CERT_CHECK_BIN} >> ${AGENT_LOG_DIR}/cert-check.log 2>&1
+EOF
+  chmod 0755 /etc/periodic/daily/sb-cert-check
+  openrc_enable crond
+  openrc_start crond
+}
+
+openrc_cert_timer_disable() {
+  rm -f /etc/periodic/daily/sb-cert-check
+}
+
+if ! command -v systemctl >/dev/null 2>&1; then
+  systemctl() {
+    local sub="$1"
+    shift || true
+    case "$sub" in
+      show)
+        local prop=""
+        if [[ "${1:-}" == "-p" ]]; then
+          prop="$2"; shift 2
+        fi
+        if [[ "${1:-}" == "--value" ]]; then
+          shift
+        fi
+        local unit="${1:-}"
+        unit="$(strip_unit_name "$unit")"
+        if [[ "$prop" == "LoadState" ]]; then
+          if openrc_service_exists "$unit"; then
+            echo "loaded"
+          else
+            echo "not-found"
+          fi
+        else
+          echo ""
+        fi
+        ;;
+      list-unit-files)
+        if [[ -d /etc/init.d ]]; then
+          for svc in /etc/init.d/*; do
+            svc="$(basename "$svc")"
+            echo "${svc}.service enabled"
+          done
+        fi
+        ;;
+      is-active)
+        openrc_is_active "$(strip_unit_name "${1:-}")"
+        ;;
+      is-enabled)
+        local unit="${1:-}"
+        if [[ "$unit" == *.timer ]]; then
+          openrc_cert_timer_enabled
+        else
+          openrc_is_enabled "$(strip_unit_name "$unit")"
+        fi
+        ;;
+      enable)
+        local now=0
+        if [[ "${1:-}" == "--now" ]]; then
+          now=1
+          shift
+        fi
+        local unit="${1:-}"
+        if [[ "$unit" == *.timer ]]; then
+          openrc_cert_timer_enable
+        else
+          local svc
+          svc="$(strip_unit_name "$unit")"
+          openrc_enable "$svc"
+          if (( now == 1 )); then
+            openrc_start "$svc"
+          fi
+        fi
+        ;;
+      disable)
+        local unit="${1:-}"
+        if [[ "$unit" == *.timer ]]; then
+          openrc_cert_timer_disable
+        else
+          openrc_disable "$(strip_unit_name "$unit")"
+        fi
+        ;;
+      start)
+        openrc_start "$(strip_unit_name "${1:-}")"
+        ;;
+      stop)
+        openrc_stop "$(strip_unit_name "${1:-}")"
+        ;;
+      restart|reload)
+        openrc_restart "$(strip_unit_name "${1:-}")"
+        ;;
+      status)
+        openrc_status "$(strip_unit_name "${1:-}")"
+        ;;
+      daemon-reload)
+        return 0
+        ;;
+      *)
+        return 1
+        ;;
+    esac
+  }
+fi
 
 emit_ai_context_on_failure() {
   if [[ "${AI_CONTEXT_ON_FAIL}" != "1" ]]; then
@@ -237,20 +424,37 @@ resolve_domain_ipv4() {
 
 install_base_packages() {
   msg "安装基础依赖..."
-  export DEBIAN_FRONTEND=noninteractive
-  apt-get update -y
-  apt-get install -y \
-    curl \
-    jq \
-    ufw \
-    python3 \
-    python3-venv \
-    python3-pip \
-    ca-certificates \
-    openssl \
-    fail2ban \
-    dnsutils \
-    bind9-host
+  if is_alpine; then
+    apk add --no-cache \
+      bash \
+      curl \
+      jq \
+      python3 \
+      py3-virtualenv \
+      py3-pip \
+      ca-certificates \
+      openssl \
+      bind-tools \
+      tar \
+      gzip \
+      coreutils \
+      iproute2
+  else
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update -y
+    apt-get install -y \
+      curl \
+      jq \
+      ufw \
+      python3 \
+      python3-venv \
+      python3-pip \
+      ca-certificates \
+      openssl \
+      fail2ban \
+      dnsutils \
+      bind9-host
+  fi
 }
 
 detect_ssh_service() {
@@ -448,10 +652,14 @@ install_and_enable_fail2ban() {
   else
     msg "安装并启用 fail2ban（SSH 防爆破）..."
   fi
-  export DEBIAN_FRONTEND=noninteractive
   if ! command -v fail2ban-client >/dev/null 2>&1; then
-    apt-get update -y >/dev/null 2>&1
-    apt-get install -y fail2ban >/dev/null 2>&1
+    if is_alpine; then
+      apk add --no-cache fail2ban >/dev/null 2>&1
+    else
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get update -y >/dev/null 2>&1
+      apt-get install -y fail2ban >/dev/null 2>&1
+    fi
   fi
 
   mkdir -p /etc/fail2ban/jail.d
@@ -462,7 +670,7 @@ mode = normal
 port = ssh
 filter = sshd
 logpath = %(sshd_log)s
-backend = systemd
+backend = auto
 maxretry = 5
 findtime = 10m
 bantime = 1h
@@ -534,14 +742,8 @@ PY
 }
 
 ensure_python_311_runtime() {
-  local os_id=""
-  local os_version=""
-  if [[ -f /etc/os-release ]]; then
-    # shellcheck disable=SC1091
-    . /etc/os-release
-    os_id="${ID:-}"
-    os_version="${VERSION_ID:-}"
-  fi
+  local os_id="$OS_ID"
+  local os_version="$OS_VERSION"
 
   if command -v python3.11 >/dev/null 2>&1 && python_version_ge_311 python3.11; then
     AGENT_PYTHON_BIN="$(command -v python3.11)"
@@ -550,8 +752,12 @@ ensure_python_311_runtime() {
   fi
 
   msg "尝试安装 Python 3.11..."
-  export DEBIAN_FRONTEND=noninteractive
-  apt-get install -y python3.11 python3.11-venv python3.11-distutils >/dev/null 2>&1 || true
+  if is_alpine; then
+    apk add --no-cache python3 py3-virtualenv py3-pip >/dev/null 2>&1 || true
+  else
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get install -y python3.11 python3.11-venv python3.11-distutils >/dev/null 2>&1 || true
+  fi
 
   if [[ "$os_id" == "debian" && "$os_version" == 11* ]]; then
     if [[ ! -f /etc/apt/sources.list.d/bullseye-backports.list ]]; then
@@ -587,9 +793,13 @@ ensure_dns_tools() {
     return
   fi
   warn "系统缺少 dig/host，正在安装 dnsutils/bind9-host..."
-  export DEBIAN_FRONTEND=noninteractive
-  apt-get update -y
-  apt-get install -y dnsutils bind9-host
+  if is_alpine; then
+    apk add --no-cache bind-tools
+  else
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update -y
+    apt-get install -y dnsutils bind9-host
+  fi
 }
 
 find_latest_singbox_deb() {
@@ -613,13 +823,43 @@ retry_singbox_install_keep_local_config() {
 }
 
 install_sing_box() {
-  msg "安装/更新 sing-box（官方脚本）..."
-  export DEBIAN_FRONTEND=noninteractive
-  if ! curl -fsSL https://sing-box.app/install.sh | bash; then
-    warn "官方安装脚本返回失败，尝试非交互重试（保留本地 config.json）..."
-    if ! retry_singbox_install_keep_local_config; then
-      err "sing-box 安装失败，且未能自动完成非交互重试。"
+  if is_alpine; then
+    msg "检测到 Alpine，使用二进制包方式安装 sing-box..."
+    local arch dl_url tmp_dir
+    arch="$(uname -m)"
+    case "$arch" in
+      x86_64) arch="amd64" ;;
+      aarch64|arm64) arch="arm64" ;;
+      *) err "当前架构(${arch})暂未适配 Alpine sing-box 自动安装"; exit 1 ;;
+    esac
+    dl_url="https://github.com/SagerNet/sing-box/releases/latest/download/sing-box-linux-${arch}.tar.gz"
+    tmp_dir="$(mktemp -d)"
+    if ! curl -fsSL "$dl_url" -o "${tmp_dir}/sing-box.tgz"; then
+      err "sing-box 下载失败：${dl_url}"
       exit 1
+    fi
+    tar -xzf "${tmp_dir}/sing-box.tgz" -C "$tmp_dir"
+    if [[ -f "${tmp_dir}/sing-box" ]]; then
+      install -m 0755 "${tmp_dir}/sing-box" /usr/local/bin/sing-box
+    else
+      local bin_path
+      bin_path="$(find "$tmp_dir" -maxdepth 2 -type f -name 'sing-box' | head -n1 || true)"
+      if [[ -z "$bin_path" ]]; then
+        err "sing-box 解压后未找到二进制文件。"
+        exit 1
+      fi
+      install -m 0755 "$bin_path" /usr/local/bin/sing-box
+    fi
+    rm -rf "$tmp_dir"
+  else
+    msg "安装/更新 sing-box（官方脚本）..."
+    export DEBIAN_FRONTEND=noninteractive
+    if ! curl -fsSL https://sing-box.app/install.sh | bash; then
+      warn "官方安装脚本返回失败，尝试非交互重试（保留本地 config.json）..."
+      if ! retry_singbox_install_keep_local_config; then
+        err "sing-box 安装失败，且未能自动完成非交互重试。"
+        exit 1
+      fi
     fi
   fi
   if ! command -v sing-box >/dev/null 2>&1; then
@@ -1032,6 +1272,10 @@ check_domain_resolution_interactive() {
 }
 
 configure_ufw_rules() {
+  if is_alpine; then
+    warn "检测到 Alpine：跳过 UFW 配置，请自行配置防火墙放行端口。"
+    return 0
+  fi
   if ! command -v ufw >/dev/null 2>&1; then
     warn "未检测到 ufw，跳过防火墙配置。"
     return 0
@@ -1086,15 +1330,36 @@ write_config_json() {
 }
 
 install_singbox_service_if_missing() {
-  if systemd_unit_exists "sing-box.service"; then
-    msg "检测到系统已有 sing-box.service，跳过创建。"
-    return
-  fi
   local sb_bin
   sb_bin="$(command -v sing-box || true)"
   if [[ -z "$sb_bin" ]]; then
     err "找不到 sing-box 可执行文件，无法创建服务。"
     exit 1
+  fi
+  if [[ "$INIT_SYSTEM" == "openrc" ]]; then
+    if openrc_service_exists "sing-box"; then
+      msg "检测到系统已有 sing-box（OpenRC），跳过创建。"
+      return
+    fi
+    msg "未检测到 sing-box（OpenRC），创建服务..."
+    cat >/etc/init.d/sing-box <<EOF
+#!/sbin/openrc-run
+description="sing-box service"
+command="${sb_bin}"
+command_args="run -c ${SINGBOX_CONFIG}"
+command_background=yes
+pidfile="/run/sing-box.pid"
+depend() {
+  need net
+}
+EOF
+    chmod 0755 /etc/init.d/sing-box
+    return
+  fi
+
+  if systemd_unit_exists "sing-box.service"; then
+    msg "检测到系统已有 sing-box.service，跳过创建。"
+    return
   fi
   msg "未检测到 sing-box.service，创建 systemd 服务..."
   cat > /etc/systemd/system/sing-box.service <<EOF
@@ -1120,6 +1385,26 @@ EOF
 }
 
 install_sb_agent_service() {
+  if [[ "$INIT_SYSTEM" == "openrc" ]]; then
+    msg "写入 sb-agent（OpenRC）..."
+    cat >/etc/init.d/sb-agent <<EOF
+#!/sbin/openrc-run
+description="sb-agent (pull config from controller and render sing-box)"
+command="${AGENT_VENV}/bin/python"
+command_args="${AGENT_MAIN}"
+command_background=yes
+pidfile="/run/sb-agent.pid"
+depend() {
+  need net
+}
+start_pre() {
+  /usr/bin/install -m 0755 ${ROOT_DIR}/agent/sb_agent.py ${AGENT_MAIN} || return 1
+}
+EOF
+    chmod 0755 /etc/init.d/sb-agent
+    return
+  fi
+
   msg "写入 sb-agent.service ..."
   cat >"$SB_AGENT_SERVICE" <<EOF
 [Unit]
@@ -1142,6 +1427,12 @@ EOF
 }
 
 install_cert_check_timer_files() {
+  if [[ "$INIT_SYSTEM" == "openrc" ]]; then
+    msg "写入 sb-cert-check（OpenRC daily）..."
+    openrc_cert_timer_enable
+    return
+  fi
+
   msg "写入 sb-cert-check.service / timer ..."
   cat >"$SB_CERT_CHECK_SERVICE" <<EOF
 [Unit]
@@ -1228,13 +1519,21 @@ show_summary() {
   echo "VLESS 端口: 443/tcp"
   echo ""
   echo "常用命令："
-  echo "  systemctl status sb-agent"
-  echo "  journalctl -u sb-agent -f"
-  echo "  systemctl status sing-box"
-  echo "  journalctl -u sing-box -f"
-  echo "  systemctl status fail2ban"
-  echo "  fail2ban-client status sshd"
-  echo "  /usr/local/bin/sb-cert-check.sh"
+  if [[ "$INIT_SYSTEM" == "openrc" ]]; then
+    echo "  rc-service sb-agent status"
+    echo "  rc-service sing-box status"
+    echo "  rc-service fail2ban status"
+    echo "  fail2ban-client status sshd"
+    echo "  /usr/local/bin/sb-cert-check.sh"
+  else
+    echo "  systemctl status sb-agent"
+    echo "  journalctl -u sb-agent -f"
+    echo "  systemctl status sing-box"
+    echo "  journalctl -u sing-box -f"
+    echo "  systemctl status fail2ban"
+    echo "  fail2ban-client status sshd"
+    echo "  /usr/local/bin/sb-cert-check.sh"
+  fi
   if systemctl is-active caddy >/dev/null 2>&1; then
     warn "检测到本机 caddy 处于运行中。节点侧一般不需要 caddy，若占用 443 可能影响 sing-box。"
   fi
@@ -1258,6 +1557,7 @@ show_summary() {
 
 main() {
   require_root
+  detect_os
   msg "开始执行节点侧部署（模式: ${MODE}）"
 
   if [[ "$MODE" == "install" ]]; then

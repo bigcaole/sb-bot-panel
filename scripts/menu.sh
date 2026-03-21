@@ -22,9 +22,200 @@ BACKUP_DIR="/var/backups/sb-agent"
 SSH_HARDEN_FILE="/etc/ssh/sshd_config.d/99-sb-agent-hardening.conf"
 FAIL2BAN_JAIL_FILE="/etc/fail2ban/jail.d/sb-agent-sshd.local"
 
+OS_ID=""
+OS_VERSION=""
+INIT_SYSTEM="systemd"
+AGENT_LOG_DIR="/var/log/sb-agent"
+
 msg() { echo -e "\033[1;32m[信息]\033[0m $*"; }
 warn() { echo -e "\033[1;33m[警告]\033[0m $*"; }
 err() { echo -e "\033[1;31m[错误]\033[0m $*" >&2; }
+
+detect_os() {
+  if [[ -f /etc/os-release ]]; then
+    # shellcheck disable=SC1091
+    . /etc/os-release
+    OS_ID="${ID:-}"
+    OS_VERSION="${VERSION_ID:-}"
+  fi
+  if [[ "$OS_ID" == "alpine" ]]; then
+    INIT_SYSTEM="openrc"
+  elif command -v systemctl >/dev/null 2>&1 && [[ -d /run/systemd/system ]]; then
+    INIT_SYSTEM="systemd"
+  else
+    INIT_SYSTEM="openrc"
+  fi
+}
+
+is_alpine() {
+  [[ "$OS_ID" == "alpine" ]]
+}
+
+strip_unit_name() {
+  local unit="$1"
+  unit="${unit##*/}"
+  unit="${unit%.service}"
+  unit="${unit%.timer}"
+  echo "$unit"
+}
+
+openrc_service_exists() {
+  local svc="$1"
+  [[ -x "/etc/init.d/${svc}" ]]
+}
+
+openrc_is_enabled() {
+  local svc="$1"
+  rc-update show default 2>/dev/null | grep -E "[[:space:]]${svc}[[:space:]]" >/dev/null 2>&1
+}
+
+openrc_enable() {
+  local svc="$1"
+  rc-update add "$svc" default >/dev/null 2>&1 || true
+}
+
+openrc_disable() {
+  local svc="$1"
+  rc-update del "$svc" default >/dev/null 2>&1 || true
+}
+
+openrc_start() {
+  local svc="$1"
+  rc-service "$svc" start >/dev/null 2>&1 || true
+}
+
+openrc_stop() {
+  local svc="$1"
+  rc-service "$svc" stop >/dev/null 2>&1 || true
+}
+
+openrc_restart() {
+  local svc="$1"
+  rc-service "$svc" restart >/dev/null 2>&1 || rc-service "$svc" start >/dev/null 2>&1 || true
+}
+
+openrc_status() {
+  local svc="$1"
+  rc-service "$svc" status 2>/dev/null || true
+}
+
+openrc_is_active() {
+  local svc="$1"
+  rc-service "$svc" status >/dev/null 2>&1
+}
+
+openrc_cert_timer_enabled() {
+  [[ -f /etc/periodic/daily/sb-cert-check ]]
+}
+
+openrc_cert_timer_enable() {
+  mkdir -p /etc/periodic/daily
+  cat >/etc/periodic/daily/sb-cert-check <<EOF
+#!/bin/sh
+${SYSTEM_CERT_CHECK_SCRIPT} >> ${AGENT_LOG_DIR}/cert-check.log 2>&1
+EOF
+  chmod 0755 /etc/periodic/daily/sb-cert-check
+  openrc_enable crond
+  openrc_start crond
+}
+
+openrc_cert_timer_disable() {
+  rm -f /etc/periodic/daily/sb-cert-check
+}
+
+if ! command -v systemctl >/dev/null 2>&1; then
+  systemctl() {
+    local sub="$1"
+    shift || true
+    case "$sub" in
+      show)
+        local prop=""
+        if [[ "${1:-}" == "-p" ]]; then
+          prop="$2"; shift 2
+        fi
+        if [[ "${1:-}" == "--value" ]]; then
+          shift
+        fi
+        local unit="${1:-}"
+        unit="$(strip_unit_name "$unit")"
+        if [[ "$prop" == "LoadState" ]]; then
+          if openrc_service_exists "$unit"; then
+            echo "loaded"
+          else
+            echo "not-found"
+          fi
+        else
+          echo ""
+        fi
+        ;;
+      list-unit-files)
+        if [[ -d /etc/init.d ]]; then
+          for svc in /etc/init.d/*; do
+            svc="$(basename "$svc")"
+            echo "${svc}.service enabled"
+          done
+        fi
+        ;;
+      is-active)
+        openrc_is_active "$(strip_unit_name "${1:-}")"
+        ;;
+      is-enabled)
+        local unit="${1:-}"
+        if [[ "$unit" == *.timer ]]; then
+          openrc_cert_timer_enabled
+        else
+          openrc_is_enabled "$(strip_unit_name "$unit")"
+        fi
+        ;;
+      enable)
+        local now=0
+        if [[ "${1:-}" == "--now" ]]; then
+          now=1
+          shift
+        fi
+        local unit="${1:-}"
+        if [[ "$unit" == *.timer ]]; then
+          openrc_cert_timer_enable
+        else
+          local svc
+          svc="$(strip_unit_name "$unit")"
+          openrc_enable "$svc"
+          if (( now == 1 )); then
+            openrc_start "$svc"
+          fi
+        fi
+        ;;
+      disable)
+        local unit="${1:-}"
+        if [[ "$unit" == *.timer ]]; then
+          openrc_cert_timer_disable
+        else
+          openrc_disable "$(strip_unit_name "$unit")"
+        fi
+        ;;
+      start)
+        openrc_start "$(strip_unit_name "${1:-}")"
+        ;;
+      stop)
+        openrc_stop "$(strip_unit_name "${1:-}")"
+        ;;
+      restart|reload)
+        openrc_restart "$(strip_unit_name "${1:-}")"
+        ;;
+      status)
+        openrc_status "$(strip_unit_name "${1:-}")"
+        ;;
+      daemon-reload)
+        return 0
+        ;;
+      *)
+        return 1
+        ;;
+    esac
+  }
+fi
+
+detect_os
 
 pause() {
   echo ""
@@ -442,10 +633,14 @@ install_or_enable_fail2ban() {
   else
     msg "安装并启用 fail2ban（SSH 防爆破）..."
   fi
-  export DEBIAN_FRONTEND=noninteractive
   if ! command -v fail2ban-client >/dev/null 2>&1; then
-    apt-get update -y
-    apt-get install -y fail2ban
+    if is_alpine; then
+      apk add --no-cache fail2ban
+    else
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get update -y
+      apt-get install -y fail2ban
+    fi
   fi
 
   mkdir -p /etc/fail2ban/jail.d
@@ -456,7 +651,7 @@ mode = normal
 port = ssh
 filter = sshd
 logpath = %(sshd_log)s
-backend = systemd
+backend = auto
 maxretry = 5
 findtime = 10m
 bantime = 1h
@@ -976,25 +1171,61 @@ run_reconfigure() {
 }
 
 install_or_update_singbox() {
-  msg "开始安装/更新 sing-box（官方脚本）..."
-  export DEBIAN_FRONTEND=noninteractive
-  if ! command -v curl >/dev/null 2>&1; then
-    apt-get update -y
-    apt-get install -y curl
-  fi
-  if ! curl -fsSL https://sing-box.app/install.sh | bash; then
-    local deb_path
-    warn "官方安装脚本返回失败，尝试非交互重试（保留本地 config.json）..."
-    deb_path="$(find "$PWD" /tmp -maxdepth 2 -type f -name 'sing-box_*_linux_*.deb' -printf '%T@ %p\n' 2>/dev/null | sort -nr | head -n1 | cut -d' ' -f2-)"
-    if [[ -z "$deb_path" || ! -f "$deb_path" ]]; then
-      err "sing-box 安装脚本执行失败，且未找到可重试的 deb 包。"
+  if is_alpine; then
+    msg "检测到 Alpine，使用二进制包方式安装 sing-box..."
+    if ! command -v curl >/dev/null 2>&1; then
+      apk add --no-cache curl
+    fi
+    apk add --no-cache tar gzip >/dev/null 2>&1 || true
+    local arch dl_url tmp_dir
+    arch="$(uname -m)"
+    case "$arch" in
+      x86_64) arch="amd64" ;;
+      aarch64|arm64) arch="arm64" ;;
+      *) err "当前架构(${arch})暂未适配 Alpine sing-box 自动安装"; return 1 ;;
+    esac
+    dl_url="https://github.com/SagerNet/sing-box/releases/latest/download/sing-box-linux-${arch}.tar.gz"
+    tmp_dir="$(mktemp -d)"
+    if ! curl -fsSL "$dl_url" -o "${tmp_dir}/sing-box.tgz"; then
+      err "sing-box 下载失败：${dl_url}"
+      rm -rf "$tmp_dir"
       return 1
     fi
-    if ! dpkg -i --force-confdef --force-confold "$deb_path"; then
-      apt-get install -f -y || true
-      if ! dpkg -i --force-confdef --force-confold "$deb_path"; then
-        err "sing-box 非交互重试失败。"
+    tar -xzf "${tmp_dir}/sing-box.tgz" -C "$tmp_dir"
+    if [[ -f "${tmp_dir}/sing-box" ]]; then
+      install -m 0755 "${tmp_dir}/sing-box" /usr/local/bin/sing-box
+    else
+      local bin_path
+      bin_path="$(find "$tmp_dir" -maxdepth 2 -type f -name 'sing-box' | head -n1 || true)"
+      if [[ -z "$bin_path" ]]; then
+        err "sing-box 解压后未找到二进制文件。"
+        rm -rf "$tmp_dir"
         return 1
+      fi
+      install -m 0755 "$bin_path" /usr/local/bin/sing-box
+    fi
+    rm -rf "$tmp_dir"
+  else
+    msg "开始安装/更新 sing-box（官方脚本）..."
+    export DEBIAN_FRONTEND=noninteractive
+    if ! command -v curl >/dev/null 2>&1; then
+      apt-get update -y
+      apt-get install -y curl
+    fi
+    if ! curl -fsSL https://sing-box.app/install.sh | bash; then
+      local deb_path
+      warn "官方安装脚本返回失败，尝试非交互重试（保留本地 config.json）..."
+      deb_path="$(find "$PWD" /tmp -maxdepth 2 -type f -name 'sing-box_*_linux_*.deb' -printf '%T@ %p\n' 2>/dev/null | sort -nr | head -n1 | cut -d' ' -f2-)"
+      if [[ -z "$deb_path" || ! -f "$deb_path" ]]; then
+        err "sing-box 安装脚本执行失败，且未找到可重试的 deb 包。"
+        return 1
+      fi
+      if ! dpkg -i --force-confdef --force-confold "$deb_path"; then
+        apt-get install -f -y || true
+        if ! dpkg -i --force-confdef --force-confold "$deb_path"; then
+          err "sing-box 非交互重试失败。"
+          return 1
+        fi
       fi
     fi
   fi
@@ -1143,6 +1374,11 @@ uninstall_all() {
   systemctl stop fail2ban 2>/dev/null || true
   systemctl disable fail2ban 2>/dev/null || true
 
+  if [[ "$INIT_SYSTEM" == "openrc" ]]; then
+    rm -f /etc/init.d/sb-agent
+    rm -f /etc/init.d/sing-box
+    rm -f /etc/periodic/daily/sb-cert-check
+  fi
   rm -f /etc/systemd/system/sb-agent.service
   rm -f /etc/systemd/system/sb-cert-check.service
   rm -f /etc/systemd/system/sb-cert-check.timer

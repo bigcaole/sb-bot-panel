@@ -6,6 +6,10 @@ INSTALL_SCRIPT="${ROOT_DIR}/scripts/install.sh"
 CONFIG_PATH="/etc/sb-agent/config.json"
 SINGBOX_CONFIG="/etc/sing-box/config.json"
 SINGBOX_LOG_DIR="/var/log/sing-box"
+AGENT_LOG_DIR="/var/log/sb-agent"
+OS_ID=""
+OS_VERSION=""
+INIT_SYSTEM="systemd"
 
 declare -a ISSUE_ORDER=()
 declare -A ISSUE_SEVERITY=()
@@ -15,6 +19,188 @@ declare -A ISSUE_FIX=()
 msg() { echo -e "\033[1;32m[信息]\033[0m $*"; }
 warn() { echo -e "\033[1;33m[警告]\033[0m $*"; }
 err() { echo -e "\033[1;31m[错误]\033[0m $*" >&2; }
+
+detect_os() {
+  if [[ -f /etc/os-release ]]; then
+    # shellcheck disable=SC1091
+    . /etc/os-release
+    OS_ID="${ID:-}"
+    OS_VERSION="${VERSION_ID:-}"
+  fi
+  if [[ "$OS_ID" == "alpine" ]]; then
+    INIT_SYSTEM="openrc"
+  elif command -v systemctl >/dev/null 2>&1 && [[ -d /run/systemd/system ]]; then
+    INIT_SYSTEM="systemd"
+  else
+    INIT_SYSTEM="openrc"
+  fi
+}
+
+strip_unit_name() {
+  local unit="$1"
+  unit="${unit##*/}"
+  unit="${unit%.service}"
+  unit="${unit%.timer}"
+  echo "$unit"
+}
+
+openrc_service_exists() {
+  local svc="$1"
+  [[ -x "/etc/init.d/${svc}" ]]
+}
+
+openrc_is_enabled() {
+  local svc="$1"
+  rc-update show default 2>/dev/null | grep -E "[[:space:]]${svc}[[:space:]]" >/dev/null 2>&1
+}
+
+openrc_enable() {
+  local svc="$1"
+  rc-update add "$svc" default >/dev/null 2>&1 || true
+}
+
+openrc_disable() {
+  local svc="$1"
+  rc-update del "$svc" default >/dev/null 2>&1 || true
+}
+
+openrc_start() {
+  local svc="$1"
+  rc-service "$svc" start >/dev/null 2>&1 || true
+}
+
+openrc_stop() {
+  local svc="$1"
+  rc-service "$svc" stop >/dev/null 2>&1 || true
+}
+
+openrc_restart() {
+  local svc="$1"
+  rc-service "$svc" restart >/dev/null 2>&1 || rc-service "$svc" start >/dev/null 2>&1 || true
+}
+
+openrc_status() {
+  local svc="$1"
+  rc-service "$svc" status 2>/dev/null || true
+}
+
+openrc_is_active() {
+  local svc="$1"
+  rc-service "$svc" status >/dev/null 2>&1
+}
+
+openrc_cert_timer_enabled() {
+  [[ -f /etc/periodic/daily/sb-cert-check ]]
+}
+
+openrc_cert_timer_enable() {
+  mkdir -p /etc/periodic/daily
+  cat >/etc/periodic/daily/sb-cert-check <<EOF
+#!/bin/sh
+/usr/local/bin/sb-cert-check.sh >> ${AGENT_LOG_DIR}/cert-check.log 2>&1
+EOF
+  chmod 0755 /etc/periodic/daily/sb-cert-check
+  openrc_enable crond
+  openrc_start crond
+}
+
+openrc_cert_timer_disable() {
+  rm -f /etc/periodic/daily/sb-cert-check
+}
+
+if ! command -v systemctl >/dev/null 2>&1; then
+  systemctl() {
+    local sub="$1"
+    shift || true
+    case "$sub" in
+      show)
+        local prop=""
+        if [[ "${1:-}" == "-p" ]]; then
+          prop="$2"; shift 2
+        fi
+        if [[ "${1:-}" == "--value" ]]; then
+          shift
+        fi
+        local unit="${1:-}"
+        unit="$(strip_unit_name "$unit")"
+        if [[ "$prop" == "LoadState" ]]; then
+          if openrc_service_exists "$unit"; then
+            echo "loaded"
+          else
+            echo "not-found"
+          fi
+        else
+          echo ""
+        fi
+        ;;
+      list-unit-files)
+        if [[ -d /etc/init.d ]]; then
+          for svc in /etc/init.d/*; do
+            svc="$(basename "$svc")"
+            echo "${svc}.service enabled"
+          done
+        fi
+        ;;
+      is-active)
+        openrc_is_active "$(strip_unit_name "${1:-}")"
+        ;;
+      is-enabled)
+        local unit="${1:-}"
+        if [[ "$unit" == *.timer ]]; then
+          openrc_cert_timer_enabled
+        else
+          openrc_is_enabled "$(strip_unit_name "$unit")"
+        fi
+        ;;
+      enable)
+        local now=0
+        if [[ "${1:-}" == "--now" ]]; then
+          now=1
+          shift
+        fi
+        local unit="${1:-}"
+        if [[ "$unit" == *.timer ]]; then
+          openrc_cert_timer_enable
+        else
+          local svc
+          svc="$(strip_unit_name "$unit")"
+          openrc_enable "$svc"
+          if (( now == 1 )); then
+            openrc_start "$svc"
+          fi
+        fi
+        ;;
+      disable)
+        local unit="${1:-}"
+        if [[ "$unit" == *.timer ]]; then
+          openrc_cert_timer_disable
+        else
+          openrc_disable "$(strip_unit_name "$unit")"
+        fi
+        ;;
+      start)
+        openrc_start "$(strip_unit_name "${1:-}")"
+        ;;
+      stop)
+        openrc_stop "$(strip_unit_name "${1:-}")"
+        ;;
+      restart|reload)
+        openrc_restart "$(strip_unit_name "${1:-}")"
+        ;;
+      status)
+        openrc_status "$(strip_unit_name "${1:-}")"
+        ;;
+      daemon-reload)
+        return 0
+        ;;
+      *)
+        return 1
+        ;;
+    esac
+  }
+fi
+
+detect_os
 
 require_root() {
   if [[ "${EUID}" -ne 0 ]]; then
