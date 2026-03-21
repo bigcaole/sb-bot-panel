@@ -1585,6 +1585,8 @@ show_logs() {
 show_https_status() {
   local enable_https https_domain https_email caddy_installed caddy_active
   local cert_file cert_end raw_end days_left cert_status
+  local -a issues
+  local summary
 
   enable_https="$(get_env_value_local ENABLE_HTTPS)"; enable_https="${enable_https:-0}"
   https_domain="$(get_env_value_local HTTPS_DOMAIN)"
@@ -1625,14 +1627,40 @@ show_https_status() {
     fi
   fi
 
-  echo "----- HTTPS 证书状态（简要）-----"
+  issues=()
+  if [[ "$enable_https" != "1" ]]; then
+    issues+=("HTTPS 未启用")
+  fi
+  if [[ -z "$https_domain" ]]; then
+    issues+=("未配置 HTTPS_DOMAIN")
+  fi
+  if [[ "$caddy_installed" != "是" ]]; then
+    issues+=("未安装 caddy")
+  fi
+  if [[ "$caddy_active" != "运行中" ]]; then
+    issues+=("caddy 未运行")
+  fi
+  if [[ -n "$https_domain" && -z "$cert_file" ]]; then
+    issues+=("未检测到证书文件")
+  fi
+  if [[ -n "$days_left" && "$cert_status" != "正常" ]]; then
+    issues+=("证书${cert_status}")
+  fi
+
+  if (( ${#issues[@]} == 0 )); then
+    summary="正常"
+  else
+    summary="异常（${#issues[@]} 项）"
+  fi
+
+  echo "----- HTTPS 证书状态（强判定）-----"
+  echo "结论: ${summary}"
   echo "ENABLE_HTTPS: ${enable_https}（1=启用）"
   echo "HTTPS_DOMAIN: ${https_domain:-未设置}"
   echo "HTTPS_ACME_EMAIL: ${https_email:-未设置}"
   echo "Caddy 组件: 已安装=${caddy_installed} 运行状态=${caddy_active}"
   if [[ -n "$https_domain" ]]; then
     if [[ -n "$cert_file" ]]; then
-      echo "证书文件: ${cert_file}"
       echo "证书到期: ${cert_end:-未知}"
       if [[ -n "$days_left" ]]; then
         echo "剩余天数: ${days_left} 天（${cert_status}）"
@@ -1640,18 +1668,28 @@ show_https_status() {
         echo "证书状态: ${cert_status}"
       fi
     else
-      echo "证书文件: 未找到（可能尚未签发或未成功续期）"
+      echo "证书状态: 未找到"
     fi
-  else
-    echo "证书状态: HTTPS_DOMAIN 未设置"
   fi
-  echo ""
-  echo "提示："
-  echo "  - 若 ENABLE_HTTPS=1 但证书未找到，先确认域名解析与 443 端口放行。"
-  echo "  - 若 caddy 未运行，可先执行菜单 22（组件自检与自动修复）。"
+
+  if (( ${#issues[@]} > 0 )); then
+    echo ""
+    echo "问题清单："
+    for issue in "${issues[@]}"; do
+      echo "  - ${issue}"
+    done
+  fi
 
   echo ""
-  if confirm_action "是否展开查看 Caddyfile 与最近日志？" "N"; then
+  echo "建议处理："
+  echo "  1) ENABLE_HTTPS=1 且 HTTPS_DOMAIN 设置正确"
+  echo "  2) 确认域名解析指向本机公网 IP，且 443 端口放行"
+  echo "  3) 执行菜单 22（组件自检与自动修复）"
+
+  echo ""
+  read -r -p "输入 D 查看详细日志或直接回车返回: " detail_choice
+  detail_choice="$(echo "$detail_choice" | tr '[:upper:]' '[:lower:]')"
+  if [[ "$detail_choice" == "d" ]]; then
     echo "----- Caddyfile -----"
     if [[ -f /etc/caddy/Caddyfile ]]; then
       cat /etc/caddy/Caddyfile
