@@ -23,6 +23,11 @@ err() { echo -e "\033[1;31m[错误]\033[0m $*" >&2; }
 status_ok() { echo -e "\033[1;32m✅ $*\033[0m"; }
 status_manual() { echo -e "\033[1;33m⚠️ $*\033[0m"; }
 status_fatal() { echo -e "\033[1;31m❌ $*\033[0m"; }
+shorten_text() {
+  local text="$1"
+  text="$(echo "$text" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//; s/[[:space:]]\\{1,\\}/ /g')"
+  echo "${text:0:160}"
+}
 
 install_or_enable_fail2ban_selfcheck() {
   if command -v fail2ban-client >/dev/null 2>&1; then
@@ -460,7 +465,21 @@ get_last_singbox_error() {
   if [[ -z "$line" ]]; then
     line="(无可用日志)"
   fi
-  echo "$line"
+  shorten_text "$line"
+}
+
+singbox_stable_active() {
+  local i
+  for i in {1..5}; do
+    if systemctl is-active sing-box >/dev/null 2>&1; then
+      sleep 2
+      if systemctl is-active sing-box >/dev/null 2>&1; then
+        return 0
+      fi
+    fi
+    sleep 1
+  done
+  return 1
 }
 
 ensure_singbox_certmagic_permissions() {
@@ -591,7 +610,13 @@ run_checks() {
     elif detect_singbox_config_error; then
       add_issue "singbox_config_invalid" "config_error" "sing-box 配置校验失败" "自动重拉配置并重启 sing-box"
     else
-      add_issue "singbox_inactive" "config_error" "sing-box 未运行" "修复权限后重启 sing-box"
+      local last_err
+      last_err="$(get_last_singbox_error)"
+      if [[ "$last_err" != "(无可用日志)" ]]; then
+        add_issue "singbox_inactive" "config_error" "sing-box 未运行（最近错误: ${last_err}）" "修复权限后重启 sing-box"
+      else
+        add_issue "singbox_inactive" "config_error" "sing-box 未运行" "修复权限后重启 sing-box"
+      fi
     fi
 
     local port_conflict
@@ -724,10 +749,10 @@ apply_fix() {
       systemctl reset-failed sing-box >/dev/null 2>&1 || true
       systemctl enable --now sing-box >/dev/null 2>&1 || true
       systemctl restart sing-box >/dev/null 2>&1 || true
-      if systemctl is-active sing-box >/dev/null 2>&1; then
-        status_ok "sing-box 已恢复运行。"
+      if singbox_stable_active; then
+        status_ok "sing-box 已恢复运行（稳定）。"
       else
-        status_fatal "sing-box 仍未运行，最新错误：$(get_last_singbox_error)"
+        status_fatal "sing-box 仍未运行或恢复后立即退出，最新错误：$(get_last_singbox_error)"
       fi
       ;;
     singbox_log_permission_denied)
@@ -740,10 +765,10 @@ apply_fix() {
       ensure_singbox_systemd_rw_override
       systemctl reset-failed sing-box >/dev/null 2>&1 || true
       systemctl restart sing-box >/dev/null 2>&1 || true
-      if systemctl is-active sing-box >/dev/null 2>&1; then
-        status_ok "sing-box 已恢复运行。"
+      if singbox_stable_active; then
+        status_ok "sing-box 已恢复运行（稳定）。"
       else
-        status_fatal "sing-box 仍未运行，最新错误：$(get_last_singbox_error)"
+        status_fatal "sing-box 仍未运行或恢复后立即退出，最新错误：$(get_last_singbox_error)"
       fi
       ;;
     singbox_certmagic_permission_denied)
@@ -754,10 +779,10 @@ apply_fix() {
       ensure_singbox_certmagic_permissions
       systemctl reset-failed sing-box >/dev/null 2>&1 || true
       systemctl restart sing-box >/dev/null 2>&1 || true
-      if systemctl is-active sing-box >/dev/null 2>&1; then
-        status_ok "sing-box 已恢复运行。"
+      if singbox_stable_active; then
+        status_ok "sing-box 已恢复运行（稳定）。"
       else
-        status_fatal "sing-box 仍未运行，最新错误：$(get_last_singbox_error)"
+        status_fatal "sing-box 仍未运行或恢复后立即退出，最新错误：$(get_last_singbox_error)"
       fi
       ;;
     singbox_config_invalid)
