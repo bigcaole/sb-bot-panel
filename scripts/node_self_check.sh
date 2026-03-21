@@ -5,7 +5,8 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 INSTALL_SCRIPT="${ROOT_DIR}/scripts/install.sh"
 CONFIG_PATH="/etc/sb-agent/config.json"
 SINGBOX_CONFIG="/etc/sing-box/config.json"
-SINGBOX_LOG_DIR="/var/log/sing-box"
+SINGBOX_LOG_PATH="/var/lib/sing-box/sing-box.log"
+SINGBOX_LOG_DIR="$(dirname "$SINGBOX_LOG_PATH")"
 AGENT_LOG_DIR="/var/log/sb-agent"
 OS_ID=""
 OS_VERSION=""
@@ -259,8 +260,23 @@ update_config_value() {
   mv "$tmp" "$CONFIG_PATH"
 }
 
+refresh_singbox_log_path_from_config() {
+  if ! command -v jq >/dev/null 2>&1; then
+    return
+  fi
+  if [[ -f "$SINGBOX_CONFIG" ]]; then
+    local log_output
+    log_output="$(jq -r '.log.output // empty' "$SINGBOX_CONFIG" 2>/dev/null || true)"
+    if [[ -n "$log_output" && "$log_output" != "null" ]]; then
+      SINGBOX_LOG_PATH="$log_output"
+      SINGBOX_LOG_DIR="$(dirname "$SINGBOX_LOG_PATH")"
+    fi
+  fi
+}
+
 repair_singbox_log_permissions() {
   local run_user run_group
+  local log_file="$SINGBOX_LOG_PATH"
   local dynamic_user="false"
   if command -v systemctl >/dev/null 2>&1; then
     dynamic_user="$(systemctl show -p DynamicUser --value sing-box.service 2>/dev/null | xargs || true)"
@@ -273,19 +289,19 @@ repair_singbox_log_permissions() {
   run_user="$(get_singbox_run_user)"
   run_group="$(get_singbox_run_group "$run_user")"
   mkdir -p "$SINGBOX_LOG_DIR"
-  touch "${SINGBOX_LOG_DIR}/sing-box.log"
+  touch "$log_file"
   if [[ "$dynamic_user" == "true" ]]; then
     chmod 0777 "$SINGBOX_LOG_DIR" || true
-    chmod 0666 "${SINGBOX_LOG_DIR}/sing-box.log" || true
+    chmod 0666 "$log_file" || true
     return 0
   fi
-  if chown "$run_user:$run_group" "$SINGBOX_LOG_DIR" "${SINGBOX_LOG_DIR}/sing-box.log" >/dev/null 2>&1; then
+  if chown "$run_user:$run_group" "$SINGBOX_LOG_DIR" "$log_file" >/dev/null 2>&1; then
     chmod 755 "$SINGBOX_LOG_DIR" || true
-    chmod 644 "${SINGBOX_LOG_DIR}/sing-box.log" || true
+    chmod 644 "$log_file" || true
     return 0
   fi
   chmod 0777 "$SINGBOX_LOG_DIR" || true
-  chmod 0666 "${SINGBOX_LOG_DIR}/sing-box.log" || true
+  chmod 0666 "$log_file" || true
 }
 
 get_singbox_run_user() {
@@ -305,7 +321,7 @@ get_singbox_run_group() {
 }
 
 detect_singbox_log_permission_issue() {
-  local log_file="${SINGBOX_LOG_DIR}/sing-box.log"
+  local log_file="$SINGBOX_LOG_PATH"
   local dynamic_user="false"
   if command -v systemctl >/dev/null 2>&1; then
     dynamic_user="$(systemctl show -p DynamicUser --value sing-box.service 2>/dev/null | xargs || true)"
@@ -398,6 +414,7 @@ run_checks() {
   tuic_domain="$(jq -r '.tuic_domain // ""' "$CONFIG_PATH")"
   acme_email="$(jq -r '.acme_email // ""' "$CONFIG_PATH")"
   tuic_port="$(jq -r '.tuic_listen_port // 0' "$CONFIG_PATH")"
+  refresh_singbox_log_path_from_config
 
   if [[ -z "$controller_url" ]]; then
     add_issue "controller_url_missing" "required_missing" "controller_url 未配置" "改为管理服务器地址（如 https://panel.example.com）"
@@ -540,6 +557,10 @@ apply_fix() {
       ;;
     singbox_inactive)
       repair_singbox_log_permissions
+      systemctl restart sb-agent >/dev/null 2>&1 || true
+      sleep 2
+      refresh_singbox_log_path_from_config
+      repair_singbox_log_permissions
       systemctl reset-failed sing-box >/dev/null 2>&1 || true
       systemctl enable --now sing-box >/dev/null 2>&1 || true
       systemctl restart sing-box >/dev/null 2>&1 || true
@@ -548,6 +569,10 @@ apply_fix() {
       fi
       ;;
     singbox_log_permission_denied)
+      repair_singbox_log_permissions
+      systemctl restart sb-agent >/dev/null 2>&1 || true
+      sleep 2
+      refresh_singbox_log_path_from_config
       repair_singbox_log_permissions
       systemctl reset-failed sing-box >/dev/null 2>&1 || true
       systemctl restart sing-box >/dev/null 2>&1 || true

@@ -10,6 +10,7 @@
 若 sing-box 以 DynamicUser 运行，自检会自动放宽日志目录权限以避免 `permission denied`。
 sing-box 未运行时，菜单会提示使用自检进行自动修复。
 自检还会提示配置校验失败与端口冲突，并给出具体占用进程信息。
+sing-box 日志默认输出到 `/var/lib/sing-box/sing-box.log`（避免系统包的 DynamicUser 权限问题）。
 
 ## 目录新增
 

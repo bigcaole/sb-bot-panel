@@ -659,7 +659,7 @@ def build_sing_box_config(
             "disabled": False,
             "level": "info",
             "timestamp": True,
-            "output": "/var/log/sing-box/sing-box.log",
+            "output": "/var/lib/sing-box/sing-box.log",
         },
         "inbounds": inbounds,
         "outbounds": [{"type": "direct", "tag": "direct"}],
@@ -1221,7 +1221,7 @@ def main() -> int:
     signal.signal(signal.SIGINT, _signal_handler)
     signal.signal(signal.SIGTERM, _signal_handler)
 
-    os.makedirs("/var/log/sing-box", exist_ok=True)
+    os.makedirs("/var/lib/sing-box", exist_ok=True)
     os.makedirs(SING_BOX_CERTMAGIC_DIR, exist_ok=True)
 
     try:

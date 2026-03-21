@@ -32,7 +32,7 @@ AGENT_DIR="/opt/sb-agent"
 AGENT_VENV="$AGENT_DIR/venv"
 AGENT_MAIN="$AGENT_DIR/sb_agent.py"
 AGENT_LOG_DIR="/var/log/sb-agent"
-SINGBOX_LOG_DIR="/var/log/sing-box"
+SINGBOX_LOG_DIR="/var/lib/sing-box"
 SINGBOX_CONFIG="/etc/sing-box/config.json"
 CERTMAGIC_DIR="/var/lib/sing-box/certmagic"
 BACKUP_DIR="/var/backups/sb-agent"
@@ -971,7 +971,7 @@ write_bootstrap_singbox_config_if_missing() {
     "disabled": false,
     "level": "info",
     "timestamp": true,
-    "output": "/var/log/sing-box/sing-box.log"
+    "output": "/var/lib/sing-box/sing-box.log"
   },
   "inbounds": [],
   "outbounds": [
