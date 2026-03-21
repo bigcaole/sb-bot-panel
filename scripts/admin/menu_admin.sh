@@ -459,6 +459,69 @@ run_sync_node_defaults() {
   else
     echo "$body"
   fi
+
+  read -r -p "是否自动验证任务是否下发成功（推荐）？[Y/n]: " answer
+  answer="${answer:-Y}"
+  if [[ "$answer" =~ ^[Yy]$ ]]; then
+    verify_sync_agent_defaults "$controller_port" "$auth_token" "$include_disabled"
+  else
+    warn "已跳过自动验证。"
+  fi
+}
+
+verify_sync_agent_defaults() {
+  local controller_port="$1"
+  local auth_token="$2"
+  local include_disabled="$3"
+  if ! command -v jq >/dev/null 2>&1; then
+    warn "未检测到 jq，无法自动验证任务下发。"
+    return 0
+  fi
+  if [[ -z "$auth_token" ]]; then
+    warn "缺少管理 token，跳过自动验证。"
+    return 0
+  fi
+
+  local nodes_json now_ts
+  nodes_json="$(curl -fsSL --max-time 10 -H "Authorization: Bearer ${auth_token}" \
+    "http://127.0.0.1:${controller_port}/nodes" 2>/dev/null || true)"
+  if [[ -z "$nodes_json" ]]; then
+    warn "节点列表获取失败，跳过自动验证。"
+    return 0
+  fi
+
+  now_ts="$(date +%s)"
+  echo ""
+  msg "自动验证：检查各节点是否收到 config_set 任务..."
+
+  local node_codes
+  if [[ "$include_disabled" == "1" ]]; then
+    node_codes="$(echo "$nodes_json" | jq -r '.[] | .node_code')"
+  else
+    node_codes="$(echo "$nodes_json" | jq -r '.[] | select(.enabled==1) | .node_code')"
+  fi
+
+  local code task_json found_count
+  for code in $node_codes; do
+    task_json="$(curl -fsSL --max-time 10 -H "Authorization: Bearer ${auth_token}" \
+      "http://127.0.0.1:${controller_port}/nodes/${code}/tasks?limit=5" 2>/dev/null || true)"
+    if [[ -z "$task_json" ]]; then
+      warn "节点 ${code} 任务查询失败（可能是鉴权或网络问题）。"
+      continue
+    fi
+    found_count="$(echo "$task_json" | jq --argjson now "$now_ts" '
+      [ .[] 
+        | select(.task_type=="config_set")
+        | select((.payload|type=="object") and ((.payload.auth_token?!=null) or (.payload.poll_interval?!=null) or (.payload.controller_url?!=null)))
+        | select((.created_at|tonumber) >= ($now - 600))
+      ] | length
+    ' 2>/dev/null || echo 0)"
+    if [[ "$found_count" =~ ^[0-9]+$ ]] && (( found_count > 0 )); then
+      msg "节点 ${code}: 已下发（近 10 分钟内检测到 config_set）"
+    else
+      warn "节点 ${code}: 未检测到近期 config_set（建议检查节点连接/白名单/Token）"
+    fi
+  done
 }
 
 run_sync_node_tokens() {
