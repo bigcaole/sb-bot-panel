@@ -663,7 +663,20 @@ install_and_enable_fail2ban() {
   fi
 
   mkdir -p /etc/fail2ban/jail.d
-  cat >"$FAIL2BAN_JAIL_FILE" <<'EOF'
+  if command -v systemctl >/dev/null 2>&1 && command -v journalctl >/dev/null 2>&1; then
+    cat >"$FAIL2BAN_JAIL_FILE" <<'EOF'
+[sshd]
+enabled = true
+mode = normal
+port = ssh
+filter = sshd
+backend = systemd
+maxretry = 5
+findtime = 10m
+bantime = 1h
+EOF
+  else
+    cat >"$FAIL2BAN_JAIL_FILE" <<'EOF'
 [sshd]
 enabled = true
 mode = normal
@@ -675,6 +688,7 @@ maxretry = 5
 findtime = 10m
 bantime = 1h
 EOF
+  fi
 
   systemctl enable --now fail2ban >/dev/null
   msg "fail2ban 已启用（jail=sshd, maxretry=5, bantime=1h）。"
