@@ -20,6 +20,9 @@ declare -A ISSUE_FIX=()
 msg() { echo -e "\033[1;32m[信息]\033[0m $*"; }
 warn() { echo -e "\033[1;33m[警告]\033[0m $*"; }
 err() { echo -e "\033[1;31m[错误]\033[0m $*" >&2; }
+status_ok() { echo -e "\033[1;32m✅ $*\033[0m"; }
+status_manual() { echo -e "\033[1;33m⚠️ $*\033[0m"; }
+status_fatal() { echo -e "\033[1;31m❌ $*\033[0m"; }
 
 install_or_enable_fail2ban_selfcheck() {
   if command -v fail2ban-client >/dev/null 2>&1; then
@@ -36,7 +39,7 @@ install_or_enable_fail2ban_selfcheck() {
   fi
 
   if ! command -v fail2ban-client >/dev/null 2>&1; then
-    warn "fail2ban 安装失败，请检查网络或源。"
+    status_manual "fail2ban 安装失败，请检查网络或源。"
     return 1
   fi
 
@@ -74,7 +77,7 @@ EOF
   else
     systemctl enable --now fail2ban >/dev/null 2>&1 || true
     if ! systemctl is-active fail2ban >/dev/null 2>&1; then
-      warn "fail2ban 启动失败，尝试切换 backend=auto 自动修复..."
+    status_manual "fail2ban 启动失败，尝试切换 backend=auto 自动修复..."
       cat >"/etc/fail2ban/jail.d/sb-agent-sshd.local" <<'EOF'
 [sshd]
 enabled = true
@@ -92,10 +95,10 @@ EOF
   fi
 
   if ! systemctl is-active fail2ban >/dev/null 2>&1 && [[ "$INIT_SYSTEM" != "openrc" ]]; then
-    warn "fail2ban 仍未运行，请查看日志：journalctl -u fail2ban -n 120 --no-pager"
+    status_manual "fail2ban 仍未运行，请查看日志：journalctl -u fail2ban -n 120 --no-pager"
     return 1
   fi
-  msg "fail2ban 已启用。"
+  status_ok "fail2ban 已启用。"
   return 0
 }
 
@@ -694,7 +697,7 @@ apply_fix() {
         update_config_value --arg t "$new_token" '.auth_token=$t'
         systemctl restart sb-agent || true
       else
-        warn "未输入 token，跳过。"
+        status_manual "未输入 token，跳过。"
       fi
       ;;
     tuic_port_invalid)
@@ -722,9 +725,9 @@ apply_fix() {
       systemctl enable --now sing-box >/dev/null 2>&1 || true
       systemctl restart sing-box >/dev/null 2>&1 || true
       if systemctl is-active sing-box >/dev/null 2>&1; then
-        msg "sing-box 已恢复运行。"
+        status_ok "sing-box 已恢复运行。"
       else
-        warn "sing-box 仍未运行，最新错误：$(get_last_singbox_error)"
+        status_fatal "sing-box 仍未运行，最新错误：$(get_last_singbox_error)"
       fi
       ;;
     singbox_log_permission_denied)
@@ -738,9 +741,9 @@ apply_fix() {
       systemctl reset-failed sing-box >/dev/null 2>&1 || true
       systemctl restart sing-box >/dev/null 2>&1 || true
       if systemctl is-active sing-box >/dev/null 2>&1; then
-        msg "sing-box 已恢复运行。"
+        status_ok "sing-box 已恢复运行。"
       else
-        warn "sing-box 仍未运行，最新错误：$(get_last_singbox_error)"
+        status_fatal "sing-box 仍未运行，最新错误：$(get_last_singbox_error)"
       fi
       ;;
     singbox_certmagic_permission_denied)
@@ -752,22 +755,22 @@ apply_fix() {
       systemctl reset-failed sing-box >/dev/null 2>&1 || true
       systemctl restart sing-box >/dev/null 2>&1 || true
       if systemctl is-active sing-box >/dev/null 2>&1; then
-        msg "sing-box 已恢复运行。"
+        status_ok "sing-box 已恢复运行。"
       else
-        warn "sing-box 仍未运行，最新错误：$(get_last_singbox_error)"
+        status_fatal "sing-box 仍未运行，最新错误：$(get_last_singbox_error)"
       fi
       ;;
     singbox_config_invalid)
-      warn "检测到 sing-box 配置校验失败，尝试重拉配置..."
+      status_manual "检测到 sing-box 配置校验失败，尝试重拉配置..."
       systemctl restart sb-agent >/dev/null 2>&1 || true
       sleep 2
       systemctl restart sing-box >/dev/null 2>&1 || true
       if ! sing-box check -c "$SINGBOX_CONFIG" >/dev/null 2>&1; then
-        warn "配置仍不通过，请检查节点同步与下发配置。"
+        status_fatal "配置仍不通过，请检查节点同步与下发配置。"
       fi
       ;;
     singbox_port_conflict)
-      warn "端口冲突无法自动修复，请手动处理占用进程后重试。"
+      status_fatal "端口冲突无法自动修复，请手动处理占用进程后重试。"
       ;;
     singbox_not_enabled)
       systemctl enable sing-box >/dev/null 2>&1 || true
@@ -779,7 +782,7 @@ apply_fix() {
         update_config_value --arg u "$new_url" '.controller_url=$u'
         systemctl restart sb-agent >/dev/null 2>&1 || true
       else
-        warn "未输入 controller_url，跳过。"
+        status_manual "未输入 controller_url，跳过。"
       fi
       ;;
     acme_email_missing)
@@ -791,7 +794,7 @@ apply_fix() {
       fi
       ;;
     tuic_dns_mismatch)
-      warn "请先在 DNS 服务商处修正 tuic_domain A 记录，再重新自检。"
+      status_manual "请先在 DNS 服务商处修正 tuic_domain A 记录，再重新自检。"
       ;;
     tuic_inbound_missing|tuic_acme_missing)
       systemctl restart sb-agent >/dev/null 2>&1 || true
@@ -809,14 +812,14 @@ apply_fix() {
       if [[ "$INIT_SYSTEM" == "systemd" ]]; then
         systemctl enable --now sb-cert-check.timer >/dev/null 2>&1 || true
       else
-        warn "当前为 OpenRC，证书定时检查由 crond 管理，请确认 crond 运行。"
+        status_manual "当前为 OpenRC，证书定时检查由 crond 管理，请确认 crond 运行。"
       fi
       ;;
     tuic_checks_skipped|tuic_domain_empty)
-      warn "该项为可选缺失，可跳过。"
+      status_manual "该项为可选缺失，可跳过。"
       ;;
     *)
-      warn "未支持自动修复项: $id"
+      status_manual "未支持自动修复项: $id"
       return 1
       ;;
   esac
@@ -863,9 +866,9 @@ main_loop() {
     echo "----------------------------------------"
 
     if (( required_count == 0 && error_count == 0 )); then
-      msg "自检通过：无阻断问题。"
+      status_ok "自检通过：无阻断问题。"
       if (( optional_count > 0 )); then
-        warn "仍有可选项未配置，可按需处理。"
+        status_manual "仍有可选项未配置，可按需处理。"
       fi
       break
     fi
@@ -885,7 +888,7 @@ main_loop() {
       r|R|"")
         ;;
       q|Q)
-        warn "已退出自检。"
+        status_manual "已退出自检。"
         exit 1
         ;;
       *)
@@ -894,10 +897,10 @@ main_loop() {
           if (( idx >= 0 && idx < ${#ISSUE_ORDER[@]} )); then
             apply_fix "${ISSUE_ORDER[$idx]}" || true
           else
-            warn "编号无效。"
+            status_manual "编号无效。"
           fi
         else
-          warn "输入无效。"
+          status_manual "输入无效。"
         fi
         ;;
     esac
