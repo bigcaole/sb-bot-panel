@@ -1309,6 +1309,9 @@ show_singbox_status_logs() {
   fi
   echo "sing-box 状态: ${state}"
   echo "开机自启: ${enabled}"
+  if [[ "$state" != "active" ]]; then
+    echo "提示：可执行菜单 24（自检修复）自动修复常见问题。"
+  fi
   echo "提示：查看详细日志请执行："
   echo "  journalctl -u ${SINGBOX_SERVICE} -n 120 --no-pager"
 }

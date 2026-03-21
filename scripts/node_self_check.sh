@@ -261,18 +261,51 @@ update_config_value() {
 
 repair_singbox_log_permissions() {
   local run_user run_group
+  run_user="$(get_singbox_run_user)"
+  run_group="$(get_singbox_run_group "$run_user")"
+  mkdir -p "$SINGBOX_LOG_DIR"
+  touch "${SINGBOX_LOG_DIR}/sing-box.log"
+  chown "$run_user:$run_group" "$SINGBOX_LOG_DIR" "${SINGBOX_LOG_DIR}/sing-box.log" >/dev/null 2>&1 || true
+  chmod 755 "$SINGBOX_LOG_DIR" || true
+  chmod 644 "${SINGBOX_LOG_DIR}/sing-box.log" || true
+}
+
+get_singbox_run_user() {
+  local run_user
   run_user="$(systemctl show -p User --value sing-box.service 2>/dev/null | xargs || true)"
   if [[ -z "$run_user" ]]; then
     run_user="$(systemctl cat sing-box.service 2>/dev/null | awk -F= '/^User=/{print $2; exit}' | xargs || true)"
   fi
   [[ -z "$run_user" ]] && run_user="sing-box"
   id -u "$run_user" >/dev/null 2>&1 || run_user="root"
-  run_group="$(id -gn "$run_user" 2>/dev/null || echo "$run_user")"
-  mkdir -p "$SINGBOX_LOG_DIR"
-  touch "${SINGBOX_LOG_DIR}/sing-box.log"
-  chown "$run_user:$run_group" "$SINGBOX_LOG_DIR" "${SINGBOX_LOG_DIR}/sing-box.log" >/dev/null 2>&1 || true
-  chmod 755 "$SINGBOX_LOG_DIR" || true
-  chmod 644 "${SINGBOX_LOG_DIR}/sing-box.log" || true
+  echo "$run_user"
+}
+
+get_singbox_run_group() {
+  local run_user="$1"
+  id -gn "$run_user" 2>/dev/null || echo "$run_user"
+}
+
+detect_singbox_log_permission_issue() {
+  local log_file="${SINGBOX_LOG_DIR}/sing-box.log"
+  if command -v journalctl >/dev/null 2>&1; then
+    if journalctl -u sing-box -n 50 --no-pager 2>/dev/null | grep -qi "permission denied" \
+      && journalctl -u sing-box -n 50 --no-pager 2>/dev/null | grep -qi "sing-box.log"; then
+      return 0
+    fi
+  fi
+  if [[ -f "$log_file" ]]; then
+    local owner
+    owner="$(stat -c %U "$log_file" 2>/dev/null || ls -l "$log_file" 2>/dev/null | awk '{print $3}')"
+    if [[ -n "$owner" ]]; then
+      local run_user
+      run_user="$(get_singbox_run_user)"
+      if [[ "$run_user" != "root" && "$owner" != "$run_user" ]]; then
+        return 0
+      fi
+    fi
+  fi
+  return 1
 }
 
 run_checks() {
@@ -315,7 +348,11 @@ run_checks() {
     add_issue "sb_agent_inactive" "config_error" "sb-agent 未运行" "重启 sb-agent"
   fi
   if ! systemctl is-active sing-box >/dev/null 2>&1; then
-    add_issue "singbox_inactive" "config_error" "sing-box 未运行" "修复权限后重启 sing-box"
+    if detect_singbox_log_permission_issue; then
+      add_issue "singbox_log_permission_denied" "config_error" "sing-box 未运行（疑似日志权限问题）" "自动修复日志权限并重启 sing-box"
+    else
+      add_issue "singbox_inactive" "config_error" "sing-box 未运行" "修复权限后重启 sing-box"
+    fi
   fi
   if ! systemctl is-enabled sb-agent >/dev/null 2>&1; then
     add_issue "sb_agent_not_enabled" "config_error" "sb-agent 未设置开机自启" "启用 sb-agent 开机自启"
@@ -426,6 +463,14 @@ apply_fix() {
       repair_singbox_log_permissions
       systemctl reset-failed sing-box >/dev/null 2>&1 || true
       systemctl enable --now sing-box >/dev/null 2>&1 || true
+      systemctl restart sing-box >/dev/null 2>&1 || true
+      if ! systemctl is-active sing-box >/dev/null 2>&1; then
+        warn "sing-box 仍未运行，请检查日志：journalctl -u sing-box -n 120 --no-pager"
+      fi
+      ;;
+    singbox_log_permission_denied)
+      repair_singbox_log_permissions
+      systemctl reset-failed sing-box >/dev/null 2>&1 || true
       systemctl restart sing-box >/dev/null 2>&1 || true
       if ! systemctl is-active sing-box >/dev/null 2>&1; then
         warn "sing-box 仍未运行，请检查日志：journalctl -u sing-box -n 120 --no-pager"
