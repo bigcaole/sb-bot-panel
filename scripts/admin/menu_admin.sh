@@ -1687,19 +1687,8 @@ show_https_status() {
   echo "  3) 执行菜单 22（组件自检与自动修复）"
 
   echo ""
-  read -r -p "输入 D 查看详细日志或直接回车返回: " detail_choice
-  detail_choice="$(echo "$detail_choice" | tr '[:upper:]' '[:lower:]')"
-  if [[ "$detail_choice" == "d" ]]; then
-    echo "----- Caddyfile -----"
-    if [[ -f /etc/caddy/Caddyfile ]]; then
-      cat /etc/caddy/Caddyfile
-    else
-      warn "未找到 /etc/caddy/Caddyfile"
-    fi
-    echo ""
-    echo "----- 最近 120 行 caddy 日志 -----"
-    journalctl -u caddy -n 120 --no-pager || true
-  fi
+  echo "提示：如需详细日志，请手动执行："
+  echo "  journalctl -u caddy -n 120 --no-pager"
 }
 
 reload_https_cert() {
