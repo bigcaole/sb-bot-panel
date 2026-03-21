@@ -1006,6 +1006,33 @@ ensure_singbox_log_permissions() {
   chmod 0644 "${SINGBOX_LOG_DIR}/sing-box.log" || true
 }
 
+ensure_singbox_certmagic_permissions() {
+  local run_user run_group
+  local dynamic_user="false"
+  if command -v systemctl >/dev/null 2>&1; then
+    dynamic_user="$(systemctl show -p DynamicUser --value sing-box.service 2>/dev/null | xargs || true)"
+  fi
+  if [[ "${dynamic_user,,}" == "yes" ]]; then
+    dynamic_user="true"
+  else
+    dynamic_user="false"
+  fi
+  run_user="$(resolve_singbox_run_user)"
+  run_group="$(id -gn "$run_user" 2>/dev/null || echo "$run_user")"
+
+  mkdir -p "$CERTMAGIC_DIR"
+  if [[ "$dynamic_user" == "true" ]]; then
+    chmod 0777 "$(dirname "$CERTMAGIC_DIR")" "$CERTMAGIC_DIR" 2>/dev/null || true
+    return
+  fi
+  if chown -R "${run_user}:${run_group}" "$(dirname "$CERTMAGIC_DIR")" "$CERTMAGIC_DIR" >/dev/null 2>&1; then
+    chmod 0755 "$(dirname "$CERTMAGIC_DIR")" "$CERTMAGIC_DIR" 2>/dev/null || true
+  else
+    warn "无法设置 certmagic 目录属主为 ${run_user}:${run_group}，将放宽权限继续启动。"
+    chmod 0777 "$(dirname "$CERTMAGIC_DIR")" "$CERTMAGIC_DIR" 2>/dev/null || true
+  fi
+}
+
 setup_python_venv() {
   if [[ -z "$AGENT_PYTHON_BIN" ]]; then
     ensure_python_311_runtime
@@ -1754,6 +1781,7 @@ main() {
 
   install_singbox_service_if_missing
   ensure_singbox_log_permissions
+  ensure_singbox_certmagic_permissions
   install_sb_agent_service
   install_cert_check_timer_files
   install_menu_shortcuts

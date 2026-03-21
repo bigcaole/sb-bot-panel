@@ -434,6 +434,47 @@ detect_singbox_log_permission_issue() {
   return 1
 }
 
+detect_certmagic_permission_issue() {
+  if command -v journalctl >/dev/null 2>&1; then
+    if journalctl -u sing-box -n 50 --no-pager 2>/dev/null | grep -qi "certmagic" \
+      && journalctl -u sing-box -n 50 --no-pager 2>/dev/null | grep -qi "permission denied"; then
+      return 0
+    fi
+  fi
+  if [[ -d "/var/lib/sing-box/certmagic" ]]; then
+    if [[ ! -w "/var/lib/sing-box/certmagic" ]]; then
+      return 0
+    fi
+  fi
+  return 1
+}
+
+ensure_singbox_certmagic_permissions() {
+  local run_user run_group
+  local dynamic_user="false"
+  if command -v systemctl >/dev/null 2>&1; then
+    dynamic_user="$(systemctl show -p DynamicUser --value sing-box.service 2>/dev/null | xargs || true)"
+  fi
+  if [[ "${dynamic_user,,}" == "yes" ]]; then
+    dynamic_user="true"
+  else
+    dynamic_user="false"
+  fi
+  run_user="$(get_singbox_run_user)"
+  run_group="$(get_singbox_run_group "$run_user")"
+  mkdir -p "/var/lib/sing-box/certmagic"
+  if [[ "$dynamic_user" == "true" ]]; then
+    chmod 0777 "/var/lib/sing-box" "/var/lib/sing-box/certmagic" 2>/dev/null || true
+    return 0
+  fi
+  if chown -R "${run_user}:${run_group}" "/var/lib/sing-box" "/var/lib/sing-box/certmagic" >/dev/null 2>&1; then
+    chmod 0755 "/var/lib/sing-box" "/var/lib/sing-box/certmagic" 2>/dev/null || true
+    return 0
+  fi
+  chmod 0777 "/var/lib/sing-box" "/var/lib/sing-box/certmagic" 2>/dev/null || true
+  return 0
+}
+
 ensure_singbox_systemd_rw_override() {
   if [[ "$INIT_SYSTEM" != "systemd" ]]; then
     return
@@ -531,6 +572,8 @@ run_checks() {
   if ! systemctl is-active sing-box >/dev/null 2>&1; then
     if detect_singbox_log_permission_issue; then
       add_issue "singbox_log_permission_denied" "config_error" "sing-box 未运行（疑似日志权限问题）" "自动修复日志权限并重启 sing-box"
+    elif detect_certmagic_permission_issue; then
+      add_issue "singbox_certmagic_permission_denied" "config_error" "sing-box 未运行（证书目录权限问题）" "自动修复 certmagic 目录权限并重启 sing-box"
     elif detect_singbox_config_error; then
       add_issue "singbox_config_invalid" "config_error" "sing-box 配置校验失败" "自动重拉配置并重启 sing-box"
     else
@@ -679,6 +722,18 @@ apply_fix() {
       refresh_singbox_log_path_from_config
       repair_singbox_log_permissions
       ensure_singbox_systemd_rw_override
+      systemctl reset-failed sing-box >/dev/null 2>&1 || true
+      systemctl restart sing-box >/dev/null 2>&1 || true
+      if ! systemctl is-active sing-box >/dev/null 2>&1; then
+        warn "sing-box 仍未运行，请检查日志：journalctl -u sing-box -n 120 --no-pager"
+      fi
+      ;;
+    singbox_certmagic_permission_denied)
+      ensure_singbox_certmagic_permissions
+      ensure_singbox_systemd_rw_override
+      systemctl restart sb-agent >/dev/null 2>&1 || true
+      sleep 2
+      ensure_singbox_certmagic_permissions
       systemctl reset-failed sing-box >/dev/null 2>&1 || true
       systemctl restart sing-box >/dev/null 2>&1 || true
       if ! systemctl is-active sing-box >/dev/null 2>&1; then
