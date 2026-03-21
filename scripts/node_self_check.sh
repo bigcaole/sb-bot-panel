@@ -598,7 +598,7 @@ run_checks() {
     return
   fi
 
-  local controller_url node_code auth_token tuic_domain acme_email tuic_port
+  local controller_url node_code auth_token tuic_domain acme_email tuic_port tuic_inbound_count
   controller_url="$(jq -r '.controller_url // ""' "$CONFIG_PATH")"
   node_code="$(jq -r '.node_code // ""' "$CONFIG_PATH")"
   auth_token="$(jq -r '.auth_token // ""' "$CONFIG_PATH")"
@@ -606,6 +606,10 @@ run_checks() {
   acme_email="$(jq -r '.acme_email // ""' "$CONFIG_PATH")"
   tuic_port="$(jq -r '.tuic_listen_port // 0' "$CONFIG_PATH")"
   refresh_singbox_log_path_from_config
+  tuic_inbound_count=0
+  if [[ -f "$SINGBOX_CONFIG" ]]; then
+    tuic_inbound_count="$(jq '[.inbounds[]? | select(.type=="tuic")] | length' "$SINGBOX_CONFIG" 2>/dev/null || echo 0)"
+  fi
 
   if [[ -z "$controller_url" ]]; then
     add_issue "controller_url_missing" "required_missing" "controller_url 未配置" "改为管理服务器地址（如 https://panel.example.com）"
@@ -690,7 +694,11 @@ run_checks() {
   fi
 
   if [[ -z "$tuic_domain" ]]; then
-    add_issue "tuic_domain_empty" "optional_missing" "tuic_domain 为空（未启用 TUIC 证书）" "如仅使用 VLESS 可忽略"
+    if [[ "$tuic_inbound_count" =~ ^[0-9]+$ ]] && (( tuic_inbound_count > 0 )); then
+      add_issue "tuic_inbound_orphaned" "config_error" "运行配置残留 TUIC 入站（tuic_domain 已清空）" "清理本地 TUIC 入站并重启 sing-box"
+    else
+      add_issue "tuic_domain_empty" "optional_missing" "tuic_domain 为空（未启用 TUIC 证书）" "如仅使用 VLESS 可忽略"
+    fi
   else
     if [[ -z "$acme_email" ]]; then
       add_issue "acme_email_missing" "required_missing" "已设置 tuic_domain 但 acme_email 为空" "填写证书邮箱后重启 sb-agent"
@@ -824,6 +832,23 @@ apply_fix() {
       systemctl restart sing-box >/dev/null 2>&1 || true
       if ! sing-box check -c "$SINGBOX_CONFIG" >/dev/null 2>&1; then
         status_fatal "配置仍不通过，请检查节点同步与下发配置。"
+      fi
+      ;;
+    tuic_inbound_orphaned)
+      if ! command -v jq >/dev/null 2>&1; then
+        status_manual "缺少 jq，无法自动清理 TUIC 入站。"
+        return 1
+      fi
+      local backup
+      backup="${SINGBOX_CONFIG}.bak.$(date +%Y%m%d%H%M%S)"
+      cp -f "$SINGBOX_CONFIG" "$backup" 2>/dev/null || true
+      jq '(.inbounds // []) |= map(select(.type != "tuic"))' "$SINGBOX_CONFIG" >"${SINGBOX_CONFIG}.tmp" \
+        && mv "${SINGBOX_CONFIG}.tmp" "$SINGBOX_CONFIG"
+      systemctl restart sing-box >/dev/null 2>&1 || true
+      if singbox_stable_active; then
+        status_ok "已清理 TUIC 入站并恢复 sing-box。"
+      else
+        status_fatal "清理后仍未恢复，最新错误：$(get_last_singbox_error)"
       fi
       ;;
     singbox_acme_rate_limited)
