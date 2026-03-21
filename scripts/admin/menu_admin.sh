@@ -1583,22 +1583,85 @@ show_logs() {
 }
 
 show_https_status() {
-  if ! systemd_unit_exists "caddy.service"; then
-    warn "系统未安装 caddy.service。"
-    return
-  fi
-  echo "----- caddy 状态 -----"
-  systemctl status caddy --no-pager || true
-  echo ""
-  echo "----- Caddyfile -----"
-  if [[ -f /etc/caddy/Caddyfile ]]; then
-    cat /etc/caddy/Caddyfile
+  local enable_https https_domain https_email caddy_installed caddy_active
+  local cert_file cert_end raw_end days_left cert_status
+
+  enable_https="$(get_env_value_local ENABLE_HTTPS)"; enable_https="${enable_https:-0}"
+  https_domain="$(get_env_value_local HTTPS_DOMAIN)"
+  https_email="$(get_env_value_local HTTPS_ACME_EMAIL)"
+
+  if systemd_unit_exists "caddy.service"; then
+    caddy_installed="是"
   else
-    warn "未找到 /etc/caddy/Caddyfile"
+    caddy_installed="否"
+  fi
+  if systemctl is-active caddy >/dev/null 2>&1; then
+    caddy_active="运行中"
+  else
+    caddy_active="未运行"
+  fi
+
+  cert_file=""
+  cert_end=""
+  days_left=""
+  cert_status="未知"
+  if [[ -n "$https_domain" ]]; then
+    cert_file="$(find /var/lib/caddy -type f \( -name "*.crt" -o -name "*.pem" \) 2>/dev/null | grep -F "$https_domain" | head -n1 || true)"
+    if [[ -n "$cert_file" && -f "$cert_file" ]]; then
+      raw_end="$(openssl x509 -in "$cert_file" -noout -enddate 2>/dev/null | sed 's/^notAfter=//')"
+      if [[ -n "$raw_end" ]]; then
+        cert_end="$(date -d "$raw_end" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "$raw_end")"
+        if date -d "$raw_end" +%s >/dev/null 2>&1; then
+          days_left="$(( ( $(date -d "$raw_end" +%s) - $(date +%s) ) / 86400 ))"
+          if (( days_left < 0 )); then
+            cert_status="已过期"
+          elif (( days_left <= 7 )); then
+            cert_status="即将过期"
+          else
+            cert_status="正常"
+          fi
+        fi
+      fi
+    fi
+  fi
+
+  echo "----- HTTPS 证书状态（简要）-----"
+  echo "ENABLE_HTTPS: ${enable_https}（1=启用）"
+  echo "HTTPS_DOMAIN: ${https_domain:-未设置}"
+  echo "HTTPS_ACME_EMAIL: ${https_email:-未设置}"
+  echo "Caddy 组件: 已安装=${caddy_installed} 运行状态=${caddy_active}"
+  if [[ -n "$https_domain" ]]; then
+    if [[ -n "$cert_file" ]]; then
+      echo "证书文件: ${cert_file}"
+      echo "证书到期: ${cert_end:-未知}"
+      if [[ -n "$days_left" ]]; then
+        echo "剩余天数: ${days_left} 天（${cert_status}）"
+      else
+        echo "证书状态: ${cert_status}"
+      fi
+    else
+      echo "证书文件: 未找到（可能尚未签发或未成功续期）"
+    fi
+  else
+    echo "证书状态: HTTPS_DOMAIN 未设置"
   fi
   echo ""
-  echo "----- 最近 120 行 caddy 日志 -----"
-  journalctl -u caddy -n 120 --no-pager || true
+  echo "提示："
+  echo "  - 若 ENABLE_HTTPS=1 但证书未找到，先确认域名解析与 443 端口放行。"
+  echo "  - 若 caddy 未运行，可先执行菜单 22（组件自检与自动修复）。"
+
+  echo ""
+  if confirm_action "是否展开查看 Caddyfile 与最近日志？" "N"; then
+    echo "----- Caddyfile -----"
+    if [[ -f /etc/caddy/Caddyfile ]]; then
+      cat /etc/caddy/Caddyfile
+    else
+      warn "未找到 /etc/caddy/Caddyfile"
+    fi
+    echo ""
+    echo "----- 最近 120 行 caddy 日志 -----"
+    journalctl -u caddy -n 120 --no-pager || true
+  fi
 }
 
 reload_https_cert() {
