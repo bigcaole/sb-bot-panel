@@ -449,6 +449,17 @@ detect_certmagic_permission_issue() {
   return 1
 }
 
+get_last_singbox_error() {
+  local line=""
+  if command -v journalctl >/dev/null 2>&1; then
+    line="$(journalctl -u sing-box -n 60 --no-pager 2>/dev/null | grep -Ei 'FATAL|ERROR|permission denied|failed' | tail -n1 || true)"
+  fi
+  if [[ -z "$line" ]]; then
+    line="(无可用日志)"
+  fi
+  echo "$line"
+}
+
 ensure_singbox_certmagic_permissions() {
   local run_user run_group
   local dynamic_user="false"
@@ -710,8 +721,10 @@ apply_fix() {
       systemctl reset-failed sing-box >/dev/null 2>&1 || true
       systemctl enable --now sing-box >/dev/null 2>&1 || true
       systemctl restart sing-box >/dev/null 2>&1 || true
-      if ! systemctl is-active sing-box >/dev/null 2>&1; then
-        warn "sing-box 仍未运行，请检查日志：journalctl -u sing-box -n 120 --no-pager"
+      if systemctl is-active sing-box >/dev/null 2>&1; then
+        msg "sing-box 已恢复运行。"
+      else
+        warn "sing-box 仍未运行，最新错误：$(get_last_singbox_error)"
       fi
       ;;
     singbox_log_permission_denied)
@@ -724,8 +737,10 @@ apply_fix() {
       ensure_singbox_systemd_rw_override
       systemctl reset-failed sing-box >/dev/null 2>&1 || true
       systemctl restart sing-box >/dev/null 2>&1 || true
-      if ! systemctl is-active sing-box >/dev/null 2>&1; then
-        warn "sing-box 仍未运行，请检查日志：journalctl -u sing-box -n 120 --no-pager"
+      if systemctl is-active sing-box >/dev/null 2>&1; then
+        msg "sing-box 已恢复运行。"
+      else
+        warn "sing-box 仍未运行，最新错误：$(get_last_singbox_error)"
       fi
       ;;
     singbox_certmagic_permission_denied)
@@ -736,8 +751,10 @@ apply_fix() {
       ensure_singbox_certmagic_permissions
       systemctl reset-failed sing-box >/dev/null 2>&1 || true
       systemctl restart sing-box >/dev/null 2>&1 || true
-      if ! systemctl is-active sing-box >/dev/null 2>&1; then
-        warn "sing-box 仍未运行，请检查日志：journalctl -u sing-box -n 120 --no-pager"
+      if systemctl is-active sing-box >/dev/null 2>&1; then
+        msg "sing-box 已恢复运行。"
+      else
+        warn "sing-box 仍未运行，最新错误：$(get_last_singbox_error)"
       fi
       ;;
     singbox_config_invalid)
