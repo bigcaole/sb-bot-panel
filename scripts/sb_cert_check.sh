@@ -192,6 +192,10 @@ main() {
       echo "  - ${issue}"
     done
   fi
+  if [[ "$tuic_total" == "0" ]]; then
+    echo "提示：当前节点尚未下发 TUIC 入站配置，证书不会申请。"
+    echo "  需在管理端启用 TUIC/分配节点后，同步配置并重启 sb-agent。"
+  fi
   echo "建议处理："
   echo "  1) 确认域名 A 记录指向本机公网 IP，且 UDP 端口放行"
   echo "  2) 补齐 acme_email 后重启 sb-agent"
