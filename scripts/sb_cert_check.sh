@@ -8,6 +8,19 @@ msg() { echo "[信息] $*"; }
 warn() { echo "[警告] $*"; }
 err() { echo "[错误] $*"; }
 
+service_active() {
+  local svc="$1"
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl is-active "$svc" >/dev/null 2>&1
+    return $?
+  fi
+  if command -v rc-service >/dev/null 2>&1; then
+    rc-service "$svc" status >/dev/null 2>&1
+    return $?
+  fi
+  return 1
+}
+
 get_public_ipv4() {
   curl -4 -fsSL ifconfig.me 2>/dev/null \
     || curl -4 -fsSL https://api.ipify.org 2>/dev/null \
@@ -82,7 +95,7 @@ main() {
   msg "说明：节点 TUIC 证书由 sing-box 内置 ACME 处理，不依赖 Caddy。"
   warn "不建议在节点安装 Caddy 占用 443，可能与 sing-box 入站冲突。"
 
-  if systemctl is-active sing-box >/dev/null 2>&1; then
+  if service_active sing-box; then
     msg "sing-box 服务状态: active"
   else
     warn "sing-box 服务状态: inactive（先执行菜单 8/23 排查组件与服务）"
@@ -94,11 +107,6 @@ main() {
   tuic_with_acme="$(echo "$runtime_summary" | cut -d, -f2)"
   domain_match="$(echo "$runtime_summary" | cut -d, -f3)"
   msg "运行时配置: TUIC入站=${tuic_total} 含ACME=${tuic_with_acme} 当前域名匹配=${domain_match}"
-  if [[ "$tuic_total" == "0" ]]; then
-    warn "当前 sing-box 运行配置没有 TUIC 入站（证书无法签发）。"
-  elif [[ "$domain_match" == "0" ]]; then
-    warn "TUIC 入站未匹配当前域名/邮箱（可能配置未生效）。建议先重启 sb-agent 与 sing-box。"
-  fi
   local public_ip dns_ip
   public_ip="$(get_public_ipv4)"
   dns_ip="$(resolve_domain_ipv4 "$tuic_domain")"
@@ -114,59 +122,82 @@ main() {
     warn "未解析到域名 A 记录 IPv4。"
   fi
 
-  if [[ -n "$public_ip" && -n "$dns_ip" ]]; then
-    if [[ "$public_ip" == "$dns_ip" ]]; then
-      msg "解析检查: 通过"
-    else
-      warn "解析检查: 不一致（请确认 Cloudflare 关闭代理、小黄云置灰，A 记录指向本机 IP）"
-    fi
-  fi
-
   local cert_file
   cert_file="$(find_domain_cert "$tuic_domain")"
-  if [[ -z "$cert_file" ]]; then
-    warn "未找到证书文件（certmagic 目录中暂无该域名证书）。"
-  else
-    msg "证书文件: $cert_file"
-    local end_date end_epoch now_epoch days_left
+  local end_date end_epoch now_epoch days_left cert_status
+  cert_status="未知"
+  if [[ -n "$cert_file" ]]; then
     end_date="$(openssl x509 -in "$cert_file" -noout -enddate 2>/dev/null | cut -d= -f2- || true)"
     if [[ -n "$end_date" ]]; then
       end_epoch="$(date -d "$end_date" +%s 2>/dev/null || true)"
       now_epoch="$(date +%s)"
       if [[ -n "$end_epoch" ]]; then
         days_left="$(( (end_epoch - now_epoch) / 86400 ))"
-        msg "证书到期时间: $end_date"
-        msg "剩余天数: ${days_left} 天"
-        if (( days_left < 7 )); then
-          warn "证书即将过期，建议尽快检查续期。"
+        if (( days_left < 0 )); then
+          cert_status="已过期"
+        elif (( days_left <= 7 )); then
+          cert_status="即将过期"
+        else
+          cert_status="正常"
         fi
       fi
     fi
   fi
 
-  echo ""
-  msg "最近 ACME 相关日志（sing-box）："
-  local acme_logs
-  acme_logs="$(journalctl -u sing-box --since "3 days ago" --no-pager 2>/dev/null \
-    | grep -Ei 'acme|certificate|certmagic|challenge|letsencrypt|tls' \
-    | tail -n 20 || true)"
-  if [[ -n "$acme_logs" ]]; then
-    echo "$acme_logs"
-  else
-    echo "（最近 3 天未发现明显 ACME 关键字日志）"
+  local -a issues
+  local summary
+  issues=()
+  if [[ -z "$acme_email" ]]; then
+    issues+=("acme_email 未设置")
   fi
-  echo ""
-  msg "最近 TUIC/证书相关日志（sb-agent）："
-  journalctl -u sb-agent --since "3 days ago" --no-pager 2>/dev/null \
-    | grep -Ei 'tuic|acme|证书|跳过 TUIC 入站|config_set|配置变更' \
-    | tail -n 30 || echo "（最近 3 天未发现明显 TUIC/证书关键字日志）"
+  if ! service_active sing-box; then
+    issues+=("sing-box 未运行")
+  fi
+  if [[ "$tuic_total" == "0" ]]; then
+    issues+=("运行配置未包含 TUIC 入站")
+  elif [[ "$domain_match" == "0" ]]; then
+    issues+=("TUIC 入站未匹配当前域名/邮箱")
+  fi
+  if [[ -z "$public_ip" || -z "$dns_ip" || "$public_ip" != "$dns_ip" ]]; then
+    issues+=("域名解析未指向本机公网 IP")
+  fi
+  if [[ -z "$cert_file" ]]; then
+    issues+=("未检测到证书文件")
+  fi
+  if [[ -n "${days_left:-}" && "$cert_status" != "正常" ]]; then
+    issues+=("证书${cert_status}")
+  fi
+
+  if (( ${#issues[@]} == 0 )); then
+    summary="正常"
+  else
+    summary="异常（${#issues[@]} 项）"
+  fi
 
   echo ""
-  if [[ -n "$cert_file" ]]; then
-    msg "近期签发判断: 已检测到证书文件，视为近期有成功签发/续期基础。"
+  msg "----- TUIC 证书状态（强判定）-----"
+  echo "结论: ${summary}"
+  echo "TUIC 域名: ${tuic_domain}"
+  echo "ACME 邮箱: ${acme_email:-未设置}"
+  echo "sing-box: $(service_active sing-box && echo active || echo inactive)"
+  echo "证书到期: ${end_date:-未知}"
+  if [[ -n "${days_left:-}" ]]; then
+    echo "剩余天数: ${days_left} 天（${cert_status}）"
   else
-    warn "近期签发判断: 未检测到证书文件，请检查域名解析、端口与 ACME 日志。"
+    echo "证书状态: ${cert_status}"
   fi
+  if (( ${#issues[@]} > 0 )); then
+    echo "问题清单："
+    for issue in "${issues[@]}"; do
+      echo "  - ${issue}"
+    done
+  fi
+  echo "建议处理："
+  echo "  1) 确认域名 A 记录指向本机公网 IP，且 UDP 端口放行"
+  echo "  2) 补齐 acme_email 后重启 sb-agent"
+  echo "  3) 需要日志时手动执行："
+  echo "     journalctl -u sing-box -n 120 --no-pager"
+  echo "     journalctl -u sb-agent -n 120 --no-pager"
 }
 
 main "$@"

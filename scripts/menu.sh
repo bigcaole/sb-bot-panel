@@ -1275,17 +1275,42 @@ ensure_singbox_installed_interactive() {
 }
 
 show_agent_status() {
-  systemctl status "$AGENT_SERVICE" --no-pager || true
+  local state enabled
+  if systemctl is-active "$AGENT_SERVICE" >/dev/null 2>&1; then
+    state="active"
+  else
+    state="inactive"
+  fi
+  if systemctl is-enabled "$AGENT_SERVICE" >/dev/null 2>&1; then
+    enabled="是"
+  else
+    enabled="否"
+  fi
+  echo "sb-agent 状态: ${state}"
+  echo "开机自启: ${enabled}"
+  echo "提示：查看详细日志请执行："
+  echo "  journalctl -u sb-agent -n 120 --no-pager"
 }
 
 show_singbox_status_logs() {
   if ! ensure_singbox_installed_interactive; then
     return 1
   fi
-  systemctl status "$SINGBOX_SERVICE" --no-pager || true
-  echo ""
-  msg "最近 80 行 sing-box 日志："
-  journalctl -u "$SINGBOX_SERVICE" -n 80 --no-pager || true
+  local state enabled
+  if systemctl is-active "$SINGBOX_SERVICE" >/dev/null 2>&1; then
+    state="active"
+  else
+    state="inactive"
+  fi
+  if systemctl is-enabled "$SINGBOX_SERVICE" >/dev/null 2>&1; then
+    enabled="是"
+  else
+    enabled="否"
+  fi
+  echo "sing-box 状态: ${state}"
+  echo "开机自启: ${enabled}"
+  echo "提示：查看详细日志请执行："
+  echo "  journalctl -u ${SINGBOX_SERVICE} -n 120 --no-pager"
 }
 
 tail_agent_log() {
@@ -1443,8 +1468,8 @@ show_menu() {
     echo " 5) 查看 sb-agent 状态"
     echo " 6) 查看 sb-agent 日志（tail -f）"
     echo " 7) 重启 sing-box"
-    echo " 8) 查看 sing-box 状态与最近日志"
-    echo " 9) 证书状态检查"
+    echo " 8) 查看 sing-box 状态（摘要）"
+    echo " 9) 证书状态检查（强判定）"
     echo "10) 触发证书重新申请/刷新（先备份）"
     echo ""
     echo "【安全工具】"
@@ -1477,8 +1502,8 @@ show_menu() {
   echo " 1) 配置（快速默认 / 高级变量向导）"
   echo " 5) 查看 sb-agent 状态"
   echo " 6) 查看 sb-agent 日志（tail -f）"
-  echo " 8) 查看 sing-box 状态与最近日志"
-  echo " 9) 证书状态检查"
+  echo " 8) 查看 sing-box 状态（摘要）"
+  echo " 9) 证书状态检查（强判定）"
   echo "11) 安装/启用 fail2ban（SSH 防爆破）"
   echo "15) SSH 安全状态总览（只读）"
   echo "21) 更新同步（保留原配置，自动 git pull）"
