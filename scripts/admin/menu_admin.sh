@@ -667,8 +667,12 @@ run_sync_menu() {
   echo "  3) 同步节点系统时间（以管理服务器为准）"
   echo "  4) 查看节点部署对齐参数（给新节点抄写）"
   echo "  5) 新节点上线一条龙向导（最少切换）"
-  read -r -p "请选择 [1/2/3/4/5]（默认 1）: " sync_choice
+  echo "  q) 返回主菜单"
+  read -r -p "请选择 [1/2/3/4/5/q]（默认 1）: " sync_choice
   sync_choice="${sync_choice:-1}"
+  if [[ "$sync_choice" == "q" || "$sync_choice" == "Q" ]]; then
+    return
+  fi
   case "$sync_choice" in
     2)
       run_sync_node_tokens
@@ -1596,9 +1600,13 @@ configure_only() {
     echo "  2) 高级变量设置向导（逐项说明，全部可调）"
     echo "  3) 查看当前关键配置（只读，含建议）"
     echo "  4) 参数单项修改（点选一项直接改）"
+    echo "  q) 返回主菜单"
     local cfg_mode
-    read -r -p "请选择 [1/2/3/4]（默认 1）: " cfg_mode
+    read -r -p "请选择 [1/2/3/4/q]（默认 1）: " cfg_mode
     cfg_mode="${cfg_mode:-1}"
+    if [[ "$cfg_mode" == "q" || "$cfg_mode" == "Q" ]]; then
+      return
+    fi
     if [[ "$cfg_mode" == "3" ]]; then
       show_current_config_overview
     elif [[ "$cfg_mode" == "4" ]]; then
@@ -1628,8 +1636,11 @@ show_status() {
 
 show_logs() {
   local choice
-  read -r -p "查看哪个日志？1=controller 2=bot 3=日志归档 4=运维审计(ops.*) [1]: " choice
+  read -r -p "查看哪个日志？1=controller 2=bot 3=日志归档 4=运维审计(ops.*) q=返回 [1]: " choice
   choice="${choice:-1}"
+  if [[ "$choice" == "q" || "$choice" == "Q" ]]; then
+    return
+  fi
   if [[ "$choice" == "2" ]]; then
     journalctl -u sb-bot -n 200 --no-pager || true
   elif [[ "$choice" == "3" ]]; then
@@ -2117,8 +2128,13 @@ main() {
         echo "  1) 收敛 token（AUTH/ADMIN/NODE 多值 -> 单值）"
         echo "  2) 拆分迁移（兼容模式 -> ADMIN/NODE 拆分过渡）"
         echo "  3) 查看完整 token（高风险，二次确认）"
-        read -r -p "请输入 [1/2/3]（默认 1）: " token_action
+        echo "  q) 返回主菜单"
+        read -r -p "请输入 [1/2/3/q]（默认 1）: " token_action
         token_action="${token_action:-1}"
+        if [[ "$token_action" == "q" || "$token_action" == "Q" ]]; then
+          pause
+          ;;
+        fi
         if [[ "$token_action" == "3" ]]; then
           show_full_auth_tokens
         elif [[ "$token_action" == "2" ]]; then

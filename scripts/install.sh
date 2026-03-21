@@ -49,6 +49,8 @@ NODE_CODE=""
 AUTH_TOKEN=""
 TUIC_DOMAIN=""
 ACME_EMAIL=""
+ENABLE_TUIC="1"
+ENABLE_VLESS="1"
 TUIC_DEFAULT_PORT=24443
 TUIC_LISTEN_PORT=$TUIC_DEFAULT_PORT
 POLL_INTERVAL=15
@@ -61,6 +63,25 @@ INIT_SYSTEM="systemd"
 msg() { echo -e "\033[1;32m[信息]\033[0m $*"; }
 warn() { echo -e "\033[1;33m[警告]\033[0m $*"; }
 err() { echo -e "\033[1;31m[错误]\033[0m $*" >&2; }
+
+normalize_bool_flag() {
+  local raw="${1:-}"
+  local fallback="${2:-1}"
+  raw="$(echo "$raw" | tr '[:upper:]' '[:lower:]' | xargs)"
+  case "$raw" in
+    1|true|yes|y|on) echo "1" ;;
+    0|false|no|n|off) echo "0" ;;
+    *) echo "$fallback" ;;
+  esac
+}
+
+bool_to_json() {
+  if [[ "$1" == "1" ]]; then
+    echo "true"
+  else
+    echo "false"
+  fi
+}
 
 detect_os() {
   if [[ -f /etc/os-release ]]; then
@@ -1111,6 +1132,8 @@ load_existing_config_or_fail() {
   AUTH_TOKEN="$(read_old_config_value "auth_token")"
   TUIC_DOMAIN="$(read_old_config_value "tuic_domain")"
   ACME_EMAIL="$(read_old_config_value "acme_email")"
+  ENABLE_TUIC="$(read_old_config_value "enable_tuic")"
+  ENABLE_VLESS="$(read_old_config_value "enable_vless")"
   TUIC_LISTEN_PORT="$(read_old_config_value "tuic_listen_port")"
   POLL_INTERVAL="$(read_old_config_value "poll_interval")"
 
@@ -1118,6 +1141,8 @@ load_existing_config_or_fail() {
   NODE_CODE="${NODE_CODE:-N1}"
   TUIC_DOMAIN="${TUIC_DOMAIN:-}"
   ACME_EMAIL="${ACME_EMAIL:-}"
+  ENABLE_TUIC="$(normalize_bool_flag "$ENABLE_TUIC" "1")"
+  ENABLE_VLESS="$(normalize_bool_flag "$ENABLE_VLESS" "1")"
 
   if ! [[ "${TUIC_LISTEN_PORT}" =~ ^[0-9]+$ ]] || (( TUIC_LISTEN_PORT < 1 || TUIC_LISTEN_PORT > 65535 )); then
     TUIC_LISTEN_PORT=$TUIC_DEFAULT_PORT
@@ -1128,12 +1153,14 @@ load_existing_config_or_fail() {
 }
 
 prompt_config() {
-  local old_controller old_node old_token old_domain old_email old_tuic_port old_poll
+  local old_controller old_node old_token old_domain old_email old_tuic_port old_poll old_enable_tuic old_enable_vless
   old_controller="$(read_old_config_value "controller_url")"
   old_node="$(read_old_config_value "node_code")"
   old_token="$(read_old_config_value "auth_token")"
   old_domain="$(read_old_config_value "tuic_domain")"
   old_email="$(read_old_config_value "acme_email")"
+  old_enable_tuic="$(read_old_config_value "enable_tuic")"
+  old_enable_vless="$(read_old_config_value "enable_vless")"
   old_tuic_port="$(read_old_config_value "tuic_listen_port")"
   old_poll="$(read_old_config_value "poll_interval")"
 
@@ -1142,10 +1169,12 @@ prompt_config() {
   echo "  1) controller_url：节点拉取配置的地址。获取：管理服务器公网地址（如 https://panel.example.com）"
   echo "  2) node_code：节点唯一标识。获取：管理端节点列表里的节点编码（需完全一致）"
   echo "  3) auth_token：节点鉴权 token。获取：管理服务器 .env 中 NODE_AUTH_TOKEN（兼容模式用 AUTH_TOKEN）"
-  echo "  4) tuic_domain：TUIC 证书域名。获取：你已解析到本机公网 IP 的域名（留空=不启用 TUIC）"
-  echo "  5) acme_email：证书申请邮箱。获取：你常用邮箱（用于证书到期通知）"
-  echo "  6) tuic_listen_port：TUIC UDP 端口。建议高位端口（默认 ${TUIC_DEFAULT_PORT}）"
-  echo "  7) poll_interval：agent 轮询间隔秒数。越小同步越快，默认 15"
+  echo "  4) enable_vless：是否启用 VLESS+Reality（true/false）"
+  echo "  5) enable_tuic：是否启用 TUIC（true/false）"
+  echo "  6) tuic_domain：TUIC 证书域名。获取：你已解析到本机公网 IP 的域名（留空=不启用 TUIC）"
+  echo "  7) acme_email：证书申请邮箱。获取：你常用邮箱（用于证书到期通知）"
+  echo "  8) tuic_listen_port：TUIC UDP 端口。建议高位端口（默认 ${TUIC_DEFAULT_PORT}）"
+  echo "  9) poll_interval：agent 轮询间隔秒数。越小同步越快，默认 15"
   echo ""
 
   local step=1
@@ -1155,10 +1184,12 @@ prompt_config() {
   AUTH_TOKEN="${old_token:-devtoken123}"
   TUIC_DOMAIN="${old_domain:-}"
   ACME_EMAIL="${old_email:-admin@example.com}"
+  ENABLE_TUIC="$(normalize_bool_flag "$old_enable_tuic" "1")"
+  ENABLE_VLESS="$(normalize_bool_flag "$old_enable_vless" "1")"
   TUIC_LISTEN_PORT="${old_tuic_port:-$TUIC_DEFAULT_PORT}"
   POLL_INTERVAL="${old_poll:-15}"
 
-  while (( step <= 7 )); do
+  while (( step <= 9 )); do
     case "$step" in
       1)
         input="$(prompt_with_back "1) 请输入 controller_url（支持省略 http/https，例如 panel.example.com:8080）" "$CONTROLLER_URL")"
@@ -1196,23 +1227,46 @@ prompt_config() {
         step=$((step + 1))
         ;;
       4)
-        input="$(prompt_with_back "4) 请输入 tuic_domain（例如 node1.example.com；留空=不启用TUIC）" "$TUIC_DOMAIN")"
+        input="$(prompt_with_back "4) 是否启用 VLESS+Reality？（true/false）" "$ENABLE_VLESS")"
+        if [[ "$input" == "__SB_BACK__" ]]; then
+          step=$((step - 1)); continue
+        fi
+        ENABLE_VLESS="$(normalize_bool_flag "$input" "$ENABLE_VLESS")"
+        step=$((step + 1))
+        ;;
+      5)
+        input="$(prompt_with_back "5) 是否启用 TUIC？（true/false）" "$ENABLE_TUIC")"
+        if [[ "$input" == "__SB_BACK__" ]]; then
+          step=$((step - 1)); continue
+        fi
+        ENABLE_TUIC="$(normalize_bool_flag "$input" "$ENABLE_TUIC")"
+        step=$((step + 1))
+        ;;
+      6)
+        if [[ "$ENABLE_TUIC" == "0" ]]; then
+          TUIC_DOMAIN=""
+          ACME_EMAIL=""
+          step=$((step + 1))
+          continue
+        fi
+        input="$(prompt_with_back "6) 请输入 tuic_domain（例如 node1.example.com；留空=不启用TUIC）" "$TUIC_DOMAIN")"
         if [[ "$input" == "__SB_BACK__" ]]; then
           step=$((step - 1)); continue
         fi
         TUIC_DOMAIN="$(echo "$input" | tr -d '[:space:]')"
         if [[ -z "$TUIC_DOMAIN" ]]; then
           ACME_EMAIL=""
+          ENABLE_TUIC="0"
           msg "已选择不启用 TUIC，跳过证书邮箱。"
         fi
         step=$((step + 1))
         ;;
-      5)
+      7)
         if [[ -z "$TUIC_DOMAIN" ]]; then
           step=$((step + 1))
           continue
         fi
-        input="$(prompt_with_back "5) 请输入 acme_email（例如 admin@example.com）" "${ACME_EMAIL:-admin@example.com}")"
+        input="$(prompt_with_back "7) 请输入 acme_email（例如 admin@example.com）" "${ACME_EMAIL:-admin@example.com}")"
         if [[ "$input" == "__SB_BACK__" ]]; then
           step=$((step - 1)); continue
         fi
@@ -1222,8 +1276,12 @@ prompt_config() {
         fi
         step=$((step + 1))
         ;;
-      6)
-        input="$(prompt_with_back "6) 请输入 tuic_listen_port（默认 ${TUIC_DEFAULT_PORT}）" "$TUIC_LISTEN_PORT")"
+      8)
+        if [[ "$ENABLE_TUIC" == "0" ]]; then
+          step=$((step + 1))
+          continue
+        fi
+        input="$(prompt_with_back "8) 请输入 tuic_listen_port（默认 ${TUIC_DEFAULT_PORT}）" "$TUIC_LISTEN_PORT")"
         if [[ "$input" == "__SB_BACK__" ]]; then
           step=$((step - 1)); continue
         fi
@@ -1234,8 +1292,8 @@ prompt_config() {
         fi
         step=$((step + 1))
         ;;
-      7)
-        input="$(prompt_with_back "7) 请输入 poll_interval（秒，默认 15）" "$POLL_INTERVAL")"
+      9)
+        input="$(prompt_with_back "9) 请输入 poll_interval（秒，默认 15）" "$POLL_INTERVAL")"
         if [[ "$input" == "__SB_BACK__" ]]; then
           step=$((step - 1)); continue
         fi
@@ -1248,16 +1306,21 @@ prompt_config() {
         ;;
     esac
   done
+  if [[ -z "$TUIC_DOMAIN" ]]; then
+    ENABLE_TUIC="0"
+  fi
 }
 
 prompt_config_quick() {
-  local old_controller old_node old_token old_domain old_email old_tuic_port old_poll
+  local old_controller old_node old_token old_domain old_email old_tuic_port old_poll old_enable_tuic old_enable_vless
   local enable_tuic_quick
   old_controller="$(read_old_config_value "controller_url")"
   old_node="$(read_old_config_value "node_code")"
   old_token="$(read_old_config_value "auth_token")"
   old_domain="$(read_old_config_value "tuic_domain")"
   old_email="$(read_old_config_value "acme_email")"
+  old_enable_tuic="$(read_old_config_value "enable_tuic")"
+  old_enable_vless="$(read_old_config_value "enable_vless")"
   old_tuic_port="$(read_old_config_value "tuic_listen_port")"
   old_poll="$(read_old_config_value "poll_interval")"
 
@@ -1275,6 +1338,8 @@ prompt_config_quick() {
   TUIC_DOMAIN="${old_domain:-}"
   ACME_EMAIL="${old_email:-}"
   TUIC_LISTEN_PORT="${old_tuic_port:-$TUIC_DEFAULT_PORT}"
+  ENABLE_TUIC="$(normalize_bool_flag "$old_enable_tuic" "1")"
+  ENABLE_VLESS="$(normalize_bool_flag "$old_enable_vless" "1")"
 
   while (( step <= 4 )); do
     case "$step" in
@@ -1329,6 +1394,7 @@ prompt_config_quick() {
           fi
           TUIC_DOMAIN="$(echo "$input" | tr -d '[:space:]')"
           if [[ -n "$TUIC_DOMAIN" ]]; then
+            ENABLE_TUIC="1"
             input="$(prompt_with_back "acme_email（证书邮箱）" "${old_email:-admin@example.com}")"
             if [[ "$input" == "__SB_BACK__" ]]; then
               continue
@@ -1342,6 +1408,7 @@ prompt_config_quick() {
           else
             ACME_EMAIL=""
             TUIC_LISTEN_PORT="${old_tuic_port:-$TUIC_DEFAULT_PORT}"
+            ENABLE_TUIC="0"
             warn "已按你的输入关闭 TUIC（tuic_domain 为空）。"
           fi
         else
@@ -1361,10 +1428,13 @@ prompt_config_quick() {
   if ! [[ "$POLL_INTERVAL" =~ ^[0-9]+$ ]] || (( POLL_INTERVAL < 5 )); then
     POLL_INTERVAL=15
   fi
+  if [[ -z "$TUIC_DOMAIN" ]]; then
+    ENABLE_TUIC="0"
+  fi
 }
 
 check_domain_resolution_interactive() {
-  if [[ -z "$TUIC_DOMAIN" ]]; then
+  if [[ "$ENABLE_TUIC" != "1" || -z "$TUIC_DOMAIN" ]]; then
     return 0
   fi
   ensure_dns_tools
@@ -1405,8 +1475,10 @@ configure_ufw_rules() {
   fi
   msg "配置 UFW 防火墙规则..."
   ufw allow 22/tcp >/dev/null
-  ufw allow 443/tcp >/dev/null
-  if [[ -n "$TUIC_DOMAIN" ]]; then
+  if [[ "$ENABLE_VLESS" == "1" ]]; then
+    ufw allow 443/tcp >/dev/null
+  fi
+  if [[ "$ENABLE_TUIC" == "1" && -n "$TUIC_DOMAIN" ]]; then
     ufw allow "${TUIC_LISTEN_PORT}/udp" >/dev/null
   fi
 
@@ -1440,11 +1512,15 @@ write_config_json() {
     --arg acme_email "$ACME_EMAIL" \
     --argjson tuic_listen_port "$TUIC_LISTEN_PORT" \
     --argjson poll_interval "$POLL_INTERVAL" \
+    --argjson enable_tuic "$(bool_to_json "$ENABLE_TUIC")" \
+    --argjson enable_vless "$(bool_to_json "$ENABLE_VLESS")" \
     '{
       controller_url: $controller_url,
       node_code: $node_code,
       auth_token: $auth_token,
       poll_interval: $poll_interval,
+      enable_tuic: $enable_tuic,
+      enable_vless: $enable_vless,
       tuic_domain: $tuic_domain,
       tuic_listen_port: $tuic_listen_port,
       acme_email: $acme_email
@@ -1640,9 +1716,18 @@ show_summary() {
   echo "公网 IP: ${ip:-未知}"
   echo "节点代码: ${NODE_CODE}"
   echo "Controller: ${CONTROLLER_URL}"
-  echo "TUIC 域名: ${TUIC_DOMAIN:-未启用}"
-  echo "TUIC 端口: ${TUIC_LISTEN_PORT}/udp"
-  echo "VLESS 端口: 443/tcp"
+  if [[ "$ENABLE_TUIC" == "1" ]]; then
+    echo "TUIC: 启用"
+    echo "TUIC 域名: ${TUIC_DOMAIN:-未启用}"
+    echo "TUIC 端口: ${TUIC_LISTEN_PORT}/udp"
+  else
+    echo "TUIC: 已禁用"
+  fi
+  if [[ "$ENABLE_VLESS" == "1" ]]; then
+    echo "VLESS: 启用（端口 443/tcp）"
+  else
+    echo "VLESS: 已禁用"
+  fi
   echo ""
   echo "常用命令："
   if [[ "$INIT_SYSTEM" == "openrc" ]]; then

@@ -29,6 +29,17 @@ shorten_text() {
   echo "${text:0:160}"
 }
 
+normalize_bool() {
+  local raw="${1:-}"
+  local fallback="${2:-true}"
+  raw="$(echo "$raw" | tr '[:upper:]' '[:lower:]' | xargs)"
+  case "$raw" in
+    1|true|yes|y|on) echo "true" ;;
+    0|false|no|n|off) echo "false" ;;
+    *) echo "$fallback" ;;
+  esac
+}
+
 install_or_enable_fail2ban_selfcheck() {
   if command -v fail2ban-client >/dev/null 2>&1; then
     msg "检测到 fail2ban 已安装，尝试启用..."
@@ -598,13 +609,15 @@ run_checks() {
     return
   fi
 
-  local controller_url node_code auth_token tuic_domain acme_email tuic_port tuic_inbound_count
+  local controller_url node_code auth_token tuic_domain acme_email tuic_port tuic_inbound_count enable_tuic_raw enable_tuic
   controller_url="$(jq -r '.controller_url // ""' "$CONFIG_PATH")"
   node_code="$(jq -r '.node_code // ""' "$CONFIG_PATH")"
   auth_token="$(jq -r '.auth_token // ""' "$CONFIG_PATH")"
   tuic_domain="$(jq -r '.tuic_domain // ""' "$CONFIG_PATH")"
   acme_email="$(jq -r '.acme_email // ""' "$CONFIG_PATH")"
   tuic_port="$(jq -r '.tuic_listen_port // 0' "$CONFIG_PATH")"
+  enable_tuic_raw="$(jq -r '.enable_tuic // true' "$CONFIG_PATH")"
+  enable_tuic="$(normalize_bool "$enable_tuic_raw" "true")"
   refresh_singbox_log_path_from_config
   tuic_inbound_count=0
   if [[ -f "$SINGBOX_CONFIG" ]]; then
@@ -693,12 +706,12 @@ run_checks() {
     esac
   fi
 
-  if [[ -z "$tuic_domain" ]]; then
+  if [[ "$enable_tuic" == "false" ]]; then
     if [[ "$tuic_inbound_count" =~ ^[0-9]+$ ]] && (( tuic_inbound_count > 0 )); then
       add_issue "tuic_inbound_orphaned" "config_error" "运行配置残留 TUIC 入站（tuic_domain 已清空）" "清理本地 TUIC 入站并重启 sing-box"
-    else
-      add_issue "tuic_domain_empty" "optional_missing" "tuic_domain 为空（未启用 TUIC 证书）" "如仅使用 VLESS 可忽略"
     fi
+  elif [[ -z "$tuic_domain" ]]; then
+    add_issue "tuic_domain_empty" "optional_missing" "tuic_domain 为空（未启用 TUIC 证书）" "如仅使用 VLESS 可忽略"
   else
     if [[ -z "$acme_email" ]]; then
       add_issue "acme_email_missing" "required_missing" "已设置 tuic_domain 但 acme_email 为空" "填写证书邮箱后重启 sb-agent"

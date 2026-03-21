@@ -276,6 +276,16 @@ mask_secret_value() {
   echo "${value:0:4}****${value:n-4:4}"
 }
 
+normalize_bool_input() {
+  local raw="$1"
+  raw="$(echo "$raw" | tr '[:upper:]' '[:lower:]' | xargs)"
+  case "$raw" in
+    1|true|yes|y|on) echo "true" ;;
+    0|false|no|n|off) echo "false" ;;
+    *) echo "" ;;
+  esac
+}
+
 read_node_config_value() {
   local key="$1"
   if [[ ! -f "$CONFIG_PATH" ]]; then
@@ -295,6 +305,11 @@ write_node_config_value() {
   fi
   tmp="$(mktemp)"
   if [[ "$key" == "tuic_listen_port" || "$key" == "poll_interval" ]]; then
+    jq --arg k "$key" --argjson v "$value" '.[$k]=$v' "$CONFIG_PATH" >"$tmp" || {
+      rm -f "$tmp"
+      return 1
+    }
+  elif [[ "$key" == "enable_tuic" || "$key" == "enable_vless" ]]; then
     jq --arg k "$key" --argjson v "$value" '.[$k]=$v' "$CONFIG_PATH" >"$tmp" || {
       rm -f "$tmp"
       return 1
@@ -338,6 +353,8 @@ node_param_hint() {
     controller_url) echo "管理服务器地址（节点拉取 sync 用）" ;;
     node_code) echo "节点唯一标识，必须与管理端节点编码一致" ;;
     auth_token) echo "节点鉴权 token（管理端 NODE_AUTH_TOKEN）" ;;
+    enable_vless) echo "是否启用 VLESS+Reality 协议（true/false）" ;;
+    enable_tuic) echo "是否启用 TUIC 协议（true/false）" ;;
     tuic_domain) echo "TUIC 域名（留空=不启用 TUIC 证书）" ;;
     acme_email) echo "证书邮箱（启用 TUIC 域名时建议填写）" ;;
     tuic_listen_port) echo "TUIC 监听 UDP 端口（1-65535）" ;;
@@ -352,6 +369,8 @@ node_param_brief() {
     controller_url) echo "控制器地址" ;;
     node_code) echo "节点编码" ;;
     auth_token) echo "节点鉴权Token" ;;
+    enable_vless) echo "启用VLESS" ;;
+    enable_tuic) echo "启用TUIC" ;;
     tuic_domain) echo "TUIC域名" ;;
     acme_email) echo "证书邮箱" ;;
     tuic_listen_port) echo "TUIC端口" ;;
@@ -370,7 +389,7 @@ edit_single_node_param() {
     return 1
   fi
 
-  local -a keys=(controller_url node_code auth_token tuic_domain acme_email tuic_listen_port poll_interval)
+  local -a keys=(controller_url node_code auth_token enable_vless enable_tuic tuic_domain acme_email tuic_listen_port poll_interval)
   local choice idx key current_value display_value new_value
 
   while true; do
@@ -432,6 +451,14 @@ edit_single_node_param() {
         continue
       fi
     fi
+    if [[ "$key" == "enable_tuic" || "$key" == "enable_vless" ]]; then
+      local_bool="$(normalize_bool_input "$new_value")"
+      if [[ -z "$local_bool" ]]; then
+        warn "请输入 true/false 或 1/0。"
+        continue
+      fi
+      new_value="$local_bool"
+    fi
 
     if ! write_node_config_value "$key" "$new_value"; then
       err "写入配置失败。"
@@ -439,7 +466,7 @@ edit_single_node_param() {
     fi
     msg "已更新 ${key}。"
     systemctl restart "$AGENT_SERVICE" >/dev/null 2>&1 || true
-    if [[ "$key" == "tuic_domain" || "$key" == "acme_email" || "$key" == "tuic_listen_port" ]]; then
+    if [[ "$key" == "tuic_domain" || "$key" == "acme_email" || "$key" == "tuic_listen_port" || "$key" == "enable_tuic" || "$key" == "enable_vless" ]]; then
       systemctl restart "$SINGBOX_SERVICE" >/dev/null 2>&1 || true
       msg "已尝试重启 sb-agent / sing-box 使变更生效。"
     else
@@ -738,6 +765,44 @@ EOF
     return 1
   fi
   msg "fail2ban 已启用（backend=${used_backend}）。"
+}
+
+uninstall_fail2ban() {
+  if ! confirm_action "确认卸载 fail2ban？" "N"; then
+    warn "已取消卸载。"
+    return 0
+  fi
+  if is_alpine; then
+    rc-service fail2ban stop >/dev/null 2>&1 || true
+    rc-update del fail2ban default >/dev/null 2>&1 || true
+    apk del --no-cache fail2ban >/dev/null 2>&1 || true
+  else
+    systemctl stop fail2ban >/dev/null 2>&1 || true
+    systemctl disable fail2ban >/dev/null 2>&1 || true
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get purge -y fail2ban >/dev/null 2>&1 || true
+    apt-get autoremove -y >/dev/null 2>&1 || true
+  fi
+  rm -rf /etc/fail2ban
+  msg "fail2ban 已卸载（如需再次启用请用菜单重新安装）。"
+}
+
+manage_fail2ban_menu() {
+  echo "fail2ban 管理："
+  echo "  1) 安装/启用"
+  echo "  2) 卸载"
+  echo "  q) 返回主菜单"
+  local choice
+  read -r -p "请选择 [1/2/q]（默认 1）: " choice
+  choice="${choice:-1}"
+  if [[ "$choice" == "q" || "$choice" == "Q" ]]; then
+    return
+  fi
+  if [[ "$choice" == "2" ]]; then
+    uninstall_fail2ban
+  else
+    install_or_enable_fail2ban
+  fi
 }
 
 show_fail2ban_status() {
@@ -1237,9 +1302,13 @@ run_reconfigure() {
   echo "  1) 快速配置（推荐默认值，最少提问）"
   echo "  2) 高级变量设置向导（逐项说明，全部可调）"
   echo "  3) 参数单项修改（点选一项直接改）"
+  echo "  q) 返回主菜单"
   local cfg_mode
-  read -r -p "请选择 [1/2/3]（默认 1）: " cfg_mode
+  read -r -p "请选择 [1/2/3/q]（默认 1）: " cfg_mode
   cfg_mode="${cfg_mode:-1}"
+  if [[ "$cfg_mode" == "q" || "$cfg_mode" == "Q" ]]; then
+    return
+  fi
   if [[ "$cfg_mode" == "3" ]]; then
     edit_single_node_param
   elif [[ "$cfg_mode" == "2" ]]; then
@@ -1338,6 +1407,48 @@ install_or_update_singbox() {
     msg "sing-box 服务已启用并尝试启动。"
   fi
   return 0
+}
+
+uninstall_singbox() {
+  if ! confirm_action "确认卸载 sing-box？" "N"; then
+    warn "已取消卸载。"
+    return 0
+  fi
+  if [[ "$INIT_SYSTEM" == "openrc" ]]; then
+    rc-service sing-box stop >/dev/null 2>&1 || true
+    rc-update del sing-box default >/dev/null 2>&1 || true
+    apk del --no-cache sing-box >/dev/null 2>&1 || true
+    rm -f /etc/init.d/sing-box
+  else
+    systemctl stop "$SINGBOX_SERVICE" >/dev/null 2>&1 || true
+    systemctl disable "$SINGBOX_SERVICE" >/dev/null 2>&1 || true
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get purge -y sing-box >/dev/null 2>&1 || true
+    apt-get autoremove -y >/dev/null 2>&1 || true
+    rm -f /etc/systemd/system/sing-box.service
+  fi
+  rm -rf /etc/sing-box /var/lib/sing-box /var/log/sing-box
+  rm -f /usr/local/bin/sing-box /usr/bin/sing-box
+  systemctl daemon-reload >/dev/null 2>&1 || true
+  msg "sing-box 已卸载（如需再用请重新安装）。"
+}
+
+manage_singbox_menu() {
+  echo "sing-box 管理："
+  echo "  1) 安装/更新"
+  echo "  2) 卸载"
+  echo "  q) 返回主菜单"
+  local choice
+  read -r -p "请选择 [1/2/q]（默认 1）: " choice
+  choice="${choice:-1}"
+  if [[ "$choice" == "q" || "$choice" == "Q" ]]; then
+    return
+  fi
+  if [[ "$choice" == "2" ]]; then
+    uninstall_singbox
+  else
+    install_or_update_singbox
+  fi
 }
 
 ensure_singbox_installed_interactive() {
@@ -1561,7 +1672,7 @@ show_menu() {
     echo "10) 触发证书重新申请/刷新（先备份）"
     echo ""
     echo "【安全工具】"
-    echo "11) 安装/启用 fail2ban（SSH 防爆破）"
+    echo "11) fail2ban 管理（安装/卸载）"
     echo "12) 查看 fail2ban 状态与封禁列表"
     echo "13) 解封 fail2ban 封禁 IP"
     echo "14) 生成 SSH 密钥（ed25519）"
@@ -1575,7 +1686,7 @@ show_menu() {
     echo "20) AI诊断包导出（可粘贴给任意AI）"
     echo "21) 更新同步（保留原配置，自动 git pull）"
     echo "22) 深度卸载"
-    echo "23) 安装/更新 sing-box（交互）"
+    echo "23) sing-box 管理（安装/更新/卸载）"
     echo "24) 部署参数自检与修复向导（循环到通过）"
     echo "25) 退出"
     echo "========================================"
@@ -1592,10 +1703,10 @@ show_menu() {
   echo " 6) 查看 sb-agent 日志（tail -f）"
   echo " 8) 查看 sing-box 状态（摘要）"
   echo " 9) 证书状态检查（强判定）"
-  echo "11) 安装/启用 fail2ban（SSH 防爆破）"
+  echo "11) fail2ban 管理（安装/卸载）"
   echo "15) SSH 安全状态总览（只读）"
   echo "21) 更新同步（保留原配置，自动 git pull）"
-  echo "23) 安装/更新 sing-box（交互）"
+  echo "23) sing-box 管理（安装/更新/卸载）"
   echo "24) 部署参数自检与修复向导（循环到通过）"
   echo "25) 退出"
   echo "========================================"
@@ -1672,7 +1783,7 @@ main() {
         pause
         ;;
       11)
-        install_or_enable_fail2ban
+        manage_fail2ban_menu
         pause
         ;;
       12)
@@ -1734,7 +1845,7 @@ main() {
         pause
         ;;
       23)
-        install_or_update_singbox
+        manage_singbox_menu
         pause
         ;;
       24)

@@ -49,6 +49,8 @@ class AgentConfig:
         tuic_domain: str,
         tuic_listen_port: int,
         acme_email: str,
+        enable_tuic: bool,
+        enable_vless: bool,
     ) -> None:
         self.controller_url = controller_url.rstrip("/")
         self.node_code = node_code
@@ -57,6 +59,8 @@ class AgentConfig:
         self.tuic_domain = tuic_domain
         self.tuic_listen_port = tuic_listen_port
         self.acme_email = acme_email
+        self.enable_tuic = enable_tuic
+        self.enable_vless = enable_vless
 
 
 def setup_logger() -> logging.Logger:
@@ -112,6 +116,8 @@ def load_config() -> AgentConfig:
     auth_token = str(raw.get("auth_token", "")).strip()
     tuic_domain = str(raw.get("tuic_domain", "")).strip()
     acme_email = str(raw.get("acme_email", "")).strip()
+    enable_tuic = parse_bool(raw.get("enable_tuic", True), True)
+    enable_vless = parse_bool(raw.get("enable_vless", True), True)
 
     if not controller_url:
         raise RuntimeError("配置缺少 controller_url")
@@ -142,6 +148,8 @@ def load_config() -> AgentConfig:
         tuic_domain=tuic_domain,
         tuic_listen_port=tuic_listen_port,
         acme_email=acme_email,
+        enable_tuic=enable_tuic,
+        enable_vless=enable_vless,
     )
 
 
@@ -279,6 +287,19 @@ def parse_int(value: Any, default: int = 0) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def parse_bool(value: Any, default: bool = True) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    text = str(value).strip().lower()
+    if text in ("1", "true", "yes", "y", "on"):
+        return True
+    if text in ("0", "false", "no", "n", "off"):
+        return False
+    return default
 
 
 def truncate_text(raw: str, limit: int = 4000) -> str:
@@ -616,43 +637,48 @@ def build_sing_box_config(
     inbounds: List[Dict[str, Any]] = []
     route_rules: List[Dict[str, Any]] = []
 
-    vless_users = build_vless_users(users)
-    tls_obj: Dict[str, Any] = {
-        "enabled": True,
-        "reality": {
+    if config.enable_vless:
+        vless_users = build_vless_users(users)
+        tls_obj: Dict[str, Any] = {
             "enabled": True,
-            "handshake": {
-                "server": handshake_server,
-                "server_port": 443,
+            "reality": {
+                "enabled": True,
+                "handshake": {
+                    "server": handshake_server,
+                    "server_port": 443,
+                },
+                "private_key": state["reality_private_key"],
+                "short_id": [state["reality_short_id"]],
+                "max_time_difference": "1m",
             },
-            "private_key": state["reality_private_key"],
-            "short_id": [state["reality_short_id"]],
-            "max_time_difference": "1m",
-        },
-    }
-    if reality_server_name:
-        tls_obj["server_name"] = reality_server_name
+        }
+        if reality_server_name:
+            tls_obj["server_name"] = reality_server_name
 
-    vless_inbound = {
-        "type": "vless",
-        "tag": "vless-reality-in",
-        "listen": "::",
-        "listen_port": 443,
-        "users": vless_users,
-        "tls": tls_obj,
-    }
-    inbounds.append(vless_inbound)
-    route_rules.append({"inbound": ["vless-reality-in"], "outbound": "direct"})
+        vless_inbound = {
+            "type": "vless",
+            "tag": "vless-reality-in",
+            "listen": "::",
+            "listen_port": 443,
+            "users": vless_users,
+            "tls": tls_obj,
+        }
+        inbounds.append(vless_inbound)
+        route_rules.append({"inbound": ["vless-reality-in"], "outbound": "direct"})
+    else:
+        LOGGER.info("已禁用 VLESS 入站生成。")
 
     tuic_speed_rules: List[Dict[str, int]] = []
-    if config.tuic_domain and config.acme_email:
+    if config.enable_tuic and config.tuic_domain and config.acme_email:
         tuic_records = build_tuic_user_records(users)
         tuic_inbounds, tuic_routes = build_tuic_inbounds_and_routes(config, tuic_records)
         inbounds.extend(tuic_inbounds)
         route_rules.extend(tuic_routes)
         tuic_speed_rules = build_tuic_speed_rules(tuic_records)
-    elif config.tuic_domain and not config.acme_email:
+    elif config.enable_tuic and config.tuic_domain and not config.acme_email:
         LOGGER.warning("已配置 tuic_domain 但缺少 acme_email，跳过 TUIC 入站生成")
+    elif not config.enable_tuic:
+        LOGGER.info("已禁用 TUIC 入站生成。")
 
     return {
         "log": {
@@ -841,6 +867,8 @@ def apply_agent_config_patch(patch_payload: Dict[str, Any]) -> Tuple[bool, str]:
         "controller_url",
         "auth_token",
         "node_code",
+        "enable_tuic",
+        "enable_vless",
     }
     updates: Dict[str, Any] = {}
     for key, value in patch_payload.items():
@@ -862,6 +890,8 @@ def apply_agent_config_patch(patch_payload: Dict[str, Any]) -> Tuple[bool, str]:
             if parsed < 1 or parsed > 65535:
                 return False, "tuic_listen_port 必须在 1-65535"
             value = parsed
+        elif key in ("enable_tuic", "enable_vless"):
+            value = parse_bool(value, True)
         elif key in ("tuic_domain", "acme_email", "auth_token", "node_code"):
             value = str(value or "").strip()
             if key == "node_code" and not value:
@@ -1193,20 +1223,28 @@ def handle_once(config: AgentConfig) -> None:
         raise RuntimeError("sync 响应缺少 node")
 
     state = load_state()
-    state = ensure_reality_material(node, state)
-    maybe_report_reality(config, node, state)
+    if config.enable_vless:
+        state = ensure_reality_material(node, state)
+        maybe_report_reality(config, node, state)
 
     rendered, tuic_speed_rules = build_sing_box_config(config, node, users, state)
-    tuic_records = build_tuic_user_records(users)
+    tuic_records: List[Dict[str, Any]] = []
+    if config.enable_tuic and config.tuic_domain and config.acme_email:
+        tuic_records = build_tuic_user_records(users)
     changed = write_sing_box_config_if_changed(rendered)
     if changed:
         LOGGER.info("检测到配置变更，开始检查并重载 sing-box")
         check_and_reload_sing_box()
     else:
         LOGGER.info("配置无变化")
-    if config.tuic_domain and config.acme_email:
+    if config.enable_tuic and config.tuic_domain and config.acme_email:
         apply_tuic_ufw_rules(build_tuic_ufw_ports(config, node, tuic_records))
-    apply_tuic_speed_limits(tuic_speed_rules)
+    else:
+        apply_tuic_ufw_rules([])
+    if config.enable_tuic:
+        apply_tuic_speed_limits(tuic_speed_rules)
+    else:
+        apply_tuic_speed_limits([])
     process_node_tasks(config)
 
 
@@ -1231,11 +1269,13 @@ def main() -> int:
         return 1
 
     LOGGER.info(
-        "sb-agent 启动: node_code=%s poll_interval=%s tuic_domain=%s tuic_listen_port=%s",
+        "sb-agent 启动: node_code=%s poll_interval=%s tuic_domain=%s tuic_listen_port=%s enable_tuic=%s enable_vless=%s",
         first_config.node_code,
         first_config.poll_interval,
         first_config.tuic_domain or "(未启用)",
         first_config.tuic_listen_port,
+        first_config.enable_tuic,
+        first_config.enable_vless,
     )
 
     while not _STOP:
