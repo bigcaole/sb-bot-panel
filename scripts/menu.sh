@@ -292,7 +292,7 @@ read_node_config_value() {
     echo ""
     return
   fi
-  jq -r --arg k "$key" '.[$k] // ""' "$CONFIG_PATH" 2>/dev/null || true
+  jq -r --arg k "$key" 'if has($k) then .[$k] else "" end' "$CONFIG_PATH" 2>/dev/null || true
 }
 
 write_node_config_value() {
