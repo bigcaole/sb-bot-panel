@@ -397,6 +397,11 @@ edit_single_node_param() {
     for idx in "${!keys[@]}"; do
       key="${keys[$idx]}"
       current_value="$(read_node_config_value "$key")"
+      if [[ "$key" == "enable_tuic" || "$key" == "enable_vless" ]]; then
+        if [[ -z "$current_value" ]] && jq -e --arg k "$key" 'has($k) and .[$k] == false' "$CONFIG_PATH" >/dev/null 2>&1; then
+          current_value="false"
+        fi
+      fi
       if [[ "$key" == "auth_token" ]]; then
         display_value="$(mask_secret_value "$current_value")"
       else
@@ -425,6 +430,11 @@ edit_single_node_param() {
     if [[ "$key" == "auth_token" ]]; then
       echo "当前值: $(mask_secret_value "$current_value")"
     else
+      if [[ "$key" == "enable_tuic" || "$key" == "enable_vless" ]]; then
+        if [[ -z "$current_value" ]] && jq -e --arg k "$key" 'has($k) and .[$k] == false' "$CONFIG_PATH" >/dev/null 2>&1; then
+          current_value="false"
+        fi
+      fi
       echo "当前值: ${current_value:-未设置}"
     fi
     read -r -p "请输入新值（输入 __EMPTY__ 清空，直接回车取消）: " new_value
