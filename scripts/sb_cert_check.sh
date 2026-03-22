@@ -64,6 +64,54 @@ read_runtime_tuic_summary() {
   ' "$runtime_cfg" 2>/dev/null || echo "0,0,0"
 }
 
+normalize_bool() {
+  local raw="$1"
+  raw="$(echo "$raw" | tr '[:upper:]' '[:lower:]' | xargs)"
+  case "$raw" in
+    1|true|yes|y|on) echo "true" ;;
+    0|false|no|n|off) echo "false" ;;
+    *) echo "" ;;
+  esac
+}
+
+get_singbox_last_error() {
+  if command -v journalctl >/dev/null 2>&1; then
+    journalctl -u sing-box -n 80 --no-pager 2>/dev/null \
+      | grep -Ei "FATAL|error" \
+      | tail -n1 \
+      | sed 's/.*sing-box\[.*\]: //g' \
+      || true
+  fi
+}
+
+detect_acme_rate_limited() {
+  if command -v journalctl >/dev/null 2>&1; then
+    journalctl -u sing-box -n 120 --no-pager 2>/dev/null \
+      | grep -Ei "rateLimited|too many failed authorizations" >/dev/null 2>&1
+  else
+    return 1
+  fi
+}
+
+get_acme_retry_after() {
+  if command -v journalctl >/dev/null 2>&1; then
+    journalctl -u sing-box -n 120 --no-pager 2>/dev/null \
+      | grep -Ei "retry after" \
+      | tail -n1 \
+      | sed -E 's/.*retry after ([^:]+ UTC).*/\1/' \
+      || true
+  fi
+}
+
+detect_certmagic_permission_denied() {
+  if command -v journalctl >/dev/null 2>&1; then
+    journalctl -u sing-box -n 120 --no-pager 2>/dev/null \
+      | grep -Ei "certmagic.*permission denied|certmagic.*storage is probably misconfigured" >/dev/null 2>&1
+  else
+    return 1
+  fi
+}
+
 main() {
   if [[ ! -f "$CONFIG_PATH" ]]; then
     err "未找到配置文件: $CONFIG_PATH"
@@ -76,10 +124,22 @@ main() {
 
   local tuic_domain
   local acme_email
+  local enable_tuic_raw enable_tuic
   tuic_domain="$(jq -r '.tuic_domain // ""' "$CONFIG_PATH")"
   tuic_domain="${tuic_domain//[$'\r\n']}"
   acme_email="$(jq -r '.acme_email // ""' "$CONFIG_PATH")"
   acme_email="${acme_email//[$'\r\n']}"
+  enable_tuic_raw="$(jq -r '.enable_tuic // ""' "$CONFIG_PATH")"
+  enable_tuic="$(normalize_bool "$enable_tuic_raw")"
+  if [[ "$enable_tuic" == "false" ]]; then
+    msg "----- TUIC 证书状态（强判定）-----"
+    echo "结论: 未启用 TUIC（无需证书）"
+    echo "TUIC 域名: ${tuic_domain:-未设置}"
+    echo "ACME 邮箱: ${acme_email:-未设置}"
+    echo ""
+    echo "建议：如需启用 TUIC，请在节点菜单开启 enable_tuic 并填写 tuic_domain/acme_email。"
+    exit 0
+  fi
   if [[ -z "$tuic_domain" ]]; then
     warn "当前未启用 TUIC（tuic_domain 为空），无需检查证书。"
     exit 0
@@ -186,22 +246,54 @@ main() {
   else
     echo "证书状态: ${cert_status}"
   fi
-  if (( ${#issues[@]} > 0 )); then
-    echo "问题清单："
-    for issue in "${issues[@]}"; do
-      echo "  - ${issue}"
-    done
+  local reason=""
+  local action=""
+  if [[ -z "$acme_email" ]]; then
+    reason="证书邮箱未设置"
+    action="填写 acme_email 后重启 sb-agent"
+  elif [[ "$tuic_total" == "0" ]]; then
+    reason="管理端未下发 TUIC 入站"
+    action="在管理端启用 TUIC/分配节点后同步配置并重启 sb-agent"
+  elif [[ "$domain_match" == "0" ]]; then
+    reason="运行配置未匹配当前域名/邮箱"
+    action="检查 tuic_domain/acme_email 并重启 sb-agent"
+  elif [[ -n "$public_ip" && -n "$dns_ip" && "$public_ip" != "$dns_ip" ]]; then
+    reason="域名未解析到本机公网 IP"
+    action="修正域名 A 记录指向本机公网 IP"
+  elif ! service_active sing-box && detect_acme_rate_limited; then
+    local retry_after
+    retry_after="$(get_acme_retry_after)"
+    reason="ACME 触发限流（HTTP 429）"
+    if [[ -n "$retry_after" ]]; then
+      action="等待到 ${retry_after} 后重试，或更换 TUIC 域名"
+    else
+      action="等待限流恢复后重试，或更换 TUIC 域名"
+    fi
+  elif ! service_active sing-box && detect_certmagic_permission_denied; then
+    reason="证书目录权限不足（certmagic）"
+    action="执行节点自检修复或手动修复目录权限后重启 sing-box"
+  elif [[ -z "$cert_file" ]]; then
+    reason="证书尚未签发"
+    action="确认 TUIC 入站与 ACME 已配置，等待自动签发或重启 sing-box"
+  elif [[ "$cert_status" != "正常" ]]; then
+    reason="证书${cert_status}"
+    action="触发证书刷新或等待自动续期"
   fi
-  if [[ "$tuic_total" == "0" ]]; then
-    echo "提示：当前节点尚未下发 TUIC 入站配置，证书不会申请。"
-    echo "  需在管理端启用 TUIC/分配节点后，同步配置并重启 sb-agent。"
+
+  if [[ -n "$reason" ]]; then
+    echo "核心原因: ${reason}"
   fi
-  echo "建议处理："
-  echo "  1) 确认域名 A 记录指向本机公网 IP，且 UDP 端口放行"
-  echo "  2) 补齐 acme_email 后重启 sb-agent"
-  echo "  3) 需要日志时手动执行："
-  echo "     journalctl -u sing-box -n 120 --no-pager"
-  echo "     journalctl -u sb-agent -n 120 --no-pager"
+  if [[ -n "$action" ]]; then
+    echo "建议操作: ${action}"
+  fi
+  if (( ${#issues[@]} > 1 )); then
+    echo "其他发现: $(printf '%s；' "${issues[@]}" | sed 's/；$//')"
+  fi
+
+  echo ""
+  echo "如需详细日志，请执行："
+  echo "  journalctl -u sing-box -n 120 --no-pager"
+  echo "  journalctl -u sb-agent -n 120 --no-pager"
 }
 
 main "$@"

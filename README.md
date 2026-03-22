@@ -284,7 +284,7 @@ REALITY 密钥策略：
 
 ### 2) 证书申请失败
 
-- 先看：`/usr/local/bin/sb-cert-check.sh`
+- 先看：`/usr/local/bin/sb-cert-check.sh`（已简化为“核心原因 + 建议操作”，不再输出一大段日志）
 - 重点检查：
   - 域名 A 记录是否指向当前公网 IP
   - Cloudflare 代理是否关闭（小黄云置灰）
