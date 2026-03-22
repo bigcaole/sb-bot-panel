@@ -292,7 +292,7 @@ read_node_config_value() {
     echo ""
     return
   fi
-  jq -r --arg k "$key" 'if has($k) then .[$k] else "" end' "$CONFIG_PATH" 2>/dev/null || true
+  jq -r --arg k "$key" 'if has($k) then (.[ $k ] | if . == null then "" else tostring end) else "" end' "$CONFIG_PATH" 2>/dev/null || true
 }
 
 write_node_config_value() {
@@ -463,6 +463,19 @@ edit_single_node_param() {
     if ! write_node_config_value "$key" "$new_value"; then
       err "写入配置失败。"
       continue
+    fi
+    if [[ "$key" == "enable_tuic" || "$key" == "enable_vless" ]]; then
+      persisted_value="$(read_node_config_value "$key")"
+      if [[ -z "$persisted_value" ]]; then
+        warn "检测到布尔值未正确回显，尝试强制写入字符串值..."
+        tmp_fix="$(mktemp)"
+        if jq --arg k "$key" --arg v "$new_value" '.[$k]=$v' "$CONFIG_PATH" >"$tmp_fix" 2>/dev/null; then
+          mv "$tmp_fix" "$CONFIG_PATH"
+          chmod 0600 "$CONFIG_PATH" || true
+        else
+          rm -f "$tmp_fix"
+        fi
+      fi
     fi
     msg "已更新 ${key}。"
     systemctl restart "$AGENT_SERVICE" >/dev/null 2>&1 || true

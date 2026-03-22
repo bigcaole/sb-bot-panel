@@ -367,7 +367,7 @@ sudo bash scripts/admin/install_admin.sh --configure-quick
 - `4) 参数单项修改（点选一项直接改；改一项无需重跑全向导）`
 
 单项修改列表会显示为 `中文说明｜参数名 = 当前值`，便于直接按中文定位参数再修改。
-布尔项（如 `enable_tuic`/`enable_vless`）的 `false` 会正常显示，不会被误判为“未设置”。
+布尔项（如 `enable_tuic`/`enable_vless`）的 `false` 会正常显示，不会被误判为“未设置”；若回显异常，菜单会自动尝试强制写入后重试显示。
 
 说明：执行安装/配置向导时，会自动写入完整 `.env` 字段（包括 `BOT_MENU_TTL`、`BOT_NODE_MONITOR_INTERVAL`、`BOT_NODE_OFFLINE_THRESHOLD`、`BOT_NODE_TIME_SYNC_INTERVAL`、`BOT_LOG_VIEW_COOLDOWN`、`BOT_LOG_VIEW_MAX_PAGES`），无需手工补字段。
 并且 URL 字段支持省略协议（`http://` / `https://`），脚本会自动补全。
