@@ -2133,21 +2133,21 @@ main() {
         token_action="${token_action:-1}"
         if [[ "$token_action" == "q" || "$token_action" == "Q" ]]; then
           pause
-          ;;
-        fi
-        if [[ "$token_action" == "3" ]]; then
-          show_full_auth_tokens
-        elif [[ "$token_action" == "2" ]]; then
-          if [[ -f "$TOKEN_SPLIT_MIGRATE_SCRIPT" ]]; then
-            bash "$TOKEN_SPLIT_MIGRATE_SCRIPT"
-          else
-            err "未找到 token 拆分迁移脚本: $TOKEN_SPLIT_MIGRATE_SCRIPT"
-          fi
         else
-          if [[ -f "$TOKEN_COLLAPSE_SCRIPT" ]]; then
-            bash "$TOKEN_COLLAPSE_SCRIPT"
+          if [[ "$token_action" == "3" ]]; then
+            show_full_auth_tokens
+          elif [[ "$token_action" == "2" ]]; then
+            if [[ -f "$TOKEN_SPLIT_MIGRATE_SCRIPT" ]]; then
+              bash "$TOKEN_SPLIT_MIGRATE_SCRIPT"
+            else
+              err "未找到 token 拆分迁移脚本: $TOKEN_SPLIT_MIGRATE_SCRIPT"
+            fi
           else
-            err "未找到 token 收敛脚本: $TOKEN_COLLAPSE_SCRIPT"
+            if [[ -f "$TOKEN_COLLAPSE_SCRIPT" ]]; then
+              bash "$TOKEN_COLLAPSE_SCRIPT"
+            else
+              err "未找到 token 收敛脚本: $TOKEN_COLLAPSE_SCRIPT"
+            fi
           fi
         fi
         pause
