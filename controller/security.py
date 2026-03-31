@@ -84,6 +84,8 @@ RATE_LIMIT_STATIC_SEGMENTS: Set[str] = {
     "set_speed",
     "set_limit_mode",
     "set_status",
+    "set_profile",
+    "renew",
     "assign_node",
     "unassign_node",
     "stats",
@@ -374,6 +376,8 @@ def is_rate_limit_target_path(path: str) -> bool:
         normalized.endswith("/set_speed")
         or normalized.endswith("/set_limit_mode")
         or normalized.endswith("/set_status")
+        or normalized.endswith("/set_profile")
+        or normalized.endswith("/renew")
         or normalized.endswith("/assign_node")
         or normalized.endswith("/unassign_node")
     ):

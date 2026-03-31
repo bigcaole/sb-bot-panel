@@ -310,6 +310,35 @@ class ControllerSmokeTestCase(unittest.TestCase):
             mode_user_resp = client.get("/users/u1001", headers=self._auth_header())
             self.assertEqual(200, mode_user_resp.status_code)
             self.assertEqual("off", str(mode_user_resp.json().get("limit_mode", "")))
+            old_expire_at = int(mode_user_resp.json().get("expire_at", 0) or 0)
+
+            set_profile_resp = client.post(
+                "/users/u1001/set_profile",
+                headers=self._auth_header(),
+                json={"display_name": "alice-updated", "note": "renewed by smoke"},
+            )
+            self.assertEqual(200, set_profile_resp.status_code)
+            set_profile_payload = set_profile_resp.json()
+            self.assertTrue(bool(set_profile_payload.get("ok")))
+            self.assertEqual("alice-updated", str(set_profile_payload.get("display_name", "")))
+
+            profile_user_resp = client.get("/users/u1001", headers=self._auth_header())
+            self.assertEqual(200, profile_user_resp.status_code)
+            self.assertEqual("alice-updated", str(profile_user_resp.json().get("display_name", "")))
+            self.assertEqual("renewed by smoke", str(profile_user_resp.json().get("note", "")))
+
+            renew_resp = client.post(
+                "/users/u1001/renew",
+                headers=self._auth_header(),
+                json={"valid_days": 7},
+            )
+            self.assertEqual(200, renew_resp.status_code)
+            renew_payload = renew_resp.json()
+            self.assertTrue(bool(renew_payload.get("ok")))
+            self.assertEqual("u1001", str(renew_payload.get("user_code", "")))
+            self.assertEqual(7, int(renew_payload.get("valid_days", 0) or 0))
+            self.assertEqual(old_expire_at, int(renew_payload.get("old_expire_at", 0) or 0))
+            self.assertGreater(int(renew_payload.get("new_expire_at", 0) or 0), old_expire_at)
 
             old_vless_uuid = str(mode_user_resp.json().get("vless_uuid", ""))
             old_tuic_secret = str(mode_user_resp.json().get("tuic_secret", ""))

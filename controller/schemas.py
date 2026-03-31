@@ -44,6 +44,15 @@ class SetUserLimitModeRequest(BaseModel):
     limit_mode: str = Field(min_length=1, max_length=20)
 
 
+class RenewUserRequest(BaseModel):
+    valid_days: int = Field(ge=1, le=3650)
+
+
+class SetUserProfileRequest(BaseModel):
+    display_name: str = Field(min_length=1, max_length=120)
+    note: str = Field(default="", max_length=500)
+
+
 class CreateNodeTaskRequest(BaseModel):
     task_type: str = Field(min_length=1)
     payload: Optional[Dict[str, Any]] = None

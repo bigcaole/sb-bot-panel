@@ -203,6 +203,10 @@ USER_NODES_INPUT = 300
 USER_SPEED_PENDING_KEY = "user_speed_pending"
 USER_SPEED_ACTIVE_KEY = "user_speed_active"
 USER_SPEED_INPUT, USER_SPEED_CONFIRM = 400, 401
+USER_RENEW_PENDING_KEY = "user_renew_pending"
+USER_RENEW_INPUT = 402
+USER_EDIT_PENDING_KEY = "user_edit_pending"
+USER_EDIT_DISPLAY_NAME, USER_EDIT_NOTE = 403, 404
 MAINTAIN_CONFIG_INPUT = 700
 MAINTAIN_IMPORT_INPUT = 701
 NODE_OPS_CONFIG_KEY = "node_ops_config_wizard"
@@ -236,6 +240,8 @@ SUBMENUS = {
         "buttons": [
             ("👤 创建用户", "action:user_create"),
             ("🔁 禁用/启用", "action:user_toggle"),
+            ("✏️ 编辑信息", "action:user_edit"),
+            ("⏳ 用户续期", "action:user_renew"),
             ("🗑 删除用户", "action:user_delete"),
             ("🚦 修改限速", "action:user_speed"),
             ("🧩 节点分配", "action:user_nodes"),
@@ -404,6 +410,8 @@ VIEW_ADMIN_CHAT_ID_SET.update(OPS_ADMIN_CHAT_ID_SET)
 PRIVILEGED_CALLBACK_EXACT = {
     "action:user_create": ROLE_OPERATOR,
     "action:user_toggle": ROLE_OPERATOR,
+    "action:user_edit": ROLE_OPERATOR,
+    "action:user_renew": ROLE_OPERATOR,
     "action:user_speed": ROLE_OPERATOR,
     "action:user_nodes": ROLE_OPERATOR,
     "action:speed_switch": ROLE_OPERATOR,
@@ -441,6 +449,8 @@ PRIVILEGED_CALLBACK_EXACT = {
 PRIVILEGED_CALLBACK_PREFIXES = {
     "userdelete:": ROLE_SUPER,
     "usertoggle:": ROLE_OPERATOR,
+    "useredit:": ROLE_OPERATOR,
+    "userrenew:": ROLE_OPERATOR,
     "userspeed:": ROLE_OPERATOR,
     "usermode:": ROLE_OPERATOR,
     "usernodes:": ROLE_OPERATOR,
@@ -1379,6 +1389,10 @@ def build_user_nodes_manage_keyboard(user_code: str) -> InlineKeyboardMarkup:
                 InlineKeyboardButton("➖ 解绑节点", callback_data=f"usernodes:unassign:{user_code}"),
             ],
             [
+                InlineKeyboardButton("✏️ 编辑信息", callback_data=f"useredit:pick:{user_code}"),
+                InlineKeyboardButton("⏳ 用户续期", callback_data=f"userrenew:pick:{user_code}"),
+            ],
+            [
                 InlineKeyboardButton("📎 订阅链接（明文）", callback_data=f"sub:links:{user_code}"),
                 InlineKeyboardButton("📎 订阅链接（Base64）", callback_data=f"sub:base64:{user_code}"),
             ],
@@ -1427,6 +1441,49 @@ def build_user_speed_picker_keyboard(users: list) -> InlineKeyboardMarkup:
                 InlineKeyboardButton(
                     button_text,
                     callback_data=f"userspeed:pick:{user_code}",
+                )
+            ]
+        )
+    rows.append([InlineKeyboardButton("返回", callback_data="menu:user")])
+    return InlineKeyboardMarkup(rows)
+
+
+def build_user_edit_picker_keyboard(users: list) -> InlineKeyboardMarkup:
+    rows = []
+    for user in users:
+        user_code = str(user.get("user_code", ""))
+        display_name = str(user.get("display_name") or "").strip()
+        button_text = f"{display_name}（{user_code}）" if display_name else user_code
+        rows.append([InlineKeyboardButton(button_text, callback_data=f"useredit:pick:{user_code}")])
+    rows.append([InlineKeyboardButton("返回", callback_data="menu:user")])
+    return InlineKeyboardMarkup(rows)
+
+
+def build_user_renew_picker_keyboard(users: list) -> InlineKeyboardMarkup:
+    now_ts = int(time.time())
+    rows = []
+    for user in users:
+        user_code = str(user.get("user_code", ""))
+        display_name = str(user.get("display_name") or "").strip()
+        status_text = str(user.get("status", "") or "-")
+        try:
+            expire_at = int(user.get("expire_at", 0) or 0)
+        except (TypeError, ValueError):
+            expire_at = 0
+        if expire_at > 0:
+            if expire_at <= now_ts:
+                expire_text = "已过期"
+            else:
+                remain_days = max(1, int((expire_at - now_ts + 86399) / 86400))
+                expire_text = f"{remain_days}天"
+        else:
+            expire_text = "-"
+        user_label = f"{display_name}（{user_code}）" if display_name else user_code
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    f"{user_label} | {status_text} | 到期:{expire_text}",
+                    callback_data=f"userrenew:pick:{user_code}",
                 )
             ]
         )
@@ -1987,6 +2044,7 @@ def localize_controller_error(error_message: str) -> str:
         "User-node binding not found": "该用户未绑定该节点",
         "该用户仍有节点绑定，请先解绑后再删除": "该用户仍有节点绑定，请先解绑后再删除",
         "status must be active or disabled": "状态值无效，仅支持 active/disabled",
+        "display_name must not be empty": "用户显示名不能为空",
         "agent_ip must be a valid IPv4/IPv6 address": "节点来源IP格式无效，请填写正确的IP地址",
     }
     return mapping.get(error_message, error_message)
@@ -2531,6 +2589,14 @@ def pop_user_speed_pending(
         else:
             pending_map.clear()
     context.user_data.pop(USER_SPEED_ACTIVE_KEY, None)
+
+
+def pop_user_renew_pending(context: ContextTypes.DEFAULT_TYPE) -> None:
+    context.user_data.pop(USER_RENEW_PENDING_KEY, None)
+
+
+def pop_user_edit_pending(context: ContextTypes.DEFAULT_TYPE) -> None:
+    context.user_data.pop(USER_EDIT_PENDING_KEY, None)
 
 
 def get_node_edit_old_new_values(field: str, node: dict, pending_edit: dict) -> tuple:
@@ -3411,6 +3477,8 @@ async def run_node_ops_action(query, node_code: str, action_key: str) -> None:
 def format_user_nodes_manage_text(
     user_code: str, user: dict, user_nodes: list, node_tags_map: dict, notice: str = ""
 ) -> str:
+    display_name = str(user.get("display_name") or "").strip()
+    note = str(user.get("note") or "")
     status_text = str(user.get("status", "-"))
     expire_at = int(user.get("expire_at", 0) or 0)
     expire_text = (
@@ -3422,10 +3490,12 @@ def format_user_nodes_manage_text(
     speed_text = "不限速（0 Mbps）" if speed_mbps == 0 else f"{speed_mbps} Mbps"
 
     lines = [
+        f"用户显示名：{display_name or '-'}",
         f"用户：{user_code}",
         f"状态：{status_text}",
         f"到期：{expire_text}",
         f"限速：{speed_text}",
+        f"备注：{note or '-'}",
         "",
         "已绑定节点列表：",
     ]
@@ -3709,6 +3779,50 @@ async def render_user_speed_picker(query) -> None:
     await query.edit_message_text(
         "请选择要修改限速的用户：",
         reply_markup=build_user_speed_picker_keyboard(users),
+    )
+
+
+async def render_user_edit_picker(query) -> None:
+    users, error_message, _ = await controller_request("GET", "/users")
+    if error_message:
+        await query.edit_message_text(
+            f"获取用户列表失败：{localize_controller_error(error_message)}",
+            reply_markup=build_submenu("user"),
+        )
+        return
+
+    if not users:
+        await query.edit_message_text(
+            "暂无用户，请先创建用户",
+            reply_markup=build_user_nodes_empty_users_keyboard(),
+        )
+        return
+
+    await query.edit_message_text(
+        "请选择要编辑信息的用户：",
+        reply_markup=build_user_edit_picker_keyboard(users),
+    )
+
+
+async def render_user_renew_picker(query) -> None:
+    users, error_message, _ = await controller_request("GET", "/users")
+    if error_message:
+        await query.edit_message_text(
+            f"获取用户列表失败：{localize_controller_error(error_message)}",
+            reply_markup=build_submenu("user"),
+        )
+        return
+
+    if not users:
+        await query.edit_message_text(
+            "暂无用户，请先创建用户",
+            reply_markup=build_user_nodes_empty_users_keyboard(),
+        )
+        return
+
+    await query.edit_message_text(
+        "请选择要续期的用户：",
+        reply_markup=build_user_renew_picker_keyboard(users),
     )
 
 
@@ -5890,6 +6004,8 @@ def clear_all_wizard_state(context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data.pop(NODE_REALITY_KEY, None)
     context.user_data.pop(NODE_OPS_CONFIG_KEY, None)
     pop_user_speed_pending(context)
+    pop_user_renew_pending(context)
+    pop_user_edit_pending(context)
 
 
 async def cancel_idle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -6853,6 +6969,348 @@ async def cancel_user_speed_command(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> int:
     pop_user_speed_pending(context)
+    if update.message:
+        await reply_text_with_auto_clear(
+            update.message, context, "已取消", reply_markup=build_submenu("user")
+        )
+    return ConversationHandler.END
+
+
+async def start_user_edit_wizard(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    query = update.callback_query
+    if not query:
+        return ConversationHandler.END
+    if not await ensure_admin_callback(update, ROLE_OPERATOR):
+        return ConversationHandler.END
+
+    await query.answer()
+    callback_data = query.data or ""
+    user = query.from_user.username or query.from_user.id
+    logger.info("button_click user=%s data=%s", user, callback_data)
+
+    pop_user_edit_pending(context)
+    await render_user_edit_picker(query)
+    return ConversationHandler.END
+
+
+async def start_user_edit_input(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    query = update.callback_query
+    if not query:
+        return ConversationHandler.END
+    if not await ensure_admin_callback(update, ROLE_OPERATOR):
+        return ConversationHandler.END
+
+    await query.answer()
+    callback_data = query.data or ""
+    user = query.from_user.username or query.from_user.id
+    logger.info("button_click user=%s data=%s", user, callback_data)
+
+    parts = callback_data.split(":", maxsplit=2)
+    if len(parts) != 3:
+        await query.edit_message_text("请求无效，请重试。", reply_markup=build_submenu("user"))
+        return ConversationHandler.END
+    user_code = parts[2]
+
+    user_info, error_message, status_code = await controller_request("GET", f"/users/{user_code}")
+    if error_message:
+        localized = localize_controller_error(error_message)
+        if status_code == 404 and localized == "用户不存在":
+            await query.edit_message_text("用户不存在", reply_markup=build_submenu("user"))
+        else:
+            await query.edit_message_text(
+                f"获取用户信息失败：{localized}",
+                reply_markup=build_submenu("user"),
+            )
+        return ConversationHandler.END
+
+    old_display_name = str(user_info.get("display_name") or "").strip()
+    old_note = str(user_info.get("note") or "")
+    context.user_data[USER_EDIT_PENDING_KEY] = {
+        "user_code": user_code,
+        "old_display_name": old_display_name,
+        "old_note": old_note,
+    }
+    user_label = f"{old_display_name}（{user_code}）" if old_display_name else user_code
+    await query.edit_message_text(
+        f"用户：{user_label}\n"
+        f"当前显示名：{old_display_name or '-'}\n\n"
+        "请输入新的显示名（例如 alice），发送 /cancel 取消："
+    )
+    return USER_EDIT_DISPLAY_NAME
+
+
+async def user_edit_input_display_name(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    if not update.message or not update.message.text:
+        return USER_EDIT_DISPLAY_NAME
+    pending = context.user_data.get(USER_EDIT_PENDING_KEY, {})
+    user_code = str(pending.get("user_code", ""))
+    if not user_code:
+        pop_user_edit_pending(context)
+        await reply_text_with_auto_clear(
+            update.message,
+            context,
+            "编辑状态已丢失，请重新操作。",
+            reply_markup=build_submenu("user"),
+        )
+        return ConversationHandler.END
+
+    display_name = update.message.text.strip()
+    if not display_name:
+        await update.message.reply_text("显示名不能为空，请重新输入：")
+        return USER_EDIT_DISPLAY_NAME
+    if len(display_name) > 120:
+        await update.message.reply_text("显示名过长，请控制在 120 字以内：")
+        return USER_EDIT_DISPLAY_NAME
+
+    pending["new_display_name"] = display_name
+    context.user_data[USER_EDIT_PENDING_KEY] = pending
+    old_note = str(pending.get("old_note") or "")
+    old_note_text = old_note if old_note else "（空）"
+    await update.message.reply_text(
+        "请输入新的备注（note）：\n"
+        f"当前备注：{old_note_text}\n"
+        "输入 `-` 清空备注，输入 `=` 保持当前备注，发送 /cancel 取消。",
+        parse_mode="Markdown",
+    )
+    return USER_EDIT_NOTE
+
+
+async def user_edit_input_note(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    if not update.message or not update.message.text:
+        return USER_EDIT_NOTE
+    pending = context.user_data.get(USER_EDIT_PENDING_KEY, {})
+    user_code = str(pending.get("user_code", ""))
+    display_name = str(pending.get("new_display_name") or "").strip()
+    if not user_code or not display_name:
+        pop_user_edit_pending(context)
+        await reply_text_with_auto_clear(
+            update.message,
+            context,
+            "编辑状态已丢失，请重新操作。",
+            reply_markup=build_submenu("user"),
+        )
+        return ConversationHandler.END
+
+    raw_note = update.message.text.strip()
+    if raw_note == "=":
+        note = str(pending.get("old_note") or "")
+    elif raw_note == "-":
+        note = ""
+    else:
+        note = raw_note
+    if len(note) > 500:
+        await update.message.reply_text("备注过长，请控制在 500 字以内：")
+        return USER_EDIT_NOTE
+
+    _, error_message, status_code = await controller_request(
+        "POST",
+        f"/users/{user_code}/set_profile",
+        payload={"display_name": display_name, "note": note},
+    )
+    pop_user_edit_pending(context)
+    if error_message:
+        localized = localize_controller_error(error_message)
+        if status_code == 404 and localized == "用户不存在":
+            await reply_text_with_auto_clear(
+                update.message,
+                context,
+                "用户不存在",
+                reply_markup=build_submenu("user"),
+            )
+            return ConversationHandler.END
+        await reply_text_with_auto_clear(
+            update.message,
+            context,
+            f"编辑用户信息失败：{localized}",
+            reply_markup=build_submenu("user"),
+        )
+        return ConversationHandler.END
+
+    note_text = note if note else "（空）"
+    await send_user_nodes_manage_message(
+        update.message,
+        context,
+        user_code,
+        notice=f"编辑成功：{user_code}\n显示名：{display_name}\n备注：{note_text}",
+    )
+    return ConversationHandler.END
+
+
+async def cancel_user_edit_command(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    pop_user_edit_pending(context)
+    if update.message:
+        await reply_text_with_auto_clear(
+            update.message, context, "已取消", reply_markup=build_submenu("user")
+        )
+    return ConversationHandler.END
+
+
+async def start_user_renew_wizard(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    query = update.callback_query
+    if not query:
+        return ConversationHandler.END
+    if not await ensure_admin_callback(update, ROLE_OPERATOR):
+        return ConversationHandler.END
+
+    await query.answer()
+    callback_data = query.data or ""
+    user = query.from_user.username or query.from_user.id
+    logger.info("button_click user=%s data=%s", user, callback_data)
+
+    pop_user_renew_pending(context)
+    await render_user_renew_picker(query)
+    return ConversationHandler.END
+
+
+async def start_user_renew_input(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    query = update.callback_query
+    if not query:
+        return ConversationHandler.END
+    if not await ensure_admin_callback(update, ROLE_OPERATOR):
+        return ConversationHandler.END
+
+    await query.answer()
+    callback_data = query.data or ""
+    user = query.from_user.username or query.from_user.id
+    logger.info("button_click user=%s data=%s", user, callback_data)
+
+    parts = callback_data.split(":", maxsplit=2)
+    if len(parts) != 3:
+        await query.edit_message_text("请求无效，请重试。", reply_markup=build_submenu("user"))
+        return ConversationHandler.END
+    user_code = parts[2]
+
+    user_info, error_message, status_code = await controller_request("GET", f"/users/{user_code}")
+    if error_message:
+        localized = localize_controller_error(error_message)
+        if status_code == 404 and localized == "用户不存在":
+            await query.edit_message_text("用户不存在", reply_markup=build_submenu("user"))
+        else:
+            await query.edit_message_text(
+                f"获取用户信息失败：{localized}",
+                reply_markup=build_submenu("user"),
+            )
+        return ConversationHandler.END
+
+    display_name = str(user_info.get("display_name") or "").strip()
+    status_text = str(user_info.get("status", "-"))
+    old_expire_at = int(user_info.get("expire_at", 0) or 0)
+    if old_expire_at > 0:
+        old_expire_text = datetime.fromtimestamp(old_expire_at).strftime("%Y-%m-%d %H:%M:%S")
+    else:
+        old_expire_text = "-"
+    context.user_data[USER_RENEW_PENDING_KEY] = {
+        "user_code": user_code,
+        "display_name": display_name,
+        "old_expire_at": old_expire_at,
+    }
+    user_label = f"{display_name}（{user_code}）" if display_name else user_code
+    await query.edit_message_text(
+        f"用户：{user_label}\n"
+        f"状态：{status_text}\n"
+        f"当前到期：{old_expire_text}\n\n"
+        "请输入续期天数（1-3650），发送 /cancel 取消："
+    )
+    return USER_RENEW_INPUT
+
+
+async def user_renew_input_days(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    if not update.message or not update.message.text:
+        return USER_RENEW_INPUT
+
+    pending = context.user_data.get(USER_RENEW_PENDING_KEY, {})
+    user_code = str(pending.get("user_code", ""))
+    if not user_code:
+        pop_user_renew_pending(context)
+        await reply_text_with_auto_clear(
+            update.message,
+            context,
+            "续期状态已丢失，请重新操作。",
+            reply_markup=build_submenu("user"),
+        )
+        return ConversationHandler.END
+
+    raw_value = update.message.text.strip()
+    try:
+        valid_days = int(raw_value)
+    except ValueError:
+        await update.message.reply_text("续期天数必须是整数，请输入 1-3650：")
+        return USER_RENEW_INPUT
+
+    if not 1 <= valid_days <= 3650:
+        await update.message.reply_text("续期天数范围无效，请输入 1-3650：")
+        return USER_RENEW_INPUT
+
+    result, error_message, status_code = await controller_request(
+        "POST",
+        f"/users/{user_code}/renew",
+        payload={"valid_days": valid_days},
+    )
+    pop_user_renew_pending(context)
+    if error_message:
+        localized = localize_controller_error(error_message)
+        if status_code == 404 and localized == "用户不存在":
+            await reply_text_with_auto_clear(
+                update.message,
+                context,
+                "用户不存在",
+                reply_markup=build_submenu("user"),
+            )
+            return ConversationHandler.END
+        await reply_text_with_auto_clear(
+            update.message,
+            context,
+            f"用户续期失败：{localized}",
+            reply_markup=build_submenu("user"),
+        )
+        return ConversationHandler.END
+
+    old_expire_at = int((result or {}).get("old_expire_at", 0) or 0)
+    new_expire_at = int((result or {}).get("new_expire_at", 0) or 0)
+    old_expire_text = (
+        datetime.fromtimestamp(old_expire_at).strftime("%Y-%m-%d %H:%M:%S")
+        if old_expire_at > 0
+        else "-"
+    )
+    new_expire_text = (
+        datetime.fromtimestamp(new_expire_at).strftime("%Y-%m-%d %H:%M:%S")
+        if new_expire_at > 0
+        else "-"
+    )
+    await send_user_nodes_manage_message(
+        update.message,
+        context,
+        user_code,
+        notice=(
+            f"续期成功：{user_code}\n"
+            f"续期天数：{valid_days}\n"
+            f"旧到期：{old_expire_text}\n"
+            f"新到期：{new_expire_text}"
+        ),
+    )
+    return ConversationHandler.END
+
+
+async def cancel_user_renew_command(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    pop_user_renew_pending(context)
     if update.message:
         await reply_text_with_auto_clear(
             update.message, context, "已取消", reply_markup=build_submenu("user")
@@ -9006,6 +9464,35 @@ def main() -> None:
         fallbacks=[CommandHandler("cancel", cancel_user_speed_command)],
     )
     application.add_handler(user_speed_conversation)
+    user_edit_conversation = ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(start_user_edit_wizard, pattern=r"^action:user_edit$"),
+            CallbackQueryHandler(start_user_edit_input, pattern=r"^useredit:pick:[^:]+$"),
+        ],
+        states={
+            USER_EDIT_DISPLAY_NAME: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, user_edit_input_display_name)
+            ],
+            USER_EDIT_NOTE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, user_edit_input_note)
+            ],
+        },
+        fallbacks=[CommandHandler("cancel", cancel_user_edit_command)],
+    )
+    application.add_handler(user_edit_conversation)
+    user_renew_conversation = ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(start_user_renew_wizard, pattern=r"^action:user_renew$"),
+            CallbackQueryHandler(start_user_renew_input, pattern=r"^userrenew:pick:[^:]+$"),
+        ],
+        states={
+            USER_RENEW_INPUT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, user_renew_input_days)
+            ]
+        },
+        fallbacks=[CommandHandler("cancel", cancel_user_renew_command)],
+    )
+    application.add_handler(user_renew_conversation)
     nodes_create_conversation = ConversationHandler(
         entry_points=[
             CallbackQueryHandler(start_nodes_create_wizard, pattern=r"^action:nodes_create$")

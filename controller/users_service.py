@@ -10,6 +10,8 @@ from controller.db import get_connection
 from controller.schemas import (
     AssignNodeRequest,
     CreateUserRequest,
+    RenewUserRequest,
+    SetUserProfileRequest,
     SetUserLimitModeRequest,
     SetUserSpeedRequest,
     SetUserStatusRequest,
@@ -196,6 +198,84 @@ def set_user_limit_mode_service(
         conn.commit()
 
     return {"ok": True, "user_code": user_code, "limit_mode": mode_value}
+
+
+def renew_user_service(
+    user_code: str, payload: RenewUserRequest, request: Request
+) -> Dict[str, Union[bool, int, str]]:
+    now_ts = int(time.time())
+    with get_connection() as conn:
+        user_row = conn.execute(
+            "SELECT user_code, expire_at FROM users WHERE user_code = ?",
+            (user_code,),
+        ).fetchone()
+        if user_row is None:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        old_expire_at = int(user_row["expire_at"] or 0)
+        renew_from = old_expire_at if old_expire_at > now_ts else now_ts
+        new_expire_at = renew_from + int(payload.valid_days) * 86400
+        conn.execute(
+            "UPDATE users SET expire_at = ? WHERE user_code = ?",
+            (new_expire_at, user_code),
+        )
+        write_audit_log(
+            conn,
+            action="user.renew",
+            resource_type="user",
+            resource_id=user_code,
+            detail={
+                "valid_days": int(payload.valid_days),
+                "old_expire_at": old_expire_at,
+                "new_expire_at": new_expire_at,
+            },
+            actor=get_request_actor(request),
+            source_ip=get_source_ip_for_audit(request),
+            created_at=now_ts,
+        )
+        conn.commit()
+
+    return {
+        "ok": True,
+        "user_code": user_code,
+        "valid_days": int(payload.valid_days),
+        "old_expire_at": old_expire_at,
+        "new_expire_at": new_expire_at,
+    }
+
+
+def set_user_profile_service(
+    user_code: str, payload: SetUserProfileRequest, request: Request
+) -> Dict[str, Union[bool, str]]:
+    display_name = str(payload.display_name or "").strip()
+    if not display_name:
+        raise HTTPException(status_code=400, detail="display_name must not be empty")
+    note = str(payload.note or "")
+
+    with get_connection() as conn:
+        user_row = conn.execute(
+            "SELECT user_code FROM users WHERE user_code = ?",
+            (user_code,),
+        ).fetchone()
+        if user_row is None:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        conn.execute(
+            "UPDATE users SET display_name = ?, note = ? WHERE user_code = ?",
+            (display_name, note, user_code),
+        )
+        write_audit_log(
+            conn,
+            action="user.set_profile",
+            resource_type="user",
+            resource_id=user_code,
+            detail={"display_name": display_name, "note": note},
+            actor=get_request_actor(request),
+            source_ip=get_source_ip_for_audit(request),
+        )
+        conn.commit()
+
+    return {"ok": True, "user_code": user_code, "display_name": display_name, "note": note}
 
 
 def rotate_user_credentials_service(
