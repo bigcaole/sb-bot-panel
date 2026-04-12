@@ -349,7 +349,7 @@ git clone <你的仓库地址> sb-bot-panel && cd sb-bot-panel && sudo bash scri
 - 菜单 `25) 更新` 会强制执行 `git pull --ff-only origin main` 并执行 `--reuse-config`，默认复用现有 `.env` 配置，不会重复询问端口/域名/token/chat_id。
 - 若 `git pull` 失败（如本地有冲突改动），更新会直接中止并提示处理，不会继续走后续重装步骤。
 - 菜单 `25` 更新成功后会输出升级结果和当前版本号（`VERSION + commit`），便于核对是否升级到位。
-- 若更新阶段遇到 `dpkg/apt lock` 被占用，安装脚本会自动等待锁释放（默认最多 600 秒）再继续，无需手动删锁文件。
+- 若更新阶段遇到 `dpkg/apt lock` 被占用，安装脚本会自动循环重试并等待锁释放（默认最多 600 秒），超时后会打印占锁进程信息；无需手动删锁文件。
 - 需要改参数时使用菜单 `1) 配置（快速默认 / 高级变量向导）`。
 - 默认部署会设置开机自启：`sb-controller`；若 `BOT_TOKEN` 已配置则 `sb-bot`；启用 HTTPS 时 `caddy`。
 

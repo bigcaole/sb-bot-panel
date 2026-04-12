@@ -142,10 +142,38 @@ require_root() {
 
 apt_get_safe() {
   local timeout="${APT_LOCK_TIMEOUT_SECONDS:-600}"
+  local retry_interval=5
+  local deadline
+  local err_file
+  local rc=0
   if ! [[ "$timeout" =~ ^[0-9]+$ ]] || (( timeout < 1 )); then
     timeout=600
   fi
-  apt-get -o "DPkg::Lock::Timeout=${timeout}" "$@"
+  deadline=$((SECONDS + timeout))
+  while true; do
+    err_file="$(mktemp)"
+    set +e
+    apt-get -o "DPkg::Lock::Timeout=30" "$@" 2> >(tee "$err_file" >&2)
+    rc=$?
+    set -e
+    if (( rc == 0 )); then
+      rm -f "$err_file"
+      return 0
+    fi
+    if grep -qiE 'Could not get lock|Unable to acquire the dpkg frontend lock|Waiting for cache lock' "$err_file"; then
+      rm -f "$err_file"
+      if (( SECONDS >= deadline )); then
+        err "apt/dpkg 锁在 ${timeout}s 内仍未释放，已超时。"
+        ps -axo pid,ppid,etime,cmd | grep -E 'apt|dpkg' | grep -v grep || true
+        return "$rc"
+      fi
+      warn "检测到 apt/dpkg 锁占用，${retry_interval}s 后自动重试（最长等待 ${timeout}s）..."
+      sleep "$retry_interval"
+      continue
+    fi
+    rm -f "$err_file"
+    return "$rc"
+  done
 }
 
 systemd_unit_exists() {
