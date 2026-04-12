@@ -92,6 +92,7 @@ SELF_CHECK_FAIL=0
 NODE_DEFAULT_SYNC_SUMMARY="未执行"
 INSTALL_SCRIPT_ACTOR="install-admin"
 AUTH_DISABLED_EXPLICIT=0
+APT_LOCK_TIMEOUT_SECONDS="${APT_LOCK_TIMEOUT_SECONDS:-600}"
 
 msg() { echo -e "\033[1;32m[信息]\033[0m $*"; }
 warn() { echo -e "\033[1;33m[警告]\033[0m $*"; }
@@ -137,6 +138,14 @@ require_root() {
     err "请使用 root 权限运行（sudo）。"
     exit 1
   fi
+}
+
+apt_get_safe() {
+  local timeout="${APT_LOCK_TIMEOUT_SECONDS:-600}"
+  if ! [[ "$timeout" =~ ^[0-9]+$ ]] || (( timeout < 1 )); then
+    timeout=600
+  fi
+  apt-get -o "DPkg::Lock::Timeout=${timeout}" "$@"
 }
 
 systemd_unit_exists() {
@@ -356,8 +365,8 @@ ensure_project_dir() {
 install_base_packages() {
   msg "安装基础依赖..."
   export DEBIAN_FRONTEND=noninteractive
-  apt-get update -y
-  apt-get install -y \
+  apt_get_safe update -y
+  apt_get_safe install -y \
     curl \
     jq \
     git \
@@ -394,7 +403,7 @@ ensure_python_311_runtime() {
 
   msg "尝试安装 Python 3.11..."
   export DEBIAN_FRONTEND=noninteractive
-  apt-get install -y python3.11 python3.11-venv python3.11-distutils >/dev/null 2>&1 || true
+  apt_get_safe install -y python3.11 python3.11-venv python3.11-distutils >/dev/null 2>&1 || true
 
   if command -v python3.11 >/dev/null 2>&1 && python_version_ge_311 python3.11; then
     PYTHON_BIN="$(command -v python3.11)"
@@ -407,16 +416,16 @@ ensure_python_311_runtime() {
     if [[ ! -f /etc/apt/sources.list.d/bullseye-backports.list ]]; then
       echo "deb http://deb.debian.org/debian bullseye-backports main" >/etc/apt/sources.list.d/bullseye-backports.list
     fi
-    apt-get update -y >/dev/null 2>&1 || true
-    apt-get install -y -t bullseye-backports python3.11 python3.11-venv >/dev/null 2>&1 || true
+    apt_get_safe update -y >/dev/null 2>&1 || true
+    apt_get_safe install -y -t bullseye-backports python3.11 python3.11-venv >/dev/null 2>&1 || true
   fi
 
   if [[ "$os_id" == "ubuntu" ]]; then
     msg "检测到 Ubuntu，尝试 deadsnakes PPA 安装 Python 3.11..."
-    apt-get install -y software-properties-common >/dev/null 2>&1 || true
+    apt_get_safe install -y software-properties-common >/dev/null 2>&1 || true
     add-apt-repository -y ppa:deadsnakes/ppa >/dev/null 2>&1 || true
-    apt-get update -y >/dev/null 2>&1 || true
-    apt-get install -y python3.11 python3.11-venv >/dev/null 2>&1 || true
+    apt_get_safe update -y >/dev/null 2>&1 || true
+    apt_get_safe install -y python3.11 python3.11-venv >/dev/null 2>&1 || true
   fi
 
   if command -v python3.11 >/dev/null 2>&1 && python_version_ge_311 python3.11; then
@@ -1527,14 +1536,14 @@ install_caddy_if_needed() {
   export DEBIAN_FRONTEND=noninteractive
   if [[ "$has_caddy_bin" == "1" && "$has_caddy_service" == "0" ]]; then
     msg "检测到 caddy 命令但缺少 caddy.service，执行重装修复..."
-    apt-get update -y
-    apt-get install -y --reinstall caddy
+    apt_get_safe update -y
+    apt_get_safe install -y --reinstall caddy
     return
   fi
 
   msg "启用 HTTPS 模式，安装 Caddy..."
-  apt-get update -y
-  apt-get install -y caddy
+  apt_get_safe update -y
+  apt_get_safe install -y caddy
 }
 
 configure_ufw_rules() {

@@ -59,10 +59,19 @@ AGENT_PYTHON_BIN=""
 OS_ID=""
 OS_VERSION=""
 INIT_SYSTEM="systemd"
+APT_LOCK_TIMEOUT_SECONDS="${APT_LOCK_TIMEOUT_SECONDS:-600}"
 
 msg() { echo -e "\033[1;32m[信息]\033[0m $*"; }
 warn() { echo -e "\033[1;33m[警告]\033[0m $*"; }
 err() { echo -e "\033[1;31m[错误]\033[0m $*" >&2; }
+
+apt_get_safe() {
+  local timeout="${APT_LOCK_TIMEOUT_SECONDS:-600}"
+  if ! [[ "$timeout" =~ ^[0-9]+$ ]] || (( timeout < 1 )); then
+    timeout=600
+  fi
+  apt-get -o "DPkg::Lock::Timeout=${timeout}" "$@"
+}
 
 normalize_bool_flag() {
   local raw="${1:-}"
@@ -462,8 +471,8 @@ install_base_packages() {
       iproute2
   else
     export DEBIAN_FRONTEND=noninteractive
-    apt-get update -y
-    apt-get install -y \
+    apt_get_safe update -y
+    apt_get_safe install -y \
       curl \
       jq \
       ufw \
@@ -682,8 +691,8 @@ install_and_enable_fail2ban() {
       apk add --no-cache fail2ban >/dev/null 2>&1
     else
       export DEBIAN_FRONTEND=noninteractive
-      apt-get update -y >/dev/null 2>&1
-      apt-get install -y fail2ban >/dev/null 2>&1
+      apt_get_safe update -y >/dev/null 2>&1
+      apt_get_safe install -y fail2ban >/dev/null 2>&1
     fi
   fi
 
@@ -710,8 +719,8 @@ import systemd.journal  # noqa: F401
 PY
       then
         export DEBIAN_FRONTEND=noninteractive
-        apt-get update -y >/dev/null 2>&1 || true
-        apt-get install -y python3-systemd >/dev/null 2>&1 || true
+        apt_get_safe update -y >/dev/null 2>&1 || true
+        apt_get_safe install -y python3-systemd >/dev/null 2>&1 || true
       fi
       if python3 - <<'PY' >/dev/null 2>&1
 import systemd.journal  # noqa: F401
@@ -856,22 +865,22 @@ ensure_python_311_runtime() {
     apk add --no-cache python3 py3-virtualenv py3-pip >/dev/null 2>&1 || true
   else
     export DEBIAN_FRONTEND=noninteractive
-    apt-get install -y python3.11 python3.11-venv python3.11-distutils >/dev/null 2>&1 || true
+    apt_get_safe install -y python3.11 python3.11-venv python3.11-distutils >/dev/null 2>&1 || true
   fi
 
   if [[ "$os_id" == "debian" && "$os_version" == 11* ]]; then
     if [[ ! -f /etc/apt/sources.list.d/bullseye-backports.list ]]; then
       echo "deb http://deb.debian.org/debian bullseye-backports main" >/etc/apt/sources.list.d/bullseye-backports.list
     fi
-    apt-get update -y >/dev/null 2>&1 || true
-    apt-get install -y -t bullseye-backports python3.11 python3.11-venv >/dev/null 2>&1 || true
+    apt_get_safe update -y >/dev/null 2>&1 || true
+    apt_get_safe install -y -t bullseye-backports python3.11 python3.11-venv >/dev/null 2>&1 || true
   fi
 
   if [[ "$os_id" == "ubuntu" ]]; then
-    apt-get install -y software-properties-common >/dev/null 2>&1 || true
+    apt_get_safe install -y software-properties-common >/dev/null 2>&1 || true
     add-apt-repository -y ppa:deadsnakes/ppa >/dev/null 2>&1 || true
-    apt-get update -y >/dev/null 2>&1 || true
-    apt-get install -y python3.11 python3.11-venv >/dev/null 2>&1 || true
+    apt_get_safe update -y >/dev/null 2>&1 || true
+    apt_get_safe install -y python3.11 python3.11-venv >/dev/null 2>&1 || true
   fi
 
   if command -v python3.11 >/dev/null 2>&1 && python_version_ge_311 python3.11; then
@@ -897,8 +906,8 @@ ensure_dns_tools() {
     apk add --no-cache bind-tools
   else
     export DEBIAN_FRONTEND=noninteractive
-    apt-get update -y
-    apt-get install -y dnsutils bind9-host
+    apt_get_safe update -y
+    apt_get_safe install -y dnsutils bind9-host
   fi
 }
 
@@ -917,7 +926,7 @@ retry_singbox_install_keep_local_config() {
   fi
   warn "检测到 conffile 冲突，使用保留本地配置策略重试: ${deb_path}"
   if ! dpkg -i --force-confdef --force-confold "$deb_path"; then
-    apt-get install -f -y || true
+    apt_get_safe install -f -y || true
     dpkg -i --force-confdef --force-confold "$deb_path"
   fi
 }
