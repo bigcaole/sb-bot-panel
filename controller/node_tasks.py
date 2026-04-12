@@ -27,6 +27,8 @@ NODE_CONFIG_SET_ALLOWED_KEYS = {
     "controller_url",
     "auth_token",
     "node_code",
+    "enable_tuic",
+    "enable_vless",
 }
 SENSITIVE_PAYLOAD_KEYWORDS = (
     "token",
@@ -43,6 +45,17 @@ def _parse_int_payload(value: Any, field: str) -> int:
         return int(value)
     except (TypeError, ValueError) as exc:
         raise HTTPException(status_code=400, detail="{0} must be integer".format(field)) from exc
+
+
+def _parse_bool_payload(value: Any, field: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    text = str(value or "").strip().lower()
+    if text in ("1", "true", "yes", "y", "on"):
+        return True
+    if text in ("0", "false", "no", "n", "off"):
+        return False
+    raise HTTPException(status_code=400, detail="{0} must be boolean".format(field))
 
 
 def _parse_text_payload(
@@ -115,6 +128,8 @@ def validate_node_task_payload(task_type: str, payload_obj: Dict[str, Any]) -> D
                 sanitized[key] = _parse_text_payload(value, key, allow_empty=True, max_length=256)
             elif key in ("tuic_domain", "acme_email"):
                 sanitized[key] = _parse_text_payload(value, key, allow_empty=True, max_length=256)
+            elif key in ("enable_tuic", "enable_vless"):
+                sanitized[key] = _parse_bool_payload(value, key)
         if not sanitized:
             raise HTTPException(status_code=400, detail="config_set payload required")
         return sanitized

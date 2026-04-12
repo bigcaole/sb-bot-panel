@@ -22,6 +22,21 @@ class NodeTasksValidationTestCase(unittest.TestCase):
         self.assertEqual("http://127.0.0.1:8080", payload.get("controller_url"))
         self.assertEqual(10, payload.get("poll_interval"))
 
+    def test_config_set_payload_validation_enable_protocol_flags(self) -> None:
+        payload = node_tasks.validate_node_task_payload(
+            "config_set",
+            {"enable_tuic": "false", "enable_vless": True},
+        )
+        self.assertEqual(False, payload.get("enable_tuic"))
+        self.assertEqual(True, payload.get("enable_vless"))
+
+    def test_config_set_payload_reject_invalid_boolean(self) -> None:
+        with self.assertRaises(HTTPException):
+            node_tasks.validate_node_task_payload(
+                "config_set",
+                {"enable_tuic": "not-bool"},
+            )
+
     def test_config_set_reject_unsupported_key(self) -> None:
         with self.assertRaises(HTTPException):
             node_tasks.validate_node_task_payload("config_set", {"bad_key": "x"})

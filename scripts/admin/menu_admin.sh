@@ -177,6 +177,26 @@ update_repo_from_origin_main() {
   return 0
 }
 
+get_project_version_label() {
+  local repo_dir="$1"
+  local version_file="${repo_dir}/VERSION"
+  local version="dev"
+  local rev="unknown"
+  if [[ -f "$version_file" ]]; then
+    version="$(head -n1 "$version_file" | tr -d '\r' | xargs || true)"
+    [[ -z "$version" ]] && version="dev"
+  fi
+  rev="$(git -C "$repo_dir" rev-parse --short HEAD 2>/dev/null || true)"
+  [[ -z "$rev" ]] && rev="unknown"
+  echo "${version} (${rev})"
+}
+
+print_update_success_summary() {
+  local repo_dir="$1"
+  msg "升级结果: 成功"
+  msg "当前项目版本: $(get_project_version_label "$repo_dir")"
+}
+
 resolve_admin_auth_token() {
   local controller_port="$1"
   local auth_token_raw auth_token
@@ -1585,6 +1605,7 @@ do_update_reuse_config() {
 
   if [[ -f "$INSTALL_SCRIPT" ]]; then
     bash "$INSTALL_SCRIPT" --reuse-config
+    print_update_success_summary "$PROJECT_DIR"
   else
     err "未找到安装脚本: $INSTALL_SCRIPT"
   fi

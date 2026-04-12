@@ -8,6 +8,8 @@ import signal
 import subprocess
 import sys
 import time
+import copy
+from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.error import HTTPError, URLError
@@ -22,6 +24,7 @@ AGENT_LOG_PATH = "/var/log/sb-agent/agent.log"
 SING_BOX_CERTMAGIC_DIR = "/var/lib/sing-box/certmagic"
 TUIC_TC_STATE_PATH = "/etc/sb-agent/tuic_tc_state.json"
 TUIC_UFW_STATE_PATH = "/etc/sb-agent/tuic_ufw_state.json"
+DEFAULT_TUIC_SUSPEND_SECONDS = 1800
 
 DEFAULT_POLL_INTERVAL = 15
 DEFAULT_TUIC_LISTEN_PORT = 24443
@@ -153,18 +156,23 @@ def load_config() -> AgentConfig:
     )
 
 
-def load_state() -> Dict[str, str]:
+def load_state() -> Dict[str, Any]:
     state = _read_json(STATE_PATH, {})
     if not isinstance(state, dict):
         state = {}
+    suspend_until = parse_int(state.get("tuic_suspend_until"), 0)
+    if suspend_until < 0:
+        suspend_until = 0
     return {
         "reality_private_key": str(state.get("reality_private_key", "")).strip(),
         "reality_public_key": str(state.get("reality_public_key", "")).strip(),
         "reality_short_id": str(state.get("reality_short_id", "")).strip().lower(),
+        "tuic_suspend_until": suspend_until,
+        "tuic_suspend_reason": str(state.get("tuic_suspend_reason", "")).strip(),
     }
 
 
-def save_state(state: Dict[str, str]) -> None:
+def save_state(state: Dict[str, Any]) -> None:
     _write_json(STATE_PATH, state, mode=0o600)
 
 
@@ -302,6 +310,98 @@ def parse_bool(value: Any, default: bool = True) -> bool:
     return default
 
 
+def is_tuic_runtime_enabled(config: AgentConfig, state: Dict[str, Any]) -> bool:
+    if not config.enable_tuic:
+        return False
+    suspend_until = parse_int(state.get("tuic_suspend_until"), 0)
+    if suspend_until > int(time.time()):
+        return False
+    return True
+
+
+def extract_acme_retry_after_epoch(error_text: str) -> int:
+    text = str(error_text or "")
+    matched = re.search(
+        r"retry after\s+([0-9]{4}-[0-9]{2}-[0-9]{2}\s+[0-9]{2}:[0-9]{2}:[0-9]{2})\s+UTC",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if not matched:
+        return 0
+    try:
+        dt = datetime.strptime(matched.group(1), "%Y-%m-%d %H:%M:%S")
+        return int(dt.replace(tzinfo=timezone.utc).timestamp())
+    except ValueError:
+        return 0
+
+
+def is_tuic_failure_error(error_text: str) -> bool:
+    text = str(error_text or "").lower()
+    if not text:
+        return False
+    keywords = (
+        "inbound/tuic",
+        "tuic",
+        "acme",
+        "certificate",
+        "rate limited",
+        "ratelimited",
+        "too many failed authorizations",
+        "obtaining certificate",
+    )
+    return any(keyword in text for keyword in keywords)
+
+
+def sanitize_rendered_config_by_protocol(
+    rendered: Dict[str, Any], enable_tuic: bool, enable_vless: bool
+) -> Dict[str, Any]:
+    if not isinstance(rendered, dict):
+        return rendered
+    inbounds = rendered.get("inbounds")
+    if not isinstance(inbounds, list):
+        inbounds = []
+    kept_inbounds: List[Dict[str, Any]] = []
+    kept_tags: set = set()
+    for item in inbounds:
+        if not isinstance(item, dict):
+            continue
+        inbound_type = str(item.get("type", "")).strip().lower()
+        if inbound_type == "tuic" and not enable_tuic:
+            continue
+        if inbound_type == "vless" and not enable_vless:
+            continue
+        kept_inbounds.append(item)
+        inbound_tag = str(item.get("tag", "")).strip()
+        if inbound_tag:
+            kept_tags.add(inbound_tag)
+
+    route_obj = rendered.get("route")
+    if not isinstance(route_obj, dict):
+        route_obj = {}
+    rules = route_obj.get("rules")
+    if not isinstance(rules, list):
+        rules = []
+    kept_rules: List[Dict[str, Any]] = []
+    for rule in rules:
+        if not isinstance(rule, dict):
+            continue
+        inbound_tags = rule.get("inbound")
+        if not isinstance(inbound_tags, list):
+            kept_rules.append(rule)
+            continue
+        normalized = [str(tag).strip() for tag in inbound_tags if str(tag).strip()]
+        if not normalized:
+            kept_rules.append(rule)
+            continue
+        if any(tag in kept_tags for tag in normalized):
+            kept_rules.append(rule)
+
+    route_obj["rules"] = kept_rules
+    rendered["route"] = route_obj
+    rendered["inbounds"] = kept_inbounds
+    return rendered
+
+
 def truncate_text(raw: str, limit: int = 4000) -> str:
     text = str(raw or "").strip()
     if len(text) <= limit:
@@ -382,6 +482,8 @@ def ensure_reality_material(
         "reality_private_key": private_key,
         "reality_public_key": public_key,
         "reality_short_id": short_id,
+        "tuic_suspend_until": parse_int(state.get("tuic_suspend_until"), 0),
+        "tuic_suspend_reason": str(state.get("tuic_suspend_reason", "")).strip(),
     }
     save_state(next_state)
     return next_state
@@ -629,7 +731,8 @@ def build_sing_box_config(
     config: AgentConfig,
     node: Dict[str, Any],
     users: List[Dict[str, Any]],
-    state: Dict[str, str],
+    state: Dict[str, Any],
+    tuic_enabled_runtime: Optional[bool] = None,
 ) -> Tuple[Dict[str, Any], List[Dict[str, int]]]:
     reality_server_name = str(node.get("reality_server_name") or "").strip()
     handshake_server = reality_server_name or "www.cloudflare.com"
@@ -668,16 +771,20 @@ def build_sing_box_config(
     else:
         LOGGER.info("已禁用 VLESS 入站生成。")
 
+    tuic_enabled = config.enable_tuic
+    if tuic_enabled_runtime is not None:
+        tuic_enabled = bool(tuic_enabled_runtime)
+
     tuic_speed_rules: List[Dict[str, int]] = []
-    if config.enable_tuic and config.tuic_domain and config.acme_email:
+    if tuic_enabled and config.tuic_domain and config.acme_email:
         tuic_records = build_tuic_user_records(users)
         tuic_inbounds, tuic_routes = build_tuic_inbounds_and_routes(config, tuic_records)
         inbounds.extend(tuic_inbounds)
         route_rules.extend(tuic_routes)
         tuic_speed_rules = build_tuic_speed_rules(tuic_records)
-    elif config.enable_tuic and config.tuic_domain and not config.acme_email:
+    elif tuic_enabled and config.tuic_domain and not config.acme_email:
         LOGGER.warning("已配置 tuic_domain 但缺少 acme_email，跳过 TUIC 入站生成")
-    elif not config.enable_tuic:
+    elif not tuic_enabled:
         LOGGER.info("已禁用 TUIC 入站生成。")
 
     return {
@@ -717,27 +824,47 @@ def write_sing_box_config_if_changed(config_data: Dict[str, Any]) -> bool:
     return True
 
 
-def check_and_reload_sing_box() -> None:
+def check_and_reload_sing_box() -> Tuple[bool, str]:
     code, stdout, stderr = run_command(["sing-box", "check", "-c", SING_BOX_CONFIG_PATH])
     if code != 0:
+        error_text = truncate_text(
+            "sing-box check 失败\nstdout:\n{0}\nstderr:\n{1}".format(
+                stdout.strip(),
+                stderr.strip(),
+            ),
+            5000,
+        )
         LOGGER.error(
             "sing-box check 失败，跳过重载\nstdout:\n%s\nstderr:\n%s",
             stdout.strip(),
             stderr.strip(),
         )
-        return
+        return False, error_text
 
     code, stdout, stderr = run_command(
         ["systemctl", "reload-or-restart", "sing-box"]
     )
     if code != 0:
+        _, journal_stdout, journal_stderr = run_command(
+            ["journalctl", "-u", "sing-box", "-n", "80", "--no-pager"]
+        )
+        journal_text = (journal_stdout or journal_stderr or "").strip()
+        error_text = truncate_text(
+            "重载 sing-box 失败\nstdout:\n{0}\nstderr:\n{1}\nrecent_logs:\n{2}".format(
+                stdout.strip(),
+                stderr.strip(),
+                journal_text,
+            ),
+            5000,
+        )
         LOGGER.error(
             "重载 sing-box 失败\nstdout:\n%s\nstderr:\n%s",
             stdout.strip(),
             stderr.strip(),
         )
-        return
+        return False, error_text
     LOGGER.info("sing-box 配置已生效（reload-or-restart）")
+    return True, "ok"
 
 
 def detect_default_interface() -> str:
@@ -1216,32 +1343,94 @@ def apply_tuic_speed_limits(rules: List[Dict[str, int]]) -> None:
 
 
 def handle_once(config: AgentConfig) -> None:
+    state = load_state()
+    if not config.enable_tuic:
+        if parse_int(state.get("tuic_suspend_until"), 0) > 0 or state.get("tuic_suspend_reason"):
+            state["tuic_suspend_until"] = 0
+            state["tuic_suspend_reason"] = ""
+            save_state(state)
+
     sync_data = sync_from_controller(config)
     node = sync_data.get("node", {})
     users = normalize_users(sync_data.get("users", []))
     if not isinstance(node, dict):
         raise RuntimeError("sync 响应缺少 node")
 
-    state = load_state()
     if config.enable_vless:
         state = ensure_reality_material(node, state)
         maybe_report_reality(config, node, state)
 
-    rendered, tuic_speed_rules = build_sing_box_config(config, node, users, state)
+    tuic_runtime_enabled = is_tuic_runtime_enabled(config, state)
+    if config.enable_tuic and not tuic_runtime_enabled:
+        suspend_until = parse_int(state.get("tuic_suspend_until"), 0)
+        if suspend_until > int(time.time()):
+            remaining = suspend_until - int(time.time())
+            LOGGER.warning(
+                "TUIC 暂停中（剩余约 %ss）: %s",
+                remaining,
+                state.get("tuic_suspend_reason") or "unknown",
+            )
+
+    rendered, tuic_speed_rules = build_sing_box_config(
+        config,
+        node,
+        users,
+        state,
+        tuic_enabled_runtime=tuic_runtime_enabled,
+    )
+    rendered = sanitize_rendered_config_by_protocol(
+        rendered,
+        enable_tuic=tuic_runtime_enabled,
+        enable_vless=config.enable_vless,
+    )
+
     tuic_records: List[Dict[str, Any]] = []
-    if config.enable_tuic and config.tuic_domain and config.acme_email:
+    if tuic_runtime_enabled and config.tuic_domain and config.acme_email:
         tuic_records = build_tuic_user_records(users)
+
     changed = write_sing_box_config_if_changed(rendered)
-    if changed:
-        LOGGER.info("检测到配置变更，开始检查并重载 sing-box")
-        check_and_reload_sing_box()
+    singbox_active = run_command(["systemctl", "is-active", "sing-box"])[0] == 0
+    if changed or (not singbox_active):
+        if changed:
+            LOGGER.info("检测到配置变更，开始检查并重载 sing-box")
+        else:
+            LOGGER.warning("检测到 sing-box 非 active，触发恢复重载")
+        reloaded, reload_message = check_and_reload_sing_box()
+        if not reloaded and tuic_runtime_enabled and is_tuic_failure_error(reload_message):
+            now_ts = int(time.time())
+            retry_after = extract_acme_retry_after_epoch(reload_message)
+            if retry_after <= now_ts:
+                retry_after = now_ts + DEFAULT_TUIC_SUSPEND_SECONDS
+            suspend_seconds = retry_after - now_ts
+            state["tuic_suspend_until"] = retry_after
+            state["tuic_suspend_reason"] = "acme_or_tuic_startup_failure"
+            save_state(state)
+            LOGGER.warning(
+                "检测到 TUIC/ACME 启动异常，暂停 TUIC %ss 并降级为仅 VLESS。", suspend_seconds
+            )
+            fallback_config = sanitize_rendered_config_by_protocol(
+                copy.deepcopy(rendered), enable_tuic=False, enable_vless=config.enable_vless
+            )
+            write_sing_box_config_if_changed(fallback_config)
+            fallback_ok, fallback_message = check_and_reload_sing_box()
+            if fallback_ok:
+                LOGGER.warning("TUIC 降级生效：已恢复 sing-box（仅 VLESS）")
+                tuic_runtime_enabled = False
+                tuic_speed_rules = []
+                tuic_records = []
+            else:
+                LOGGER.error("TUIC 降级后 sing-box 仍未恢复: %s", fallback_message)
+        elif not reloaded:
+            LOGGER.error("sing-box 重载失败：%s", reload_message)
     else:
         LOGGER.info("配置无变化")
-    if config.enable_tuic and config.tuic_domain and config.acme_email:
+
+    if tuic_runtime_enabled and config.tuic_domain and config.acme_email:
         apply_tuic_ufw_rules(build_tuic_ufw_ports(config, node, tuic_records))
     else:
         apply_tuic_ufw_rules([])
-    if config.enable_tuic:
+
+    if tuic_runtime_enabled:
         apply_tuic_speed_limits(tuic_speed_rules)
     else:
         apply_tuic_speed_limits([])
