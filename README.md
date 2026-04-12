@@ -162,6 +162,7 @@ sudo bash /path/to/sb-bot-panel/scripts/menu.sh
 
 菜单项：
 
+0. APT/DPKG 锁一键修复（更新卡锁时使用）
 【日常运维】
 1. 配置（重写 `/etc/sb-agent/config.json`）
 2. 启动 sb-agent
@@ -191,7 +192,8 @@ sudo bash /path/to/sb-bot-panel/scripts/menu.sh
 21. 更新同步（保留原配置，自动 `git pull --ff-only origin main`，无交互）
 22. 深度卸载
 23. sing-box 管理（安装/更新/卸载）
-24. 退出
+24. 部署参数自检与修复向导（循环到通过）
+25. 退出
 
 说明：
 
@@ -350,6 +352,7 @@ git clone <你的仓库地址> sb-bot-panel && cd sb-bot-panel && sudo bash scri
 - 若 `git pull` 失败（如本地有冲突改动），更新会直接中止并提示处理，不会继续走后续重装步骤。
 - 菜单 `25` 更新成功后会输出升级结果和当前版本号（`VERSION + commit`），便于核对是否升级到位。
 - 若更新阶段遇到 `dpkg/apt lock` 被占用，安装脚本会自动循环重试并等待锁释放（默认最多 600 秒），超时后会打印占锁进程信息；无需手动删锁文件。
+- 若你希望立即人工介入，可直接在管理菜单或节点菜单执行 `0) APT/DPKG 锁一键修复`（会二次确认，并执行 `dpkg --configure -a` 与 `apt install -f`）。
 - 需要改参数时使用菜单 `1) 配置（快速默认 / 高级变量向导）`。
 - 默认部署会设置开机自启：`sb-controller`；若 `BOT_TOKEN` 已配置则 `sb-bot`；启用 HTTPS 时 `caddy`。
 
@@ -477,6 +480,7 @@ sb-admin
 
 菜单项：
 
+0. APT/DPKG 锁一键修复（更新卡锁时使用）
 【日常运维】
 1. 配置（快速默认 / 高级变量向导）
 2. 启动 controller

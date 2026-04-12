@@ -1620,6 +1620,50 @@ refresh_certificate() {
   msg "已触发 sing-box 重启。可使用菜单 9/8 查看证书与日志状态。"
 }
 
+recover_apt_dpkg_lock_one_click() {
+  if ! command -v apt-get >/dev/null 2>&1; then
+    warn "当前系统未检测到 apt-get（如 Alpine），无需执行该项。"
+    return
+  fi
+  warn "该操作会尝试停止 apt 自动任务并结束占锁进程（apt/dpkg/unattended-upgrades）。"
+  warn "仅在更新卡在锁文件时使用。"
+  if ! confirm_action "确认执行 APT/DPKG 锁一键修复？" "N"; then
+    warn "已取消锁修复。"
+    return
+  fi
+  if ! confirm_action "二次确认：继续执行可能中断正在运行的系统更新任务？" "N"; then
+    warn "已取消锁修复。"
+    return
+  fi
+
+  msg "当前 apt/dpkg 相关进程："
+  ps -axo pid,ppid,etime,cmd | grep -E 'apt|dpkg|unattended-upgrades' | grep -v grep || true
+
+  msg "尝试停止自动更新服务..."
+  systemctl stop apt-daily.service apt-daily-upgrade.service unattended-upgrades.service 2>/dev/null || true
+  systemctl kill apt-daily.service apt-daily-upgrade.service unattended-upgrades.service 2>/dev/null || true
+  systemctl reset-failed apt-daily.service apt-daily-upgrade.service unattended-upgrades.service 2>/dev/null || true
+
+  msg "尝试结束残留占锁进程..."
+  pkill -TERM -f 'apt|apt-get|dpkg|unattended-upgrades' 2>/dev/null || true
+  sleep 3
+  pkill -KILL -f 'apt|apt-get|dpkg|unattended-upgrades' 2>/dev/null || true
+
+  msg "清理可能残留的锁文件..."
+  rm -f /var/lib/dpkg/lock-frontend \
+        /var/lib/dpkg/lock \
+        /var/cache/apt/archives/lock \
+        /var/lib/apt/lists/lock 2>/dev/null || true
+
+  msg "修复 dpkg 状态并自动补依赖..."
+  dpkg --configure -a || true
+  apt-get -o "DPkg::Lock::Timeout=60" update -y
+  apt-get -o "DPkg::Lock::Timeout=60" install -f -y
+
+  msg "APT/DPKG 锁修复完成。当前进程状态："
+  ps -axo pid,ppid,etime,cmd | grep -E 'apt|dpkg|unattended-upgrades' | grep -v grep || true
+}
+
 uninstall_all() {
   local answer remove_shared_pkgs s_ui_path
   warn "将执行深度卸载（节点服务器）：sb-agent/sing-box/证书与日志目录/快捷命令/安全加固文件。"
@@ -1726,6 +1770,7 @@ show_menu() {
     echo "18) 恢复 SSH 密码登录（应急）"
     echo ""
     echo "【系统级操作（谨慎）】"
+    echo " 0) APT/DPKG 锁一键修复（更新卡锁时使用）"
     echo "19) 节点运维快照（导出关键状态）"
     echo "20) AI诊断包导出（可粘贴给任意AI）"
     echo "21) 更新同步（保留原配置，自动 git pull）"
@@ -1743,6 +1788,7 @@ show_menu() {
   echo "========================================"
   echo "【常用项（核心流程）】"
   echo " 1) 配置（快速默认 / 高级变量向导）"
+  echo " 0) APT/DPKG 锁一键修复（更新卡锁时使用）"
   echo " 5) 查看 sb-agent 状态"
   echo " 8) 查看 sing-box 状态（摘要）"
   echo " 9) 证书状态检查（强判定）"
@@ -1760,9 +1806,9 @@ main() {
     show_menu
     local choice_prompt
     if [[ "$MENU_VIEW_MODE" == "advanced" ]]; then
-      choice_prompt="请选择操作 [1-25/b]: "
+      choice_prompt="请选择操作 [0-25/b]: "
     else
-      choice_prompt="请选择操作 [常用编号/a]: "
+      choice_prompt="请选择操作 [常用编号(含0)/a]: "
     fi
     read -r -p "$choice_prompt" choice
     case "$choice" in
@@ -1778,6 +1824,10 @@ main() {
         ;;
       1)
         run_reconfigure
+        pause
+        ;;
+      0)
+        recover_apt_dpkg_lock_one_click
         pause
         ;;
       2)
@@ -1903,9 +1953,9 @@ main() {
         ;;
       *)
         if [[ "$MENU_VIEW_MODE" == "advanced" ]]; then
-          warn "无效选项，请输入 1-25 或 b。"
+          warn "无效选项，请输入 0-25 或 b。"
         else
-          warn "无效选项，请输入简化视图中的编号，或输入 a 切换高级视图。"
+          warn "无效选项，请输入简化视图中的编号（含0），或输入 a 切换高级视图。"
         fi
         pause
         ;;

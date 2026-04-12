@@ -1559,6 +1559,7 @@ show_menu() {
 23. 部署参数自检与修复向导（循环到通过）
 
 【系统级操作（谨慎）】
+0. APT/DPKG 锁一键修复（更新卡锁时使用）
 24. 安装/重装（交互配置 + 依赖 + venv + 重启）
 25. 更新（git pull + 复用现有配置 + 重启）
 26. 深度卸载
@@ -1576,6 +1577,7 @@ EOF
 【常用项（核心流程）】
 1. 配置（快速默认 / 高级变量向导）
 6. 状态查看（含节点连接统计）
+0. APT/DPKG 锁一键修复（更新卡锁时使用）
 12. 一键验收自检（语法/单测/API）
 14. 节点同步（默认参数 / Token / 时间 / 对齐参数）
 15. 安全加固向导（token轮换 + 8080收敛）
@@ -1796,6 +1798,50 @@ reload_https_cert() {
     systemctl restart caddy || true
   fi
   systemctl status caddy --no-pager || true
+}
+
+recover_apt_dpkg_lock_one_click() {
+  if ! command -v apt-get >/dev/null 2>&1; then
+    warn "当前系统未检测到 apt-get，跳过锁修复。"
+    return
+  fi
+  warn "该操作会尝试停止 apt 自动任务并结束占锁进程（apt/dpkg/unattended-upgrades）。"
+  warn "仅在更新卡在锁文件时使用。"
+  if ! confirm_action "确认执行 APT/DPKG 锁一键修复？" "N"; then
+    warn "已取消锁修复。"
+    return
+  fi
+  if ! confirm_action "二次确认：继续执行可能中断正在运行的系统更新任务？" "N"; then
+    warn "已取消锁修复。"
+    return
+  fi
+
+  msg "当前 apt/dpkg 相关进程："
+  ps -axo pid,ppid,etime,cmd | grep -E 'apt|dpkg|unattended-upgrades' | grep -v grep || true
+
+  msg "尝试停止自动更新服务..."
+  systemctl stop apt-daily.service apt-daily-upgrade.service unattended-upgrades.service 2>/dev/null || true
+  systemctl kill apt-daily.service apt-daily-upgrade.service unattended-upgrades.service 2>/dev/null || true
+  systemctl reset-failed apt-daily.service apt-daily-upgrade.service unattended-upgrades.service 2>/dev/null || true
+
+  msg "尝试结束残留占锁进程..."
+  pkill -TERM -f 'apt|apt-get|dpkg|unattended-upgrades' 2>/dev/null || true
+  sleep 3
+  pkill -KILL -f 'apt|apt-get|dpkg|unattended-upgrades' 2>/dev/null || true
+
+  msg "清理可能残留的锁文件..."
+  rm -f /var/lib/dpkg/lock-frontend \
+        /var/lib/dpkg/lock \
+        /var/cache/apt/archives/lock \
+        /var/lib/apt/lists/lock 2>/dev/null || true
+
+  msg "修复 dpkg 状态并自动补依赖..."
+  dpkg --configure -a || true
+  apt-get -o "DPkg::Lock::Timeout=60" update -y
+  apt-get -o "DPkg::Lock::Timeout=60" install -f -y
+
+  msg "APT/DPKG 锁修复完成。当前进程状态："
+  ps -axo pid,ppid,etime,cmd | grep -E 'apt|dpkg|unattended-upgrades' | grep -v grep || true
 }
 
 run_component_self_check_and_repair() {
@@ -2023,9 +2069,9 @@ main() {
     show_menu
     local action_prompt
     if [[ "$MENU_VIEW_MODE" == "advanced" ]]; then
-      action_prompt="请输入选项 [1-27/b]: "
+      action_prompt="请输入选项 [0-27/b]: "
     else
-      action_prompt="请输入选项 [常用编号/a]: "
+      action_prompt="请输入选项 [常用编号(含0)/a]: "
     fi
     read -r -p "$action_prompt" action
     case "$action" in
@@ -2041,6 +2087,10 @@ main() {
         ;;
       1)
         configure_only
+        pause
+        ;;
+      0)
+        recover_apt_dpkg_lock_one_click
         pause
         ;;
       2)
@@ -2238,9 +2288,9 @@ main() {
         ;;
       *)
         if [[ "$MENU_VIEW_MODE" == "advanced" ]]; then
-          warn "无效选项，请输入 1-27 或 b。"
+          warn "无效选项，请输入 0-27 或 b。"
         else
-          warn "无效选项，请输入简化视图中的编号，或输入 a 切换高级视图。"
+          warn "无效选项，请输入简化视图中的编号（含0），或输入 a 切换高级视图。"
         fi
         pause
         ;;
